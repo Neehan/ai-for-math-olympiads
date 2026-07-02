@@ -69,11 +69,23 @@ git-ignored.
 
 ## Running
 
-Resumable: each harness skips problems whose result file already exists. Branch
-before running so outputs from different runs never mix.
+Resumable: each harness skips problems whose result file already exists.
+
+**Run one harness per git branch.** Two harnesses in the same working tree let
+the later one Read/Grep the earlier one's `results/`, `logs/`, and `.scratch/` —
+cross-harness contamination that voids the experiment. `run_one.sh` runs exactly
+one harness and refuses more; isolate each in its own branch, then merge results
+to main:
+
+```bash
+git checkout main && git checkout -b run/single_llm
+./run_one.sh single_llm        # commit results, merge to main
+git checkout main && git checkout -b run/best_of_n
+./run_one.sh best_of_n         # fresh tree — no trace of single_llm
+```
 
 Auth is the Claude Code OAuth token (subscription login). Put it in a `.env`
-file (git-ignored, auto-loaded by both the harnesses and `run_all.sh`):
+file (git-ignored, auto-loaded by both the harnesses and `run_one.sh`):
 
 ```bash
 cp .env.example .env
@@ -81,8 +93,7 @@ cp .env.example .env
 ```
 
 ```bash
-./run_all.sh                   # all three harnesses, in order
-./run_all.sh best_of_n         # or a single harness
+./run_one.sh single_llm        # one of: single_llm | best_of_n | ralph_loop
 python -m src.single_llm.run   # a harness directly (also loads .env)
 ```
 
