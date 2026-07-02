@@ -29,7 +29,7 @@ from src.shared.io_utils import (
 from src.shared.logging_setup import configure_logging, get_logger
 from src.shared.models import Problem, ProblemRun
 from src.shared.prompts import ralph_refine_prompt, task_prompt
-from src.shared.solver import build_options, run_attempt
+from src.shared.solver import build_options, run_attempt, run_resumable
 
 log = get_logger(RALPH_LOOP_DIR)
 
@@ -80,7 +80,7 @@ async def main() -> None:
     pending = [p for p in problems if not result_exists(RALPH_LOOP_DIR, p.problem_id)]
     skipped = len(problems) - len(pending)
     log.info("%d problems to run, %d already done", len(pending), skipped)
-    tasks = [lambda p=p: solve_problem(p) for p in pending]
+    tasks = [lambda p=p: run_resumable(lambda: solve_problem(p)) for p in pending]
     await run_all(tasks)
 
 

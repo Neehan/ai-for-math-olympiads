@@ -5,11 +5,19 @@ option construction — differing only in how many attempts they run and how
 they seed each one.
 """
 
+import logging
+import time
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
+
+import anyio
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
+    RateLimitEvent,
     ResultMessage,
     TextBlock,
     ToolResultBlock,
@@ -21,8 +29,13 @@ from src.shared.bash_guard import bash_network_guard
 from src.shared.constants import (
     MODEL,
     PERMISSION_MODE,
+    RESET_WAIT_BUFFER_SECONDS,
 )
-from src.shared.models import AttemptResult, ToolCall
+from src.shared.models import AttemptResult, RateLimitExhausted, ToolCall
+
+log = logging.getLogger("solver")
+
+T = TypeVar("T")
 from src.shared.prompts import SYSTEM_PROMPT
 from src.shared.tool_policy import allowed_tools, can_use_tool, disallowed_tools
 
@@ -119,6 +132,7 @@ async def run_attempt(client: ClaudeSDKClient, prompt: str) -> AttemptResult:
     tool_uses: dict[str, ToolUseBlock] = {}
     tool_results: dict[str, ToolResultBlock] = {}
     result_message: ResultMessage | None = None
+    rate_limit_reset: int | None = None
 
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
@@ -132,6 +146,13 @@ async def run_attempt(client: ClaudeSDKClient, prompt: str) -> AttemptResult:
                     tool_results[block.tool_use_id] = block
         elif isinstance(message, ResultMessage):
             result_message = message
+        elif isinstance(message, RateLimitEvent):
+            info = message.rate_limit_info
+            if info.status == "rejected":
+                rate_limit_reset = info.resets_at if info.resets_at is not None else 0
+
+    if rate_limit_reset is not None:
+        raise RateLimitExhausted(rate_limit_reset)
 
     if result_message is None:
         raise RuntimeError("Agent produced no ResultMessage for prompt")
@@ -152,3 +173,24 @@ async def run_attempt(client: ClaudeSDKClient, prompt: str) -> AttemptResult:
         else "unknown",
         tool_calls=_collect_tool_calls(tool_uses, tool_results),
     )
+
+
+async def run_resumable(factory: Callable[[], Awaitable[T]]) -> T:
+    """Run an async factory, waiting out rate limits and retrying on exhaustion.
+
+    On RateLimitExhausted, sleep until the reported reset time (plus a buffer)
+    and re-run the factory from scratch. Used to wrap a whole solve so a spent
+    session is rebuilt after the limit resets.
+    """
+    while True:
+        try:
+            return await factory()
+        except RateLimitExhausted as exhausted:
+            now = int(time.time())
+            delay = max(1, exhausted.resets_at + RESET_WAIT_BUFFER_SECONDS - now)
+            log.warning(
+                "Rate limit hit; waiting %d s until reset (unix %d), then resuming.",
+                delay,
+                exhausted.resets_at,
+            )
+            await anyio.sleep(delay)

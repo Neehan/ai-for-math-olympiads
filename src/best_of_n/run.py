@@ -32,7 +32,7 @@ from src.shared.io_utils import (
 from src.shared.logging_setup import configure_logging, get_logger
 from src.shared.models import AttemptResult, Problem, ProblemRun
 from src.shared.prompts import task_prompt
-from src.shared.solver import build_options, run_attempt
+from src.shared.solver import build_options, run_attempt, run_resumable
 
 log = get_logger(BEST_OF_N_DIR)
 
@@ -97,7 +97,7 @@ async def main() -> None:
 
     sinks: dict[str, dict[int, AttemptResult]] = {p.problem_id: {} for p in pending}
     tasks = [
-        lambda p=p, i=i: run_sample(p, i, sinks[p.problem_id])
+        lambda p=p, i=i: run_resumable(lambda: run_sample(p, i, sinks[p.problem_id]))
         for p in pending
         for i in range(N_SAMPLES)
     ]

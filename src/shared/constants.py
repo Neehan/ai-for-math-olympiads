@@ -112,6 +112,14 @@ RALPH_ITERATIONS: int = 16
 # Permission mode: bypass interactive prompts; policy enforced by can_use_tool.
 PERMISSION_MODE: PermissionMode = "bypassPermissions"
 
+# --- Auth ----------------------------------------------------------------
+# The Claude Code OAuth token (from `claude setup-token`) that every session
+# authenticates with. Read from this env var so it is never committed. If it is
+# unset, the CLI falls back to its own stored login.
+OAUTH_TOKEN_ENV: str = "CLAUDE_CODE_OAUTH_TOKEN"
+# Extra seconds to wait past a reported reset time before resuming (clock skew).
+RESET_WAIT_BUFFER_SECONDS: int = 60
+
 # --- Logging -------------------------------------------------------------
 LOG_LEVEL: str = "INFO"
 LOG_FORMAT: str = "%(asctime)s %(levelname)s %(name)s %(message)s"

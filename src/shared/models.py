@@ -20,6 +20,19 @@ class Problem:
     answer_type: str
 
 
+class RateLimitExhausted(Exception):
+    """Raised when the account's usage limit is hit (RateLimitInfo 'rejected').
+
+    Carries resets_at (unix seconds) so the caller can wait until the limit
+    resets and resume.
+    """
+
+    def __init__(self, resets_at: int) -> None:
+        """Store the reset time and build a human-readable message."""
+        self.resets_at = resets_at
+        super().__init__(f"Rate limit exhausted; resets at unix {resets_at}")
+
+
 @dataclass
 class ToolCall:
     """One tool invocation by the agent, with its result.
