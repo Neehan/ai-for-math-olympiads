@@ -1,0 +1,17 @@
+[project]
+name = "recognition-is-the-wall"
+version = "0.1.0"
+description = "Harnesses for diagnosing LLM failure on novel olympiad math"
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk>=0.1.56",
+    "anyio>=4.0",
+]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+
+[tool.setuptools]
+packages = ["src"]

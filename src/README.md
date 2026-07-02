@@ -1,0 +1,85 @@
+# Harnesses
+
+Three solution-generation harnesses built on the Claude Agent SDK, sharing one
+tool policy and solver. This is the **C0 baseline** condition of the paper's
+condition ladder: no knowledge base, no crux corpus, no oracle hints — the agent
+receives only the problem statement. Later conditions (C1 static KB, C2 corpus,
+C3 oracle crux) layer onto the same `prompts.py` without touching the harnesses.
+
+- `single_llm/` — one attempt per problem.
+- `best_of_n/` — N independent attempts per problem (all stored; no selector,
+  no proof verifier — pass@k and selection are decided later by the judge).
+- `ralph_loop/` — one persistent session per problem: an initial solution, then
+  self-critique/refinement iterations, each recorded.
+
+`shared/` holds everything common: `constants.py` (single source of truth for
+model, tool lists, run parameters, paths), `models.py`, `prompts.py`,
+`tool_policy.py`, `bash_guard.py`, `solver.py`, `concurrency.py`,
+`io_utils.py`, `logging_setup.py`.
+
+## Model
+
+`claude-opus-4-5` (May-2025 cutoff), set in `shared/constants.py`. The 2026
+problems are outside its training window (the NOVEL set).
+
+## Run limits (single source of truth in `constants.py`)
+
+| Limit | Value | Meaning |
+|---|---|---|
+| `MAX_TURNS_PER_ATTEMPT` | 128 | Tool-use turns per attempt. Same for every system (equivalence). The model is told this budget so it paces itself. |
+| `N_SAMPLES` | 5 | Independent Best-of-N samples per problem. |
+| `RALPH_ITERATIONS` | 16 | Ralph refine rounds per problem (1 solve + 15 refine). |
+| `MAX_CONCURRENCY` | 9 | Simultaneous agent sessions across a run (infra knob; no effect on results). |
+
+Worst-case turns per problem: Single = 128, BoN = 5×128 = 640, Ralph = 16×128 =
+2048. There is **no hard dollar budget cap**: cost is recorded per attempt but
+nothing halts on spend. When reporting, state what fraction of attempts hit the
+128-turn cap (computable from the logs) — if high, the cap is shaping results.
+
+## Tool policy (contamination control)
+
+Allowed (pre-approved, run headless): Read, Write, Edit, MultiEdit, Bash, Grep,
+Glob, TodoWrite. The agent's file work is confined to a per-problem scratch dir
+under `.scratch/<harness>/<problem_id>` (git-ignored), stated in the prompt.
+
+Enforcement (tested against this SDK version):
+- `disallowed_tools` **removes** WebSearch, WebFetch, Task, Agent, ToolSearch,
+  AskUserQuestion, SlashCommand, NotebookEdit. This is the mechanism that
+  actually blocks built-ins.
+- `bash_network_guard` (PreToolUse hook) blocks network Bash commands (curl,
+  wget, git clone/pull/push/fetch, pip/npm/apt install, ssh, nc, urllib, …).
+- `can_use_tool` denies anything outside the allowlist as a secondary layer.
+  Note: it does **not** reliably gate SDK built-ins — `disallowed_tools` is the
+  real guarantee at the tool layer.
+
+The Bash guard is a pattern blocklist (evadable in principle; the model has no
+incentive to). Every tool call — including blocked ones — is recorded in the
+audit log, so a run can be proven network-free after the fact.
+
+## Outputs (everything is reported)
+
+- `results/<harness>/<problem_id>.md` — human-readable: metadata, a per-attempt
+  tool-call summary (results truncated to 500 chars), and the solution text.
+- `logs/<harness>/<problem_id>.jsonl` — the audit trail: one JSON line per
+  attempt with **full untruncated** tool calls (name, input, result), cost,
+  turns, duration, stop reason, and text.
+
+Both are committed deliverables. `.scratch/` (agent working files) is
+git-ignored.
+
+## Running
+
+Resumable: each harness skips problems whose result file already exists. Branch
+before running so outputs from different runs never mix.
+
+```bash
+export ANTHROPIC_API_KEY=...   # or rely on Claude Code auth
+./run_all.sh                   # all three harnesses, in order
+./run_all.sh best_of_n         # or a single harness
+```
+
+## Type checking
+
+```bash
+npx pyright        # standard mode; must pass clean (0 errors, 0 warnings)
+```
