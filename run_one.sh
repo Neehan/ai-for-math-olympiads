@@ -86,9 +86,35 @@ if ! PY="$(select_python)"; then
     exit 1
 fi
 
+# Pin the agent's compute environment. The agent runs Bash in a subprocess that
+# inherits this shell's PATH, so `python`/`python3` it invokes must resolve to
+# the SAME interpreter we launch the harness with — the one that has the SDK and
+# the math libs. Otherwise a stale `python3` on the caller's PATH could hand the
+# agent a numpy-less interpreter, silently changing the compute environment
+# between runs (a confound). Prepending $PY's dir makes both names resolve to it.
+PY_DIR="$(cd "$(dirname "$PY")" && pwd)"
+export PATH="${PY_DIR}:${PATH}"
+
+# Preflight: the math libs must import under BOTH `python` and `python3` (the two
+# names the agent may call) before we spend a cent on the API. Fail loud here
+# rather than let the agent silently degrade to no-numpy midway through a run.
+for name in python python3; do
+    if ! command -v "$name" >/dev/null 2>&1; then
+        echo "ERROR: '$name' not found on PATH after pinning ${PY_DIR}." >&2
+        exit 1
+    fi
+    if ! "$name" -c 'import numpy, sympy, scipy' >/dev/null 2>&1; then
+        echo "ERROR: '$name' cannot import numpy/sympy/scipy." >&2
+        echo "The agent's Bash would see a compute environment missing math libs." >&2
+        echo "Install them into the interpreter at ${PY_DIR} (python -m pip install -e .)." >&2
+        exit 1
+    fi
+done
+
 echo "=============================================================="
 echo ">>> Harness:     ${harness}"
 echo ">>> Interpreter: ${PY} ($("$PY" --version 2>&1))"
+echo ">>> PATH pinned: ${PY_DIR} (python & python3 -> this; numpy/sympy/scipy OK)"
 echo "=============================================================="
 "$PY" -m "src.${harness}.run"
 
