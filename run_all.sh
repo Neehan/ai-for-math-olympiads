@@ -18,6 +18,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Load environment (auth token etc.) from .env if present. The file is
+# git-ignored, so the token is never committed. Format: KEY=value per line.
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+fi
+
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    echo "WARNING: CLAUDE_CODE_OAUTH_TOKEN is not set (no .env and no export)." >&2
+    echo "The CLI will fall back to its stored login if you have run 'claude login'." >&2
+fi
+
 HARNESSES=("single_llm" "best_of_n" "ralph_loop")
 
 if [ "$#" -gt 0 ]; then

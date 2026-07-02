@@ -72,10 +72,18 @@ git-ignored.
 Resumable: each harness skips problems whose result file already exists. Branch
 before running so outputs from different runs never mix.
 
+Auth is the Claude Code OAuth token (subscription login). Put it in a `.env`
+file (git-ignored, auto-loaded by both the harnesses and `run_all.sh`):
+
 ```bash
-export ANTHROPIC_API_KEY=...   # or rely on Claude Code auth
+cp .env.example .env
+# then set CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token) in .env
+```
+
+```bash
 ./run_all.sh                   # all three harnesses, in order
 ./run_all.sh best_of_n         # or a single harness
+python -m src.single_llm.run   # a harness directly (also loads .env)
 ```
 
 ## Type checking

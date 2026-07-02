@@ -3,6 +3,11 @@
 from pathlib import Path
 
 from claude_agent_sdk import PermissionMode
+from dotenv import load_dotenv
+
+# Load .env (auth token etc.) as soon as constants is imported, so every
+# entrypoint and env-reading path sees it. .env is git-ignored.
+load_dotenv()
 
 # --- Model ---------------------------------------------------------------
 # Opus 4.5 has a May-2025 knowledge cutoff, so 2026 problems are provably
