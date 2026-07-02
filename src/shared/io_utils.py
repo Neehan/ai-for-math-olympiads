@@ -130,7 +130,9 @@ def _write_full_log(run: ProblemRun, problem: Problem, labels: list[str]) -> Pat
                 for c in attempt.tool_calls
             ],
         }
-        lines.append(json.dumps(record, ensure_ascii=False))
+        # default=str so a non-JSON-serializable tool_input value can never
+        # crash the audit-log write and lose the whole run's record.
+        lines.append(json.dumps(record, ensure_ascii=False, default=str))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 

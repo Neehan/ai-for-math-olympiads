@@ -52,34 +52,43 @@ DISALLOWED_TOOLS: list[str] = [
 ]
 
 # Regex patterns for Bash commands blocked by the PreToolUse network guard.
-# These catch obvious network egress the allowed Bash tool could otherwise use.
+#
+# Each pattern is anchored to a COMMAND POSITION — start of the command string
+# or right after a shell separator (; | & && || newline `$( ( ) — via the
+# _CMD_START prefix. This means a network binary is only blocked when actually
+# invoked as a command, so tokens like "host_data.txt", a Python string
+# containing "socket", or a variable named "http_status" are NOT false-blocked
+# (which would silently corrupt a legitimate verification script).
+#
+# Deliberately NOT blocked: bare "urllib"/"socket."/"requests." substrings, and
+# tokens like "host"/"dig" that collide with ordinary math code. Reaching the
+# network through Python still requires the model to import and call those
+# libraries, which is far less likely than a false positive on innocent code;
+# and every Bash call is recorded in the audit log regardless.
+_CMD_START = r"(?:^|[;&|`]|\$\(|\(|\n)\s*(?:sudo\s+)?"
+
 BLOCKED_BASH_PATTERNS: list[str] = [
-    r"\bcurl\b",
-    r"\bwget\b",
-    r"\bnc\b",
-    r"\bncat\b",
-    r"\btelnet\b",
-    r"\bssh\b",
-    r"\bscp\b",
-    r"\bsftp\b",
-    r"\bftp\b",
-    r"\brsync\b",
-    r"\bping\b",
-    r"\bhost\b",
-    r"\bdig\b",
-    r"\bnslookup\b",
-    r"\bgit\s+(clone|pull|push|fetch|remote|submodule)\b",
+    _CMD_START + r"curl\b",
+    _CMD_START + r"wget\b",
+    _CMD_START + r"ncat\b",
+    _CMD_START + r"telnet\b",
+    _CMD_START + r"ssh\b",
+    _CMD_START + r"scp\b",
+    _CMD_START + r"sftp\b",
+    _CMD_START + r"ftp\b",
+    _CMD_START + r"rsync\b",
+    _CMD_START + r"ping\b",
+    _CMD_START + r"nslookup\b",
+    _CMD_START + r"dig\s",
+    _CMD_START + r"host\s",
+    r"\bgit\s+(?:clone|pull|push|fetch|remote|submodule)\b",
     r"\bpip[23]?\s+install\b",
     r"\bpip[23]?\s+download\b",
     r"\bconda\s+install\b",
-    r"\bnpm\s+(install|i|ci)\b",
-    r"\byarn\s+(add|install)\b",
-    r"\bapt(-get)?\s+install\b",
+    r"\bnpm\s+(?:install|i|ci)\b",
+    r"\byarn\s+(?:add|install)\b",
+    r"\bapt(?:-get)?\s+install\b",
     r"\bbrew\s+install\b",
-    r"\bhttpx?\b",
-    r"urllib",
-    r"requests\.(get|post|put|head)",
-    r"socket\.",
 ]
 
 # --- Run parameters ------------------------------------------------------

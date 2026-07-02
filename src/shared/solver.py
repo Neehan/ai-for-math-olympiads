@@ -82,12 +82,25 @@ def _collect_tool_calls(
     calls: list[ToolCall] = []
     for use_id, use in tool_uses.items():
         result = tool_results.get(use_id)
+        if result is None:
+            # No result block: the call did not complete (interrupted, denied
+            # without a result, or truncated at the turn limit). Record it as an
+            # error so the audit log never shows an incomplete call as success.
+            calls.append(
+                ToolCall(
+                    name=use.name,
+                    tool_input=dict(use.input),
+                    result="<no result returned>",
+                    is_error=True,
+                )
+            )
+            continue
         calls.append(
             ToolCall(
                 name=use.name,
                 tool_input=dict(use.input),
-                result=_stringify_result(result.content) if result else "",
-                is_error=bool(result.is_error) if result else False,
+                result=_stringify_result(result.content),
+                is_error=bool(result.is_error),
             )
         )
     return calls

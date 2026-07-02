@@ -55,14 +55,24 @@ async def run_sample(
     )
 
 
-async def solve_problem(problem: Problem) -> None:
-    """Run N samples concurrently, then write one markdown file for the problem."""
-    sink: dict[int, AttemptResult] = {}
-    tasks = [
-        lambda i=i: run_sample(problem, i, sink) for i in range(N_SAMPLES)
-    ]
-    await run_all(tasks)
+def _write_problem(problem: Problem, sink: dict[int, AttemptResult]) -> None:
+    """Write a problem's files only if all N samples succeeded.
 
+    If any sample failed (its index is missing from the sink), the problem is
+    left unwritten and logged, so a resumable rerun retries it in full rather
+    than committing a partial (fewer-than-N) result.
+    """
+    if len(sink) != N_SAMPLES:
+        missing = [i + 1 for i in range(N_SAMPLES) if i not in sink]
+        log.warning(
+            "%s incomplete (%d/%d samples); missing %s. Not writing; will retry "
+            "on next run.",
+            problem.problem_id,
+            len(sink),
+            N_SAMPLES,
+            missing,
+        )
+        return
     run = ProblemRun(problem_id=problem.problem_id, harness=BEST_OF_N_DIR, model=MODEL)
     labels: list[str] = []
     for i in range(N_SAMPLES):
@@ -73,14 +83,28 @@ async def solve_problem(problem: Problem) -> None:
 
 
 async def main() -> None:
-    """Run the best-of-N harness over all problems (resumable, concurrent)."""
+    """Run the best-of-N harness over all problems (resumable, concurrent).
+
+    Every (problem, sample) pair is one task and all pairs share a single
+    global concurrency limit, so exactly MAX_CONCURRENCY agent sessions stay
+    busy across problem and sample boundaries.
+    """
     configure_logging()
     problems = load_problems()
     pending = [p for p in problems if not result_exists(BEST_OF_N_DIR, p.problem_id)]
     skipped = len(problems) - len(pending)
     log.info("%d problems to run, %d already done", len(pending), skipped)
+
+    sinks: dict[str, dict[int, AttemptResult]] = {p.problem_id: {} for p in pending}
+    tasks = [
+        lambda p=p, i=i: run_sample(p, i, sinks[p.problem_id])
+        for p in pending
+        for i in range(N_SAMPLES)
+    ]
+    await run_all(tasks)
+
     for problem in pending:
-        await solve_problem(problem)
+        _write_problem(problem, sinks[problem.problem_id])
 
 
 if __name__ == "__main__":
