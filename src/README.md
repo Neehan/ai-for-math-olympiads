@@ -28,11 +28,11 @@ problems are outside its training window (the NOVEL set).
 |---|---|---|
 | `MAX_TURNS_PER_ATTEMPT` | 128 | Tool-use turns per attempt. Same for every system (equivalence). The model is told this budget so it paces itself. |
 | `N_SAMPLES` | 5 | Independent Best-of-N samples per problem. |
-| `RALPH_ITERATIONS` | 16 | Ralph refine rounds per problem (1 solve + 15 refine). |
+| `RALPH_ITERATIONS` | 8 | Ralph rounds per problem (1 solve + 7 refine). |
 | `MAX_CONCURRENCY` | 9 | Simultaneous agent sessions across a run (infra knob; no effect on results). |
 
-Worst-case turns per problem: Single = 128, BoN = 5×128 = 640, Ralph = 16×128 =
-2048. There is **no hard dollar budget cap**: cost is recorded per attempt but
+Worst-case turns per problem: Single = 128, BoN = 5×128 = 640, Ralph = 8×128 =
+1024. There is **no hard dollar budget cap**: cost is recorded per attempt but
 nothing halts on spend. When reporting, state what fraction of attempts hit the
 128-turn cap (computable from the logs) — if high, the cap is shaping results.
 

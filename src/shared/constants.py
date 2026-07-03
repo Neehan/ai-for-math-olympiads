@@ -124,8 +124,11 @@ N_SAMPLES: int = 5
 # Anthropic tier. Applies to all harnesses (problems and BoN samples).
 MAX_CONCURRENCY: int = 9
 
-# Ralph loop: number of self-refinement iterations per problem.
-RALPH_ITERATIONS: int = 16
+# Ralph loop: number of iterations per problem (1 initial solve + refinements).
+# Capped at 8 (was 16): at 128 turns/iteration, 16 rounds is ~2048 turns/problem
+# — far more compute than needed and dominated by the tail. 8 rounds (~1024
+# turns worst case) keeps the self-refinement signal while halving the cost.
+RALPH_ITERATIONS: int = 8
 
 # Permission mode: bypass interactive prompts; policy enforced by can_use_tool.
 PERMISSION_MODE: PermissionMode = "bypassPermissions"
