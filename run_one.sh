@@ -21,7 +21,12 @@
 # Usage:
 #   cp .env.example .env                     # then set CLAUDE_CODE_OAUTH_TOKEN in it
 #   ./run_one.sh single_llm                  # one of: single_llm | best_of_n | ralph_loop
+#   ./run_one.sh --reset single_llm          # wipe this harness's outputs first, then run
 #   PYTHON=/path/to/python ./run_one.sh ...  # force a specific interpreter
+#
+# --reset deletes results/<harness>/, logs/<harness>/, and .scratch/<harness>/
+# before running, so the run starts from a clean slate (used when the prompt or
+# harness changed and old outputs must not be reused by the resumable skip).
 #
 # Fails loud: `set -e` stops on any error.
 
@@ -31,15 +36,28 @@ cd "$(dirname "$0")"
 
 VALID_HARNESSES=("single_llm" "best_of_n" "ralph_loop")
 
-if [ "$#" -ne 1 ]; then
-    echo "ERROR: exactly one harness required (got $#)." >&2
-    echo "Usage: ./run_one.sh <${VALID_HARNESSES[0]}|${VALID_HARNESSES[1]}|${VALID_HARNESSES[2]}>" >&2
+reset=0
+positional=()
+for arg in "$@"; do
+    case "$arg" in
+        --reset) reset=1 ;;
+        -*)
+            echo "ERROR: unknown flag '${arg}'. Only --reset is supported." >&2
+            exit 2
+            ;;
+        *) positional+=("$arg") ;;
+    esac
+done
+
+if [ "${#positional[@]}" -ne 1 ]; then
+    echo "ERROR: exactly one harness required (got ${#positional[@]})." >&2
+    echo "Usage: ./run_one.sh [--reset] <${VALID_HARNESSES[0]}|${VALID_HARNESSES[1]}|${VALID_HARNESSES[2]}>" >&2
     echo "Running more than one harness in the same tree contaminates the experiment;" >&2
     echo "isolate each in its own git branch. See the header of this script." >&2
     exit 2
 fi
 
-harness="$1"
+harness="${positional[0]}"
 ok=0
 for h in "${VALID_HARNESSES[@]}"; do
     [ "$h" = "$harness" ] && ok=1
@@ -48,6 +66,15 @@ if [ "$ok" -ne 1 ]; then
     echo "ERROR: unknown harness '${harness}'." >&2
     echo "Must be one of: ${VALID_HARNESSES[*]}" >&2
     exit 2
+fi
+
+# --reset: wipe this harness's outputs so the resumable skip can't reuse stale
+# results generated under an old prompt/harness. Only this harness's dirs are
+# touched, never another harness's or the repo root.
+if [ "$reset" -eq 1 ]; then
+    echo ">>> --reset: clearing results/${harness}/, logs/${harness}/, .scratch/${harness}/"
+    rm -rf "results/${harness}" "logs/${harness}" ".scratch/${harness}"
+    echo ">>> reset done."
 fi
 
 # Load environment (auth token etc.) from .env if present. The file is
