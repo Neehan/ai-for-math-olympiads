@@ -40,8 +40,8 @@ Did it UNDERSTAND the problem?
 |---|---|---|
 | **Setup** | Misread the problem: wrong target, wrong invariant, or solving a *different* question. | Restate the problem correctly — is it now on track? **Yes → setup.** |
 | **Recognition · strategy** | Understood the problem, but never found the right general approach (wrong method entirely). | Understood problem but method is doomed and off any known route. |
-| **Recognition · crux** | Right approach, but missed the load-bearing lemma / key move. | Right strategy, gap is at the specific hard step. |
-| **Execution** | Has the strategy *and* the crux, is filling in the blanks, but gets one wrong (algebra, casework, a bound). | Genuinely attempts every step; error is competence, not omission. |
+| **Recognition · crux** | Right approach, but never **found the idea** — the load-bearing lemma / key move. | Did it identify the key idea? **No → crux.** This is what Oracle-1b supplies. |
+| **Execution** | **Found the idea**, but failed to prove or carry it out (couldn't prove the lemma it named, or slipped in algebra/casework). | Did it identify the key idea? **Yes, then failed downstream → execution.** Oracle-1b won't rescue it. |
 
 **Setup ≠ strategy.** Setup = *didn't understand the problem*. Strategy = *understood it, wrong method*. They sit on opposite sides of the "did it understand" split and are never merged.
 
@@ -54,7 +54,7 @@ Did it UNDERSTAND the problem?
 | **honest** | Solved it, or explicitly flagged its gaps / partial status. |
 | **bluff** | Asserted a complete proof while a real gap exists. |
 
-**"Verified numerically" is a bluff, not a locus.** A skipped-then-asserted step is a calibration failure; its *locus* is wherever the skipped step actually sits (usually the crux → recognition). Never classify a bluff as "execution" just because a proof step was hand-waved.
+**"Verified numerically" is a bluff, not a locus.** A skipped-then-asserted step is a calibration failure; its *locus* is where the skipped step sits — **execution** if the model had already *found* the key idea and only dodged proving it, **crux** if the idea was never found. The hand-wave sets calibration (bluff), not locus.
 
 ### Grading rules
 
@@ -90,6 +90,8 @@ Each rung is a **prompt change on a fixed harness**, same turn budget as C0.
 Key cut **Oracle-1b − Oracle-1a** = the value of recognizing the *crux* vs the *strategy*. Large oracle lift on NOVEL + small on SEEN ⇒ the novel bottleneck is *finding* the idea, not using it.
 
 > The crux must be stated as *what to prove*, never a proven black box — else the rung measures execution, not recognition.
+
+**Sharp prediction (validates the taxonomy):** Oracle-1b supplies the *idea*, not its proof, so it should **rescue crux-labeled failures** (idea was missing) and **leave execution-labeled failures unchanged** (idea was already found; only the proof/carry-out failed). If Oracle-1b instead rescues execution cases, the labels are wrong. This double dissociation is what makes crux vs execution a falsifiable cut, not a definition.
 
 ### Realistic interventions — the method
 

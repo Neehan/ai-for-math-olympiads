@@ -38,19 +38,19 @@ Did it UNDERSTAND the problem?                (right target, right claim/answer)
 |---|---|
 | **setup** | The model misread the problem: wrong target, wrong quantity, wrong claimed answer, solved a *different* question, or misstated the constraint. Nothing downstream can be right because it is not the right problem. |
 | **recognition · strategy** | The model understood the problem correctly but never found the right general approach — picked a method that cannot work, or flailed between approaches, none of them the right family. |
-| **recognition · crux** | The model had the right general approach but never found the specific load-bearing lemma / key move the proof hinges on. The gap is *at* the hard step. |
-| **execution** | The model had the strategy **and** the crux and was genuinely filling in the blanks, but made a competence error: arithmetic, a case, an algebra manipulation, a bound. It *attempted* every step. |
+| **recognition · crux** | The model had the right general approach but never **found the idea** — never identified/conjectured the load-bearing lemma or key move the proof hinges on. The missing step is an act of **insight**. This is what Oracle-1b supplies (the idea as a target), so these are the cases the oracle should rescue. |
+| **execution** | The model **found the idea** — identified/conjectured the right load-bearing step — but then failed on the **proving/carrying-out**: it could not prove the lemma it correctly named, botched the algebra/casework/bound, or slipped in the routine work. Oracle-1b (idea-only) hands these nothing new, so the oracle should **not** rescue them. |
 
 ### Decisive tests (use these, not gut feel)
 
 - **setup vs strategy:** *"If I restated the problem correctly, would it be on track?"* Yes → misunderstood the problem → **setup**. No, it understood the problem but the method is doomed → **strategy**.
-- **strategy vs crux:** *"Is the general approach the one the official (or any valid) solution uses?"* No / a different, non-viable family → **strategy**. Yes, but the specific key lemma/step is missing or unproven → **crux**.
-- **crux vs execution:** *"Take the first fatal gap. Is it the load-bearing step, or a routine fill-in?"* **Use the reference solution to decide what is load-bearing** — the key lemma / main idea the reference builds the proof around is the crux; boilerplate around it is routine, not intuition. Gap AT the reference's key idea → **crux** (it never cracked the problem). Gap in a routine step it clearly could do, botched → **execution**.
+- **strategy vs crux:** *"Is the general approach the one the official (or any valid) solution uses?"* No / a different, non-viable family → **strategy**. Yes, but never found the key idea → **crux**.
+- **crux vs execution — the idea test:** *"Did the model FIND the idea (identify/conjecture the load-bearing lemma or key move), yes or no?"* **No — never named it → crux** (an insight is missing; Oracle-1b would rescue it). **Yes — named/conjectured it, then failed to prove or carry it out → execution** (the idea is in hand; proving-the-hard-lemma-it-named counts here; Oracle-1b would NOT rescue it). The split is *finding the idea* vs *proving/executing it*, not *stated* vs *proven*.
 
 ### Tie-breaks (the boundaries where graders diverge)
 
-1. **Both a missing crux AND a later slip** → grade the **earliest** genuine gap. A missing crux dominates a downstream arithmetic slip → **crux**, not execution.
-2. **"Verified numerically / it is easy to see / one checks" on a step** is NOT automatically execution. Ask what the skipped step *is*: if it's the **crux** → **crux** (it hid that it never proved the key thing); if it's a **routine** step it plainly could do → **execution**. The hand-wave decides *calibration* (bluff), not *locus*.
+1. **Never found the idea AND a later slip** → grade the **earliest** genuine gap. A missing *idea* dominates a downstream slip → **crux**, not execution.
+2. **"Verified numerically / it is easy to see / one checks" on a step**: this is a **calibration** call (bluff), not a locus call. If the idea it skipped was **found/named** → **execution** (it had the idea, dodged the proof); if the idea was **never found** → **crux**. Either way the hand-wave itself = bluff.
 3. **"Sort of the right approach"** — if the approach would need a fundamentally different idea to work, it's **strategy**; if it's the right approach and only the key lemma is missing, it's **crux**.
 4. **Right answer, no or bad proof** (common for "find the value" problems): the answer being right does NOT make it execution. If the *justification* never finds the key idea → **crux** (or **strategy**). Locus is about the proof, not the numeric answer.
 5. **Correct but different method than official:** grade the model's OWN route (see valid-crux rule). Do not mark "missed key idea" just because it didn't use the official's idea.
@@ -87,10 +87,10 @@ Only mark `found_valid_key_idea=false` when the model found **no** viable centra
 ## Worked examples (anchors)
 
 - **SOLVED / none / honest** — model proves the result rigorously by a valid route (its own or the official's), every step justified. *E.g. a vector-geometry proof reaching the conclusion by a different, fully-justified computation.*
-- **PARTIAL / crux / bluff** — right framing and right general approach, correct final answer, but the load-bearing lemma is asserted "by a detailed analysis" without proof, and the write-up closes with QED. Missing lemma → crux; QED over a gap → bluff.
+- **FAILED / crux / bluff** — right general approach, correct final answer, but never identifies the key lemma the proof hinges on; substitutes hand-waving where the idea should be, closes with QED. Idea never found → crux; QED over the gap → bluff.
 - **FAILED / strategy / bluff** — understood the problem but committed to a method that cannot work (e.g. a counting frame that misses the needed structure), then asserts done. Wrong approach family → strategy; asserted → bluff.
 - **FAILED / setup / bluff** — imposed the wrong invariant / solved a different question (e.g. assumed a stronger periodicity than the problem states), producing a wrong answer. Misunderstood problem → setup.
-- **FAILED / execution / bluff** — had the right idea and crux, but a genuine algebra/case error produces the wrong result while claiming completeness. Attempted every step, slipped → execution.
+- **FAILED / execution / bluff** — **identified** the load-bearing lemma correctly, but could not prove it (or slipped in the algebra/casework after it) and claimed completeness anyway. Idea found, proof/carry-out failed → execution; asserted → bluff.
 
 ---
 
