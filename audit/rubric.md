@@ -1,10 +1,10 @@
 # Grading rubric (operational)
 
-Grade one attempt against the official reference. Two **orthogonal** axes: **Locus** (where the first genuine gap is) and **Calibration** (did it admit the gap). This is the frozen taxonomy from the top-level README §2, made operational with decision rules, tie-breaks, and worked examples.
+Grade one attempt against the reference solution. Two **orthogonal** axes: **Locus** (where the first genuine gap is) and **Calibration** (did it admit the gap). This is the frozen taxonomy from the top-level README §2, made operational with decision rules, tie-breaks, and worked examples.
 
 The unit graded is the model's **`## Final Solution`** section. Ignore scratch and exploration; grade the final write-up as a referee would.
 
-The official reference is supplied to the grader **only at grading time** and is never stored in this repository — the solving harness must never have access to it.
+The reference solution is supplied to the grader **only at grading time** and is never stored in this repository — the solving harness must never have access to it. A reference is either the **official** solution or an **unofficial solution that has been audited and confirmed valid**; both are authoritative ground truth for grading. Treat them identically.
 
 ---
 
