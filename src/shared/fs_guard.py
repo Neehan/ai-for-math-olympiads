@@ -22,6 +22,7 @@ run can still be proven sandbox-confined after the fact. The model has no
 incentive to evade.
 """
 
+import os
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -42,11 +43,30 @@ _PATH_TOOLS: dict[str, str] = {
     "Glob": "path",
 }
 
-# Absolute-path tokens inside a Bash command. We only inspect ABSOLUTE paths
-# (leading `/` or `~`): relative paths resolve under cwd = scratch and are safe,
-# and trying to resolve every bare word as a path yields false positives on
-# ordinary tokens. A token is a run of path characters starting at `/` or `~`.
-_ABS_PATH_TOKEN = re.compile(r"(?<![\w./~-])(~|/)[^\s'\";|&<>()`]*")
+# Path-like tokens inside a Bash command. We inspect EVERY token that names a
+# path — absolute (`/x`, `~/x`), relative (`x/y`, `sub/f`), and parent climbs
+# (`../../x`) — because a relative climb escapes scratch just as easily as an
+# absolute path. A token is a run of path characters; we then expand it and
+# resolve it (which collapses `..`) before checking containment, so `../../etc`
+# is turned into a real absolute path and caught. Bare words with no `/` and no
+# `~`/`$` prefix (e.g. `cat`, `-la`, `grep`) are NOT path tokens and are skipped
+# to avoid false-blocking ordinary command words.
+_PATH_TOKEN = re.compile(r"(?<![\w./~$-])([~$]?[\w./~$-]*/[\w./~$-]*|~|\.\.)")
+
+# A `$VAR` / `${VAR}` reference anywhere in a path token. If a token's path is
+# built from a shell variable we cannot know its value from the static string,
+# so we treat any such token as an escape (fail closed) rather than guess.
+_SHELL_VAR = re.compile(r"\$\{?\w")
+
+
+def _expand(token: str) -> Path:
+    """Expand ~ and environment variables in a token, returning a Path.
+
+    Uses the launching process's environment (which is the agent's, since it
+    inherits it), so `$HOME`, `$TMPDIR`, etc. resolve to their real values and
+    can then be containment-checked like any literal path.
+    """
+    return Path(os.path.expandvars(os.path.expanduser(token)))
 
 
 def _is_inside(candidate: Path, scratch_root: Path, mirror_marker: str) -> bool:
@@ -56,24 +76,42 @@ def _is_inside(candidate: Path, scratch_root: Path, mirror_marker: str) -> bool:
     mirror_marker is the mangled form of that path the SDK embeds in its temp
     mirror directory name, so the agent's own Bash working area is permitted.
     A relative candidate is resolved against scratch_root (the agent's cwd), not
-    the guard process's cwd, so relative paths correctly count as inside.
+    the guard process's cwd. `.resolve()` collapses `..`, so a parent climb like
+    `../../etc/passwd` becomes an absolute path and is checked correctly.
     """
     base = candidate if candidate.is_absolute() else scratch_root / candidate
     resolved = base.resolve()
     if resolved == scratch_root or scratch_root in resolved.parents:
         return True
     # SDK mirror: e.g. /private/tmp/claude-501/<mangled-scratch-path>/<uuid>/...
-    # Allow only when the mangled marker for THIS scratch appears in the path,
-    # so one problem's mirror can't be used to reach another's.
-    return mirror_marker in str(resolved)
+    # Require the mirror dir to be a PREFIX component, not just a substring, so a
+    # sibling path that merely contains the marker text cannot pass.
+    mirror_root = f"/private/tmp/claude-{os.getuid()}/{mirror_marker}"
+    resolved_str = str(resolved)
+    return resolved_str == mirror_root or resolved_str.startswith(mirror_root + "/")
 
 
 def _bad_paths(command: str, scratch_root: Path, mirror_marker: str) -> list[str]:
-    """Return absolute paths in a Bash command that escape the sandbox."""
+    """Return path tokens in a Bash command that escape the sandbox.
+
+    Every path-like token is expanded (`~`, `$VARS`) and resolved (collapsing
+    `..`) before the containment check, so relative climbs and home/var-based
+    paths are caught, not just literal absolute paths. A token that still
+    contains an unresolved `$VAR` after expansion is treated as an escape
+    (fail closed): its runtime value is unknowable from the static command, so
+    we do not let it through. NOTE: a `cd` that changes the shell's cwd for a
+    LATER command in the same string is not modelled; each token is resolved
+    against scratch. Every call is audit-logged regardless.
+    """
     bad: list[str] = []
-    for match in _ABS_PATH_TOKEN.finditer(command):
-        token = match.group(0)
-        expanded = Path(token).expanduser()
+    for match in _PATH_TOKEN.finditer(command):
+        token = match.group(1)
+        expanded = _expand(token)
+        # If a variable survived expansion (undefined in this env), we can't
+        # know where it points — refuse it.
+        if _SHELL_VAR.search(str(expanded)):
+            bad.append(token)
+            continue
         if not _is_inside(expanded, scratch_root, mirror_marker):
             bad.append(token)
     return bad
@@ -88,9 +126,11 @@ def make_fs_guard(scratch_dir: str) -> HookFn:
     """
     scratch_root = Path(scratch_dir).resolve()
     # The SDK mangles the scratch path into its temp-mirror dir name by
-    # replacing every path separator with '-'. Matching this marker lets the
-    # agent's own Bash mirror through while still blocking other problems'.
-    mirror_marker = str(scratch_root).replace("/", "-")
+    # replacing every NON-ALPHANUMERIC char with '-' (verified against real run
+    # logs: `/…/.scratch/single_llm/pid` -> `-…--scratch-single-llm-pid`).
+    # Matching this exact marker lets the agent's own Bash mirror through while
+    # still blocking other problems'.
+    mirror_marker = re.sub(r"[^A-Za-z0-9]", "-", str(scratch_root))
 
     async def fs_guard(
         input_data: HookInput,
@@ -123,7 +163,7 @@ def make_fs_guard(scratch_dir: str) -> HookFn:
         raw = tool_input.get(path_key)
         if raw is None or not isinstance(raw, str):
             return {}
-        if not _is_inside(Path(raw).expanduser(), scratch_root, mirror_marker):
+        if not _is_inside(_expand(raw), scratch_root, mirror_marker):
             return {
                 "decision": "block",
                 "reason": (
