@@ -1,117 +1,253 @@
-# Recognition Is the Wall: Diagnosing and Fixing LLM Failure on Novel Olympiad Math
+# Recognition Is the Wall
 
-## 1. Objective
+**Diagnosing and fixing LLM failure on novel olympiad math.**
 
-When an LLM fails a hard olympiad proof, is it failing to **retrieve** a known
-technique or failing to **reason**? We separate the two with a contamination
-contrast — **SEEN** (pre-2025 problems, in training) vs **NOVEL** (2026
-contests, outside training) at matched difficulty — instrumented by a crux
-corpus that labels the human load-bearing move of each problem.
+When a frontier LLM fails a hard olympiad proof, *where* does it fail? We show
+the bottleneck on **novel** problems is **recognition** — finding the key idea —
+not reasoning or computation. We prove it causally with oracle interventions,
+then show a real method (a proof-outliner) recovers part of that ceiling.
 
-Claim we aim to support: a fixed fraction of frontier olympiad performance is
-retrieval; on provably-novel problems the failure locus moves **upstream** from
-execution to idea-selection, and test-time compute does not close that gap.
+**Diagnose → intervene, one paper.**
 
-## 2. Experiment setups
+---
 
-**Data.** SEEN = matched sample of pre-2025 hard problems (in training). NOVEL =
-39 hard 2026 problems (outside training). Matched on domain + `difficulty_rating`.
+## 1. Thesis
 
-**What SEEN is for — a control, not a power base.** On SEEN the model has seen
-the problem, so recognition is near-free: SEEN failures are *not* T1. They are
-execution/rigor failures where the memorized solution was lossily compressed and
-the model must **re-derive** it (easier than cold, not guaranteed). So SEEN and
-NOVEL measure *different* things by design — and that is the point. The paper's
-core evidence is the **failure-locus shift**: T1 low on SEEN, high on NOVEL. SEEN
-proves the shift is caused by *novelty*, not by difficulty. (We do not lean on
-SEEN for sample size; see §4.)
+On problems outside training, the failure locus moves **upstream** from execution
+to idea-selection, and test-time compute (more samples, more refinement) does not
+close the gap. A model that is handed the key idea can usually finish; left to
+find it, it usually cannot — and, alarmingly, **claims success anyway**.
 
-**Knob A — condition ladder** (isolates retrieval vs reasoning). Run on both sets:
+Two findings:
+1. **Recognition is the wall.** Most failures are the model failing to find the
+   key idea, with correct problem understanding and intact execution.
+2. **Models don't know when they've failed.** The large majority of failed
+   attempts assert a complete proof over a real gap ("verified numerically",
+   "it is easy to see"). This is why every number here is graded against
+   reference solutions, never self-reported.
 
-| # | Condition | Isolates |
+---
+
+## 2. Failure taxonomy (frozen)
+
+Two **orthogonal** axes. This is fixed; we do not relabel between runs.
+
+### Axis A — Locus: *where the first genuine gap is*
+
+Exclusive and ordered. Apply the decision tree top-down; the first "NO" wins.
+
+```
+Did it UNDERSTAND the problem?
+  NO  → SETUP
+  YES → Did it find the right STRATEGY (the general approach)?
+          NO  → RECOGNITION · strategy
+          YES → Did it find the CRUX (the load-bearing lemma/step)?
+                  NO  → RECOGNITION · crux
+                  YES → EXECUTION
+```
+
+| Locus | Definition | Test to assign it |
 |---|---|---|
-| C0 | No KB, no corpus (baseline) | raw ability |
-| C1 | + static `knowledge_base.md` | can it pick the right generic technique |
-| C2 | + crux corpus (past problems + solutions) | does memory of analogues close the gap |
-| C3 | **Oracle crux** — correct technique handed in | given the idea, can it execute |
+| **Setup** | Misread the problem: wrong target, wrong invariant, or solving a *different* question. | Restate the problem correctly — is it now on track? **Yes → setup.** |
+| **Recognition · strategy** | Understood the problem, but never found the right general approach (wrong method entirely). | Understood problem but method is doomed and off any known route. |
+| **Recognition · crux** | Right approach, but missed the load-bearing lemma / key move. | Right strategy, gap is at the specific hard step. |
+| **Execution** | Has the strategy *and* the crux, is filling in the blanks, but gets one wrong (algebra, casework, a bound). | Genuinely attempts every step; error is competence, not omission. |
 
-Key cut: **C3 − C0** (oracle lift). Large on NOVEL + small on SEEN ⇒ seen "skill"
-was retrieval; the novel bottleneck is *finding* the idea, not using it.
+**Setup ≠ strategy.** Setup = *didn't understand the problem*. Strategy =
+*understood it, wrong method*. They sit on opposite sides of the "did it
+understand" split and are never merged.
 
-**Knob B — systems** (isolates test-time compute). Run at fixed condition, both sets:
+**Recognition = strategy + crux.** It is the dominant bucket and the thesis. It
+is split into strategy vs crux **only because each maps to a distinct oracle
+rung** (§4). Setup and execution stay coarse — they are the foils, not the story.
 
-| System | Adds |
+### Axis B — Calibration: *did it admit the gap?*
+
+| Tag | Definition |
 |---|---|
-| Single LLM (1 sample) | baseline |
-| Best-of-N (report pass@k; no cheap proof verifier) | search |
-| Reflection (self-critique loop) | self-correction |
-| AutoFyn (verified expert-iteration; **one system under test, not the focus**) | full scaffold ceiling |
+| **honest** | Solved it, or explicitly flagged its gaps / partial status. |
+| **bluff** | Asserted a complete proof while a real gap exists. |
 
-Key cut: does the **SEEN–NOVEL gap shrink with compute?** If it plateaus, compute
-buys retrieval/search, not reasoning.
+**"Verified numerically" is a bluff, not a locus.** A skipped-then-asserted step
+is a calibration failure; its *locus* is wherever the skipped step actually sits
+(usually the crux → recognition). Never classify a bluff as "execution" just
+because a proof step was hand-waved.
 
-**Scope.** Primary = Single LLM across full ladder, both sets. Secondary = systems
-sweep at C0, both sets. No full condition×system cross.
+### Grading rules
 
-## 3. Failure modes
+- Credit **a valid crux, not *the* official crux** — the model may solve a
+  different valid way. Grade the model's own route.
+- Grade the **first fatal step**, tagged to exactly one locus + one calibration
+  tag.
+- Every attempt graded against reference solutions, **verified by a human
+  medalist**, blinded to set/condition. All attempts + labels released so
+  grading is auditable, not trusted. Report inter-rater agreement (κ).
 
-Grade the **first fatal step** of each attempt, tagged to one axis:
+---
 
-| Axis | Failure | Ground truth |
+## 3. Data: SEEN vs NOVEL
+
+| Set | What | Role |
 |---|---|---|
-| 1. Setup | wrong target / invariant / reformulation | problem statement |
-| 2. Technique-selection | didn't find the load-bearing crux | crux corpus (human crux = label) |
-| 3. Execution | right crux, botched algebra / casework / bound | human solution |
-| 4. Rigor / bluff | ok sketch but unjustified leaps, skipped cases, or **claims solved when not** | reviewer |
+| **NOVEL** | 39 hard 2026 contest problems (outside training) | main evidence |
+| **SEEN** | matched pre-2025 problems (in training), same domain + difficulty | control |
 
-**Grading.** LLM-judge over every attempt, **verified by an IMO medalist**; all
-attempts + labels released publicly so the grading is auditable, not trusted.
-Verification is **blinded** to set (SEEN/NOVEL) and condition to remove
-hypothesis bias; report inter-rater agreement on a double-verified subset (this
-is where prior work — Proof or Bluff — was criticized).
+**SEEN is a control, not a power base.** On SEEN the model has seen the problem,
+so recognition is near-free — SEEN failures are execution/rigor, not recognition.
+The core evidence is the **locus shift**: recognition failures low on SEEN, high
+on NOVEL. SEEN proves the shift is caused by *novelty*, not difficulty.
 
-**Baseline result (AutoFyn + static KB, NOVEL, 39 problems): 24 solved, 15
-partial.** Of the 15 failures: **8 technique-selection (T1)**, 4 execution, 3
-rigor, **0 setup**. The wall is idea-selection, not execution — and the model
-never misreads the problem (setup ≈ 0). This motivates the intervention (§4).
-The oracle-crux ablation (C3) turns T1 from a post-hoc label into a causal
-test: inject the human crux on the 8 T1 problems — if they solve, the wall was
-recognition; if not, it was execution depth masked by recognition.
+---
 
-## 4. Contribution: diagnose → intervene (one paper, two acts)
+## 4. Experiments
 
-**Act 1 — diagnose.** The wall on novel hard olympiad math is idea-selection
-(T1), not execution: 8/15 baseline failures are T1, 0 are setup (§3). The
-oracle-crux ablation (C3) confirms T1 is causal, not a labeling artifact.
+### Oracle ladder — the causal ceiling (isolates recognition)
 
-**Act 2 — intervene.** Because recognition is the bottleneck, target it:
-**parallel-approach search + past-solution corpus retrieval**. Across four
-independent systems (Single/BoN, Reflection, Ralph-loop, AutoFyn — each with vs
-without the intervention), show a consistent lift, and — the load-bearing figure
-— that the lift is **concentrated on T1 problems** while T2/T3 stay stuck. That
-ties the fix to the diagnosed axis, not to added compute. Confirmed on IMO 2026
-as a **pre-registered, zero-contamination held-out**.
+Each rung is a **prompt change on a fixed harness**, same turn budget as C0.
 
-Act 1 justifies the method; Act 2 proves the diagnosis. Neither is a standalone
-paper — the arc is the contribution.
+| Rung | Given to the model | Isolates |
+|---|---|---|
+| **C0** | statement only | baseline |
+| **Oracle-1a** | answer + high-level strategy ("answer is X; use infinite descent") | strategy-recognition |
+| **Oracle-1b** | + the crux, **stated as a target to prove — not a usable black box** | crux-recognition |
 
-Guardrails: (i) per-system ablation (system alone vs +parallel vs +corpus vs
-+both) — else the lift can't be attributed; (ii) rule out corpus = near-duplicate
-leakage (report retrieval overlap; ablate the analogous problem out); (iii) IMO
-2026 (~6 problems) is *confirmation only* — main numbers ride on the 39-problem
-novel set.
+Key cut **Oracle-1b − Oracle-1a** = the value of recognizing the *crux* vs the
+*strategy*. Large oracle lift on NOVEL + small on SEEN ⇒ the novel bottleneck is
+*finding* the idea, not using it.
 
-**Remaining risk (only one left):** single model family. Run ≥2 (one non-Anthropic
-frontier) or the claim reads as "about Opus," not "about LLMs."
+> The crux must be stated as *what to prove*, never a proven black box — else the
+> rung measures execution, not recognition.
 
-## 5. Sample size & statistical design
+### Realistic interventions — the method
+
+| Intervention | What it does | Targets |
+|---|---|---|
+| **Proof-outliner** | dedicated agent: case analysis → hypotheses → proof outline | recognition |
+| ↳ variants | statement-only · **+static KB** · **+past-solution corpus** · **+both** | which source helps |
+| **Reviewer** | reviews the proposed execution for errors | execution |
+
+**Keep KB *and* corpus — they probe different mechanisms.** Static KB = abstract
+technique-selection; corpus = analogical retrieval from solved problems. The
+ablation (statement / +KB / +corpus / +both) *is* the contribution. Corpus
+results carry a **nearest-neighbor similarity control** to rule out
+near-duplicate leakage. **No intervention for setup** (rare; stated, not fixed).
+
+**Punchline:** how much of the oracle ceiling does the *real* outliner recover?
+
+### Harnesses — compute, matched
+
+Per-attempt budget is **128 tool-calls everywhere** (enforced in code).
+
+| Harness | Total budget | Allocation | Tests |
+|---|---|---|---|
+| **Single LLM** | 128 | one shot | floor |
+| **Best-of-N (N=8)** | 1024 | **parallel** (independent shots) | does resampling find the crux? |
+| **Ralph loop (8 iters)** | 1024 | **sequential** (refinement) | does refinement find/fix it? |
+| **AutoFyn** | (noted separately) | composed scaffold | full-system ceiling |
+
+BoN and Ralph are **matched at 1024 turns** — the same budget spent *parallel vs
+sequential*. If BoN ≈ Ralph on recognition-locus problems, the wall is
+recognition, not compute (a strong result). BoN scoring: **pass@8** vs
+judge-selected — stated explicitly since Ralph returns one answer.
+
+### Isolation from the compute confound
+
+The core defense is **locus-conditioned lift**: each intervention must lift its
+*predicted* locus and not others — outliner → recognition, reviewer → execution.
+This double dissociation, not raw budget-matching, ties the fix to the diagnosed
+axis rather than to added compute.
+
+### Design matrix
+
+**Conditions** (C0 / Oracle-1a / 1b / outliner ±KB ±corpus / reviewer) ×
+**Harnesses** (Single / BoN-8 / Ralph-8 / AutoFyn) ×
+**Models** (**Opus 4.5 + GPT-5.5** — replication, same taxonomy & ladder, *not* a
+"which is better" comparison) ×
+**Sets** (NOVEL main · SEEN control).
+
+Primary = Single LLM across the full ladder, both sets + both models. Secondary =
+harness sweep at C0. No full condition×harness cross.
+
+---
+
+## 5. Results
+
+Reference solutions are the ground truth; the model's self-claim is ignored.
+
+### Single LLM · C0 · NOVEL · Opus 4.5 — *provisional pilot (N=39, single-pass LLM judge, not yet human-verified)*
+
+| Locus | count |
+|---|---:|
+| Setup | *tbd* |
+| Recognition · strategy | *tbd* |
+| Recognition · crux | *tbd* |
+| Execution | *tbd* |
+| **Solved** | *tbd* |
+
+| Calibration | count |
+|---|---:|
+| honest | *tbd* |
+| bluff | *tbd* |
+
+> Pilot grading currently shows recognition as the dominant failure locus and a
+> high bluff rate, but inter-grader agreement on the *fine* locus split is low
+> until the rubric above is applied with multiple judges + human verification
+> (§2). Numbers are frozen into this table only after that pass. Raw per-problem
+> verdicts live in `audit/` (a sibling of `results/`, never model-visible).
+
+### Full results (filled as runs land)
+
+| Set | Model | Harness | Condition | Solved | Recognition | Execution | Setup | Bluff% |
+|---|---|---|---|---|---|---|---|---|
+| NOVEL | Opus 4.5 | Single | C0 | | | | | |
+| NOVEL | Opus 4.5 | Single | Oracle-1a | | | | | |
+| NOVEL | Opus 4.5 | Single | Oracle-1b | | | | | |
+| NOVEL | Opus 4.5 | Single | +outliner | | | | | |
+| … | | | | | | | | |
+
+---
+
+## 6. Contribution: diagnose → intervene
+
+**Act 1 — diagnose.** The wall on novel hard olympiad math is recognition, not
+execution; setup is rare; failures are overwhelmingly bluffed. The oracle ladder
+turns "recognition" from a post-hoc label into a **causal** test.
+
+**Act 2 — intervene.** Because recognition is the bottleneck, target it
+(outliner + corpus retrieval). Across independent harnesses, show a consistent
+lift **concentrated on recognition-locus problems** while execution stays put —
+tying the fix to the diagnosed axis, not to added compute. Confirmed on IMO 2026
+as a pre-registered, zero-contamination held-out.
+
+Act 1 justifies the method; Act 2 proves the diagnosis. The arc is the paper.
+
+---
+
+## 7. Sample size & statistics
 
 n is small (39 novel; ~6 IMO). Survive it by design, not volume:
-- **Paired / within-problem** deltas (C0 vs C3; +intervention vs −), not
-  between-group — each problem is its own control, far higher power at fixed n.
-- **Effect sizes + CIs**, not p-values — small n is fine when the effect is sharp
-  (7/8 T1 flips, not 5/8). Muddy + small dies; sharp + small survives.
-- **Every problem a documented case study** — depth as compensation for breadth;
-  turn small-n into "we trace every failure," a feature vs noisy 1000-problem sets.
-- **Positioning:** a controlled analysis/method study, *not* a benchmark (where
-  n=39 is laughable). Pre-empt with a Limitations paragraph before a reviewer does.
+
+- **Paired within-problem deltas** (C0 vs oracle; ±intervention) — each problem
+  is its own control; far higher power at fixed n than between-group.
+- **Effect sizes + CIs**, not p-values — sharp effects (e.g. 7/8 recognition
+  problems flip under oracle) survive small n; muddy ones don't.
+- **Every problem a documented case study** — depth compensates for breadth.
+- **Positioning:** a controlled analysis/method study, *not* a benchmark.
+  Limitations paragraph pre-empts the n=39 objection.
+
+---
+
+## 8. Contamination control
+
+Runs must solve from the statement alone. Enforced, not trusted:
+
+- **One harness per git branch** — the next harness can't read the previous
+  one's `results/`, `logs/`, or `.scratch/`.
+- **No network** — a Bash hook blocks curl/wget/pip/git-network; every call
+  (blocked or not) is in the audit log.
+- **Filesystem sandbox** — a hook confines every tool to the per-problem scratch
+  dir; access outside is blocked and logged.
+- **Scratch is committed** — the agent's full working record is auditable, so a
+  reviewer can confirm each problem was solved cold.
+
+See `src/README.md` for the harness implementation and tool policy.
