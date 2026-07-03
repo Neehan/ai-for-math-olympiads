@@ -130,8 +130,8 @@ for name in python python3; do
         echo "ERROR: '$name' not found on PATH after pinning ${PY_DIR}." >&2
         exit 1
     fi
-    if ! "$name" -c 'import numpy, sympy, scipy' >/dev/null 2>&1; then
-        echo "ERROR: '$name' cannot import numpy/sympy/scipy." >&2
+    if ! "$name" -c 'import numpy, sympy, scipy, mpmath' >/dev/null 2>&1; then
+        echo "ERROR: '$name' cannot import numpy/sympy/scipy/mpmath." >&2
         echo "The agent's Bash would see a compute environment missing math libs." >&2
         echo "Install them into the interpreter at ${PY_DIR} (python -m pip install -e .)." >&2
         exit 1
