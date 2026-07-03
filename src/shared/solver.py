@@ -27,10 +27,12 @@ from claude_agent_sdk import (
 
 from src.shared.bash_guard import bash_network_guard
 from src.shared.constants import (
+    FS_GUARDED_TOOLS,
     MODEL,
     PERMISSION_MODE,
     RESET_WAIT_BUFFER_SECONDS,
 )
+from src.shared.fs_guard import make_fs_guard
 from src.shared.models import AttemptResult, RateLimitExhausted, ToolCall
 
 log = logging.getLogger("solver")
@@ -46,6 +48,14 @@ def build_options(cwd: str, max_turns: int) -> ClaudeAgentOptions:
     max_turns is the per-attempt runaway/cost guard; callers pass the cap for
     their harness (single/BoN vs Ralph).
     """
+    # Confine every file-touching tool to the per-problem scratch dir (cwd).
+    # The fs guard fires on Bash and each path-carrying file tool; the network
+    # guard additionally fires on Bash. cwd only sets the start dir — these
+    # hooks are what actually sandbox the agent.
+    fs_guard = make_fs_guard(cwd)
+    fs_matchers = [
+        HookMatcher(matcher=tool, hooks=[fs_guard]) for tool in FS_GUARDED_TOOLS
+    ]
     return ClaudeAgentOptions(
         model=MODEL,
         system_prompt=SYSTEM_PROMPT,
@@ -53,7 +63,10 @@ def build_options(cwd: str, max_turns: int) -> ClaudeAgentOptions:
         disallowed_tools=disallowed_tools(),
         can_use_tool=can_use_tool,
         hooks={
-            "PreToolUse": [HookMatcher(matcher="Bash", hooks=[bash_network_guard])],
+            "PreToolUse": [
+                HookMatcher(matcher="Bash", hooks=[bash_network_guard, fs_guard]),
+                *fs_matchers,
+            ],
         },
         permission_mode=PERMISSION_MODE,
         max_turns=max_turns,

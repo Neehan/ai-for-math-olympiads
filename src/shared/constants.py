@@ -56,6 +56,19 @@ DISALLOWED_TOOLS: list[str] = [
     "NotebookEdit",
 ]
 
+# File tools the PreToolUse filesystem guard confines to the scratch sandbox.
+# These carry a path argument (file_path/path) that must resolve inside the
+# per-problem scratch dir. Bash is guarded too but registered separately in
+# build_options because it also carries the network guard.
+FS_GUARDED_TOOLS: list[str] = [
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Grep",
+    "Glob",
+]
+
 # Regex patterns for Bash commands blocked by the PreToolUse network guard.
 #
 # Each pattern is anchored to a COMMAND POSITION — start of the command string

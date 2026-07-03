@@ -217,5 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Agent scratch space (never committed)
-.scratch/
+# Agent scratch space is TRACKED for auditability: committing what the agent
+# actually did in its sandbox lets a reviewer verify it never left scratch and
+# see every computation it ran. Only genuinely-noisy artifacts are ignored:
+# Python bytecode caches and the SDK's internal per-turn task-output dumps.
+.scratch/**/__pycache__/
+.scratch/**/*.output
