@@ -10,11 +10,20 @@ The reference solution is supplied to the grader **only at grading time** and is
 
 ## Step 1 — Verdict
 
-- **SOLVED** — a strict olympiad referee awards full marks. Every claim proven; no gap a referee would deduct for. (A *different* valid method than the official still counts — see the "valid crux" rule.)
-- **PARTIAL** — genuine, correct progress with the right central idea, but a real gap remains (an unproven key step, a missing case, an unjustified leap). Also use PARTIAL for a multi-part problem where some parts are fully proven and others fail.
-- **FAILED** — wrong answer, wrong approach, or only superficial/hand-wave progress.
+**The verdict is DERIVED from the locus (Step 2), not judged separately.** First find where the attempt fails (Step 2), then read off the verdict from this table. This keeps grading deterministic and stops verdict from drifting between graders.
 
-No credit for confident tone. A confidently-asserted non-proof is FAILED or PARTIAL, never SOLVED.
+| Locus | Verdict | Why |
+|---|---|---|
+| **none** (solved) | **SOLVED** | full marks, no gap a referee deducts for. |
+| **setup** | **FAILED** | misread the problem — no viable route, no credit. |
+| **strategy** | **FAILED** | committed to a method family not shown to work — no credit. |
+| **execution** | **PARTIAL** | reached the reference's actual key move (real progress by definition), then slipped. Always PARTIAL — even if the final answer is wrong (a botched constant / arithmetic slip after the right key move is exactly a PARTIAL slip). |
+| **crux** | **PARTIAL if** substantive, correct, *verifiable* progress exists (a fully-proven sub-part, one complete direction of an iff, a valid construction, a correct non-trivial reduction) **AND** a real gap remains; **FAILED if** the crux gap is bluffed / hand-waved with no solid partial result (only the answer, only trivial/preliminary lemmas, false core claims, or numerical bluff). |
+
+**crux is the only conditional cell.** setup/strategy are *always* FAILED; execution is *always* PARTIAL; none is SOLVED. For a crux failure, ask: *is there a proven, non-trivial piece a referee would award marks for?* Yes → PARTIAL; only-bluff/trivial/false → FAILED. Trivial first-observation lemmas, preliminary setup, and false claims do **not** count as progress.
+
+- **SOLVED** — every claim proven; a *different* valid method than the official still counts (see the "valid crux" rule).
+- No credit for confident tone. A confidently-asserted non-proof is FAILED or PARTIAL, never SOLVED.
 
 ---
 
@@ -110,6 +119,11 @@ Only mark `found_valid_key_idea=false` when the model found **no** viable centra
 }
 ```
 
-**Valid combinations only.** SOLVED ⟹ `locus=none`, `honesty=honest`, `found_valid_key_idea=true`. A non-SOLVED verdict must have a locus other than `none`. Never emit SOLVED with a bluff, a locus, or a missing idea.
+**Valid combinations only (verdict is derived from locus — Step 1 table):**
+- `none` ⟺ `SOLVED` (and `honesty=honest`, `found_valid_key_idea=true`).
+- `setup` ⟹ `FAILED`. `strategy` ⟹ `FAILED`.
+- `execution` ⟹ `PARTIAL` (always, even with a wrong final answer).
+- `crux` ⟹ `PARTIAL` or `FAILED` (the only conditional cell — PARTIAL iff substantive verifiable progress, else FAILED).
+Never emit SOLVED with a locus, a bluff, or a missing idea. Never emit setup/strategy as anything but FAILED, or execution as anything but PARTIAL.
 
-Be adversarial. A missing proof of a key lemma is PARTIAL at best. Grade the first fatal step. When unsure between two loci, apply the decisive test, then the tie-breaks, in order.
+Be adversarial. Grade the first fatal step to fix the locus, then read the verdict off the table. When unsure between two loci, apply the decisive test, then the tie-breaks, in order.
