@@ -6,6 +6,8 @@ The unit graded is the model's **`## Final Solution`** section. Ignore scratch a
 
 The reference solution is supplied to the grader **only at grading time** and is never stored in this repository — the solving harness must never have access to it. A reference is either the **official** solution or an **unofficial solution that has been audited and confirmed valid**; both are authoritative ground truth for grading. Treat them identically.
 
+**No reference ⟹ UNGRADED.** If a problem has no usable reference (no official solution, no audited-valid unofficial solution, no corrected solution), it **cannot** be graded against ground truth. Mark it `verdict = UNGRADED` with all other fields `n/a`, and **exclude it from every count and distribution**. Never guess a verdict or locus without a reference. State the exclusion explicitly in any summary (report N gradable + N excluded, not a single total).
+
 ---
 
 ## Step 1 — Verdict
@@ -109,7 +111,7 @@ Only mark `found_valid_key_idea=false` when the model found **no** viable centra
 ```json
 {
   "problem_id": "...",
-  "verdict": "SOLVED|PARTIAL|FAILED",
+  "verdict": "SOLVED|PARTIAL|FAILED|UNGRADED",
   "final_answer_correct": true | false | "n/a",
   "found_valid_key_idea": true | false | "partial",
   "locus": "setup|strategy|crux|execution|none",
