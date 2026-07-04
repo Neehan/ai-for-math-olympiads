@@ -39,7 +39,7 @@ Did it UNDERSTAND the problem?                (right target, right claim/answer)
 | **setup** | The model misread the problem: wrong target, wrong quantity, wrong claimed answer, solved a *different* question, or misstated the constraint. Nothing downstream can be right because it is not the right problem. |
 | **recognition · strategy** | The model understood the problem correctly but never found the right general approach — picked a method that cannot work, or flailed between approaches, none of them the right family. |
 | **recognition · crux** | The model had the right general approach but never **found the idea** — never identified/conjectured the load-bearing lemma or key move the proof hinges on. The missing step is an act of **insight**. This is what Oracle-1b supplies (the idea as a target), so these are the cases the oracle should rescue. |
-| **execution** | The model **found the idea** — identified/conjectured the right load-bearing step — but then failed on the **proving/carrying-out**: it could not prove the lemma it correctly named, botched the algebra/casework/bound, or slipped in the routine work. Oracle-1b (idea-only) hands these nothing new, so the oracle should **not** rescue them. |
+| **execution** | The model **found the reference's actual key move** — identified/conjectured the load-bearing step a valid solution uses (not a plausible-looking substitute) — but then failed on the **proving/carrying-out**: it could not prove the lemma it correctly named, botched the algebra/casework/bound, or slipped in the routine work. Oracle-1b (idea-only) hands these nothing new, so the oracle should **not** rescue them. |
 
 ### Decisive tests (use these, not gut feel)
 
@@ -51,9 +51,10 @@ Did it UNDERSTAND the problem?                (right target, right claim/answer)
 
 1. **Never found the idea AND a later slip** → grade the **earliest** genuine gap. A missing *idea* dominates a downstream slip → **crux**, not execution.
 2. **"Verified numerically / it is easy to see / one checks" on a step**: this is a **calibration** call (bluff), not a locus call. If the idea it skipped was **found/named** → **execution** (it had the idea, dodged the proof); if the idea was **never found** → **crux**. Either way the hand-wave itself = bluff.
-3. **"Sort of the right approach"** — if the approach would need a fundamentally different idea to work, it's **strategy**; if it's the right approach and only the key lemma is missing, it's **crux**.
-4. **Right answer, no or bad proof** (common for "find the value" problems): the answer being right does NOT make it execution. If the *justification* never finds the key idea → **crux** (or **strategy**). Locus is about the proof, not the numeric answer.
-5. **Correct but different method than official:** grade the model's OWN route (see valid-crux rule). Do not mark "missed key idea" just because it didn't use the official's idea.
+3. **Substitute-step test (crux vs execution):** if the model's asserted key step is not merely unproven but **false or a dead end** — a valid solution's crux is a *different* move the model never reached — that is **crux** (it never found the load-bearing idea), NOT execution. Execution requires the model to have reached the *reference's actual* key step and slipped while proving it; wandering into a wrong substitute step (even a plausible-looking one) is a missed crux. A provably-false substitute is decisive: it shows the model was on a dead-end route, not one routine step from done.
+4. **"Sort of the right approach"** — if the approach would need a fundamentally different idea to work, it's **strategy**; if it's the right approach and only the key lemma is missing, it's **crux**.
+5. **Right answer, no or bad proof** (common for "find the value" problems): the answer being right does NOT make it execution. If the *justification* never finds the key idea → **crux** (or **strategy**). Locus is about the proof, not the numeric answer.
+6. **Correct but different method than official:** grade the model's OWN route (see valid-crux rule). Do not mark "missed key idea" just because it didn't use the official's idea.
 
 ---
 
