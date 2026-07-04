@@ -12,6 +12,8 @@ Usage:
     python -m src.best_of_n.run
 """
 
+from dataclasses import dataclass, field
+
 import anyio
 
 from claude_agent_sdk import ClaudeSDKClient
@@ -37,10 +39,32 @@ from src.shared.solver import build_options, run_attempt, run_resumable
 log = get_logger(BEST_OF_N_DIR)
 
 
+@dataclass
+class ProblemSink:
+    """Per-problem collector for concurrent samples, with a completion lock.
+
+    Runtime-only state (holds an anyio.Lock), so it lives here rather than in
+    models.py. Samples of the same problem race to fill `attempts`; the lock
+    serializes the "am I the Nth sample?" check so exactly one sample triggers
+    the write.
+    """
+
+    lock: anyio.Lock = field(default_factory=anyio.Lock)
+    attempts: dict[int, AttemptResult] = field(default_factory=dict)
+
+
 async def run_sample(
-    problem: Problem, sample_index: int, sink: dict[int, AttemptResult]
+    problem: Problem, sample_index: int, sink: ProblemSink
 ) -> None:
-    """Run one independent sample and store it by index for stable ordering."""
+    """Run one independent sample; write the problem once its Nth sample lands.
+
+    The result is stored by index for stable ordering, then — under the sink's
+    per-problem lock — this sample checks whether all N samples are now present.
+    The one that completes the set writes the problem immediately, so a crash
+    mid-run leaves every already-finished problem safely on disk (resumable
+    reruns skip them). A sample that raises never reaches the sink, so the count
+    never hits N and the problem is left unwritten and retried in full.
+    """
     cwd = str(
         scratch_dir(BEST_OF_N_DIR, f"{problem.problem_id}/sample_{sample_index + 1}")
     )
@@ -49,34 +73,25 @@ async def run_sample(
         attempt = await run_attempt(
             client, task_prompt(problem, cwd, MAX_TURNS_PER_ATTEMPT)
         )
-        sink[sample_index] = attempt
-    log.info(
-        "%s sample %d/%d done", problem.problem_id, sample_index + 1, N_SAMPLES
-    )
+        async with sink.lock:
+            sink.attempts[sample_index] = attempt
+            log.info(
+                "%s sample %d/%d done", problem.problem_id, sample_index + 1, N_SAMPLES
+            )
+            if len(sink.attempts) == N_SAMPLES:
+                _write_problem(problem, sink.attempts)
 
 
-def _write_problem(problem: Problem, sink: dict[int, AttemptResult]) -> None:
-    """Write a problem's files only if all N samples succeeded.
+def _write_problem(problem: Problem, attempts: dict[int, AttemptResult]) -> None:
+    """Write a problem's files once all N samples have succeeded.
 
-    If any sample failed (its index is missing from the sink), the problem is
-    left unwritten and logged, so a resumable rerun retries it in full rather
-    than committing a partial (fewer-than-N) result.
+    Called under the problem's sink lock exactly when the sample dict reaches N
+    entries, so it always writes a complete (N-sample) result.
     """
-    if len(sink) != N_SAMPLES:
-        missing = [i + 1 for i in range(N_SAMPLES) if i not in sink]
-        log.warning(
-            "%s incomplete (%d/%d samples); missing %s. Not writing; will retry "
-            "on next run.",
-            problem.problem_id,
-            len(sink),
-            N_SAMPLES,
-            missing,
-        )
-        return
     run = ProblemRun(problem_id=problem.problem_id, harness=BEST_OF_N_DIR, model=MODEL)
     labels: list[str] = []
     for i in range(N_SAMPLES):
-        run.attempts.append(sink[i])
+        run.attempts.append(attempts[i])
         labels.append(f"Sample {i + 1}")
     path = write_problem_run(run, problem, attempt_labels=labels)
     log.info("%s done -> %s", problem.problem_id, path)
@@ -95,7 +110,7 @@ async def main() -> None:
     skipped = len(problems) - len(pending)
     log.info("%d problems to run, %d already done", len(pending), skipped)
 
-    sinks: dict[str, dict[int, AttemptResult]] = {p.problem_id: {} for p in pending}
+    sinks: dict[str, ProblemSink] = {p.problem_id: ProblemSink() for p in pending}
     tasks = [
         lambda p=p, i=i: run_resumable(lambda: run_sample(p, i, sinks[p.problem_id]))
         for p in pending
@@ -103,8 +118,22 @@ async def main() -> None:
     ]
     await run_all(tasks)
 
+    # Each problem is written by its Nth successful sample (in run_sample), so a
+    # crash mid-run leaves completed problems on disk. After the batch drains,
+    # log any problem still short of N — a failed sample left it unwritten; a
+    # resumable rerun retries it in full.
     for problem in pending:
-        _write_problem(problem, sinks[problem.problem_id])
+        sink = sinks[problem.problem_id]
+        if len(sink.attempts) != N_SAMPLES:
+            missing = [i + 1 for i in range(N_SAMPLES) if i not in sink.attempts]
+            log.warning(
+                "%s incomplete (%d/%d samples); missing %s. Not written; will "
+                "retry on next run.",
+                problem.problem_id,
+                len(sink.attempts),
+                N_SAMPLES,
+                missing,
+            )
 
 
 if __name__ == "__main__":
