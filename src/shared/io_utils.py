@@ -1,6 +1,7 @@
 """Loading problems and writing per-problem markdown result files."""
 
 import json
+import os
 from pathlib import Path
 
 from src.shared.constants import (
@@ -11,6 +12,18 @@ from src.shared.constants import (
     TOOL_LOG_TRUNCATE,
 )
 from src.shared.models import AttemptResult, Problem, ProblemRun, ToolCall
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text to path atomically: write a temp file, then os.replace it.
+
+    os.replace is atomic on the same filesystem, so a reader (e.g. result_exists
+    on resume) never sees a partially-written file — the path either has the old
+    content or the complete new content, never a truncation from a crash mid-write.
+    """
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _truncate(text: str) -> str:
@@ -133,7 +146,7 @@ def _write_full_log(run: ProblemRun, problem: Problem, labels: list[str]) -> Pat
         # default=str so a non-JSON-serializable tool_input value can never
         # crash the audit-log write and lose the whole run's record.
         lines.append(json.dumps(record, ensure_ascii=False, default=str))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _atomic_write_text(path, "\n".join(lines) + "\n")
     return path
 
 
@@ -175,5 +188,5 @@ def write_problem_run(
         for i, attempt in enumerate(run.attempts)
     ]
 
-    path.write_text(front + "\n" + "\n".join(sections), encoding="utf-8")
+    _atomic_write_text(path, front + "\n" + "\n".join(sections))
     return path

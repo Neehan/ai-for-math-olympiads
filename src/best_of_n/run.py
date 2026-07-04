@@ -15,6 +15,7 @@ Usage:
 from dataclasses import dataclass, field
 
 import anyio
+import anyio.to_thread
 
 from claude_agent_sdk import ClaudeSDKClient
 
@@ -69,6 +70,11 @@ async def run_sample(
         scratch_dir(BEST_OF_N_DIR, f"{problem.problem_id}/sample_{sample_index + 1}")
     )
     options = build_options(cwd=cwd, max_turns=MAX_TURNS_PER_ATTEMPT)
+    # Record the result and decide, under the lock, whether this sample completes
+    # the set. The locked section covers only the dict mutation + count check;
+    # the disk write is done afterwards (off the event loop, outside the lock),
+    # so blocking I/O never stalls the other concurrent samples.
+    final: dict[int, AttemptResult] | None = None
     async with ClaudeSDKClient(options=options) as client:
         attempt = await run_attempt(
             client, task_prompt(problem, cwd, MAX_TURNS_PER_ATTEMPT)
@@ -78,22 +84,40 @@ async def run_sample(
             log.info(
                 "%s sample %d/%d done", problem.problem_id, sample_index + 1, N_SAMPLES
             )
-            if len(sink.attempts) == N_SAMPLES:
-                _write_problem(problem, sink.attempts)
+            if attempts_complete(sink.attempts):
+                final = dict(sink.attempts)
+
+    # Write off the event loop so blocking file I/O never stalls the other
+    # concurrent samples; done after the client context closes and outside the
+    # lock, so neither the subprocess nor the lock is held across the write.
+    if final is not None:
+        await anyio.to_thread.run_sync(_write_problem, problem, final)
+
+
+def attempts_complete(attempts: dict[int, AttemptResult]) -> bool:
+    """True once all N samples (indices 0..N-1) are present."""
+    return len(attempts) == N_SAMPLES
 
 
 def _write_problem(problem: Problem, attempts: dict[int, AttemptResult]) -> None:
     """Write a problem's files once all N samples have succeeded.
 
-    Called under the problem's sink lock exactly when the sample dict reaches N
-    entries, so it always writes a complete (N-sample) result.
+    Called (off the event loop) once the sample dict reaches N entries, so it
+    always writes a complete N-sample result. A write failure here is logged
+    against the problem — not swallowed as an anonymous task error — so a
+    persistently failing results dir is visible rather than silently producing
+    no file with no warning.
     """
     run = ProblemRun(problem_id=problem.problem_id, harness=BEST_OF_N_DIR, model=MODEL)
     labels: list[str] = []
     for i in range(N_SAMPLES):
         run.attempts.append(attempts[i])
         labels.append(f"Sample {i + 1}")
-    path = write_problem_run(run, problem, attempt_labels=labels)
+    try:
+        path = write_problem_run(run, problem, attempt_labels=labels)
+    except Exception:
+        log.exception("%s: all %d samples done but WRITE FAILED", problem.problem_id, N_SAMPLES)
+        raise
     log.info("%s done -> %s", problem.problem_id, path)
 
 
@@ -124,7 +148,7 @@ async def main() -> None:
     # resumable rerun retries it in full.
     for problem in pending:
         sink = sinks[problem.problem_id]
-        if len(sink.attempts) != N_SAMPLES:
+        if not attempts_complete(sink.attempts):
             missing = [i + 1 for i in range(N_SAMPLES) if i not in sink.attempts]
             log.warning(
                 "%s incomplete (%d/%d samples); missing %s. Not written; will "
