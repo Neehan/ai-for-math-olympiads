@@ -116,8 +116,10 @@ BLOCKED_BASH_PATTERNS: list[str] = [
 # per-attempt turn budget.
 MAX_TURNS_PER_ATTEMPT: int = 128
 
-# Best-of-N: number of independent samples per problem.
-N_SAMPLES: int = 5
+# Best-of-N: number of independent samples per problem. Set to 8 so BoN's
+# total budget (8 x 128 = 1024 turns) matches the Ralph loop (8 x 128 = 1024)
+# — the same compute spent in parallel vs sequential (see top-level README §4).
+N_SAMPLES: int = 8
 
 # Global cap on concurrently-running agent sessions across a harness run. Each
 # session is one `claude` subprocess and consumes API rate limit; tune to your
