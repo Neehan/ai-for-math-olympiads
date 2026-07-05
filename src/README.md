@@ -1,6 +1,6 @@
 # Harnesses
 
-Three solution-generation harnesses built on the Claude Agent SDK, sharing one
+Four solution-generation harnesses built on the Claude Agent SDK, sharing one
 tool policy and solver. This is the **C0 baseline** condition of the paper's
 condition ladder: no knowledge base, no crux corpus, no oracle hints — the agent
 receives only the problem statement. Later conditions (C1 static KB, C2 corpus,
@@ -11,6 +11,11 @@ C3 oracle crux) layer onto the same `prompts.py` without touching the harnesses.
   no proof verifier — pass@k and selection are decided later by the judge).
 - `ralph_loop/` — one persistent session per problem: an initial solution, then
   self-critique/refinement iterations, each recorded.
+- `self_refine/` — the cheap reflection baseline (Self-Refine, Madaan et al.
+  2023): one persistent session running generate → self-critique → revise, a
+  fixed **one** round (~2× the single-LLM budget, vs 8× for BoN/Ralph). Feedback
+  is a standalone critique phase, separate from the revise phase; Ralph owns the
+  many-round axis, this is the fixed one-round control. Each phase recorded.
 
 `shared/` holds everything common: `constants.py` (single source of truth for
 model, tool lists, run parameters, paths), `models.py`, `prompts.py`,
@@ -93,7 +98,7 @@ cp .env.example .env
 ```
 
 ```bash
-./run_one.sh single_llm        # one of: single_llm | best_of_n | ralph_loop
+./run_one.sh single_llm        # one of: single_llm | best_of_n | ralph_loop | self_refine
 python -m src.single_llm.run   # a harness directly (also loads .env)
 ```
 

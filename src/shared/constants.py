@@ -26,6 +26,7 @@ SCRATCH_ROOT: Path = REPO_ROOT / ".scratch"
 SINGLE_LLM_DIR: str = "single_llm"
 BEST_OF_N_DIR: str = "best_of_n"
 RALPH_LOOP_DIR: str = "ralph_loop"
+SELF_REFINE_DIR: str = "self_refine"
 
 # --- Tool policy ---------------------------------------------------------
 # Tools the agent is pre-approved to use (run headless without prompting).
@@ -131,6 +132,14 @@ MAX_CONCURRENCY: int = 9
 # — far more compute than needed and dominated by the tail. 8 rounds (~1024
 # turns worst case) keeps the self-refinement signal while halving the cost.
 RALPH_ITERATIONS: int = 8
+
+# Self-Refine (Madaan et al. 2023): number of critique->revise rounds after the
+# initial solve. Fixed at 1 — this is the deliberately cheap reflection baseline
+# (generate + critique + revise = 2 full agentic attempts + 1 critique per
+# problem, ~2x the single-LLM budget), distinct from Ralph which owns the
+# many-round refinement axis. The critique phase is a full agentic attempt with
+# the same turn budget so it may re-check computations in scratch if it wants.
+SELF_REFINE_ROUNDS: int = 1
 
 # Permission mode: bypass interactive prompts; policy enforced by can_use_tool.
 PERMISSION_MODE: PermissionMode = "bypassPermissions"

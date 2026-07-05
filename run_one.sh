@@ -34,7 +34,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-VALID_HARNESSES=("single_llm" "best_of_n" "ralph_loop")
+VALID_HARNESSES=("single_llm" "best_of_n" "ralph_loop" "self_refine")
 
 reset=0
 positional=()
@@ -51,7 +51,8 @@ done
 
 if [ "${#positional[@]}" -ne 1 ]; then
     echo "ERROR: exactly one harness required (got ${#positional[@]})." >&2
-    echo "Usage: ./run_one.sh [--reset] <${VALID_HARNESSES[0]}|${VALID_HARNESSES[1]}|${VALID_HARNESSES[2]}>" >&2
+    valid_joined=$(IFS='|'; echo "${VALID_HARNESSES[*]}")
+    echo "Usage: ./run_one.sh [--reset] <${valid_joined}>" >&2
     echo "Running more than one harness in the same tree contaminates the experiment;" >&2
     echo "isolate each in its own git branch. See the header of this script." >&2
     exit 2

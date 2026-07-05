@@ -88,3 +88,54 @@ def ralph_refine_prompt(iteration: int, total_iterations: int, max_turns: int) -
         "restate it. Always end with a '## Final Solution' section containing "
         "the current best write-up."
     )
+
+
+def self_refine_critique_prompt(max_turns: int) -> str:
+    """Build the Self-Refine CRITIQUE prompt (feedback only, no rewrite).
+
+    Self-Refine (Madaan et al. 2023) separates feedback from refinement: this
+    phase produces a critique, and a separate revise phase acts on it. The model
+    is asked to be an adversarial grader and to name the FIRST genuine gap, so
+    the feedback is specific and actionable rather than a vague restatement. It
+    keeps the same turn budget so it may re-derive or check a step in scratch to
+    decide whether the step is actually justified.
+    """
+    return (
+        f"You now switch roles: you are a strict, adversarial olympiad grader "
+        f"reviewing the solution you just wrote (above). You have up to "
+        f"{max_turns} tool-use turns for this review.\n\n"
+        "Do NOT rewrite the solution in this message. Produce only a critique. "
+        "Read your solution as a referee who is trying to find the FIRST place "
+        "it genuinely fails: an unproven load-bearing step, a hand-waved claim "
+        "(anything resting on 'verified numerically', 'one can check', 'it is "
+        "easy to see', 'follows analogously'), a missing case, a wrong bound, or "
+        "a misread of the problem. For each issue, quote the exact step and say "
+        "precisely why it is not yet a proof. If, after honestly trying to break "
+        "it, you find no genuine gap, state 'NO GENUINE GAP FOUND' and briefly "
+        "say why the solution is already rigorous. Be concrete: a vague worry is "
+        "not useful feedback. End with a section titled '## Critique' listing "
+        "the issues in order of severity (most fatal first)."
+    )
+
+
+def self_refine_revise_prompt(max_turns: int) -> str:
+    """Build the Self-Refine REVISE prompt (act on the critique, re-emit proof).
+
+    Consumes the critique from the previous phase (same session, full context)
+    and produces the final solution. If the critique found no gap, the model
+    confirms and restates; otherwise it fixes what it can and — crucially — must
+    stay honest about anything it still cannot prove rather than bluffing a
+    complete proof over the gap the critique just exposed.
+    """
+    return (
+        f"You now switch back to solver. Using your critique above, produce the "
+        f"best possible solution. You have up to {max_turns} tool-use turns.\n\n"
+        "Address each issue the critique raised. Fix every gap you can close "
+        "with a complete, by-hand-verifiable argument. If the critique found no "
+        "genuine gap, confirm that and restate the solution. If some issue "
+        "cannot be fully resolved, do NOT paper over it: state the remaining "
+        "step EXPLICITLY as an unproven claim and present your best honest "
+        "partial progress — an honest partial solution outranks a bluffed "
+        "complete one. End with a '## Final Solution' section containing the "
+        "complete final write-up (this section is what will be graded)."
+    )
