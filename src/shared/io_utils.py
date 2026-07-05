@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 from src.shared.constants import (
@@ -76,8 +77,22 @@ def load_problems() -> list[Problem]:
 
 
 def scratch_dir(harness_dir: str, problem_id: str) -> Path:
-    """Per-problem scratch working dir for the agent's filesystem/Bash tools."""
+    """Per-problem scratch working dir for the agent's filesystem/Bash tools.
+
+    Always returns an EMPTY dir. scratch_dir is only ever called for a problem
+    that is about to run — a completed problem has a result file and is skipped
+    on resume, so it never reaches here. Therefore any pre-existing contents are
+    stale leftovers from a killed/rate-limited run of this same problem: they
+    would let the fresh agent read a previous attempt's working files and break
+    the "solved cold" guarantee (the agent must solve from the statement alone).
+    Clearing on entry makes every attempt provably start from an empty scratch,
+    so a resumed run is as clean as a first run. Committed scratch for already-
+    finished problems (the audit trail, README §8) is untouched because those
+    problems are skipped and never call this.
+    """
     path = SCRATCH_ROOT / harness_dir / problem_id
+    if path.exists():
+        shutil.rmtree(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
