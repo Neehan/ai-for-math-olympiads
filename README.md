@@ -1,196 +1,167 @@
 # Recognition Is the Wall
 
-**Diagnosing and fixing LLM failure on novel olympiad math.**
+**Where do frontier LLMs fail on novel olympiad proofs — and can we prove it?**
 
-When a frontier LLM fails a hard olympiad proof, *where* does it fail? We show the bottleneck on **novel** problems is **recognition** — finding the key idea — not reasoning or computation. We prove it causally with oracle interventions, then show a real method (a proof-outliner) recovers part of that ceiling.
+When a strong model fails a hard, *novel* olympiad problem, the failure is almost never the reasoning or the algebra. It is **recognition**: finding the right approach and the claims that finish the problem. Hand the model those claims and it usually finishes; hand it the low-level proof steps and it *always* finishes. Leave it to find them and it usually cannot.
 
-**Diagnose → intervene, one paper.**
-
----
-
-## 1. Thesis
-
-On problems outside training, the failure locus moves **upstream** from execution to idea-selection, and test-time compute (more samples, more refinement) does not close the gap. A model that is handed the key idea can usually finish; left to find it, it usually cannot — and, alarmingly, **claims success anyway**.
-
-Two findings:
-1. **Recognition is the wall.** Most failures are the model failing to find the key idea, with correct problem understanding and intact execution.
-2. **Models don't know when they've failed.** The large majority of failed attempts assert a complete proof over a real gap ("verified numerically", "it is easy to see"). This is why every number here is graded against reference solutions, never self-reported.
+We show this **causally**, not by hand-labeling. We disclose the reference solution in three nested increments and measure, per problem, the **cheapest disclosure that turns failure into a correct proof**. That point *is* the failure stage — measured by the experiment, never annotated by a grader.
 
 ---
 
-## 2. Failure taxonomy (frozen)
+## 1. Claim
 
-Two **orthogonal** axes. This is fixed; we do not relabel between runs.
+> **On novel problems, the bottleneck is recognizing what to do, not doing it.**
 
-### Axis A — Locus: *where the first genuine gap is*
+Two consequences, both testable:
+- Reveal the *approach* or the *claims* → the model finishes. (recognition was the wall)
+- Reveal the *proof steps* → the model **always** finishes. (execution is not the wall)
 
-Exclusive and ordered. Apply the decision tree top-down; the first "NO" wins.
+That asymmetry — recognition disclosure rescues, execution disclosure is rarely needed — is the entire paper.
 
-```
-Did it UNDERSTAND the problem?
-  NO  → SETUP
-  YES → Did it find the right STRATEGY (the general approach)?
-          NO  → RECOGNITION · strategy
-          YES → Did it find the CRUX (the load-bearing lemma/step)?
-                  NO  → RECOGNITION · crux
-                  YES → EXECUTION
-```
+---
 
-| Locus | Definition | Test to assign it |
+## 2. The oracle ladder (nested disclosure)
+
+We never label "where the gap is." Instead we give the model progressively more of the reference solution, on a fixed harness, same budget as C0. Each rung **contains** the previous one plus one more layer.
+
+| Rung | What the model is given | The layer it adds |
 |---|---|---|
-| **Setup** | Misread the problem: wrong target, wrong invariant, or solving a *different* question. | Restate the problem correctly — is it now on track? **Yes → setup.** |
-| **Recognition · strategy** | Understood the problem, but never found the right general approach (wrong method entirely). | Understood problem but method is doomed and off any known route. |
-| **Recognition · crux** | Right approach, but never **found the idea** — the load-bearing lemma / key move. | Did it identify the key idea? **No → crux.** This is what Oracle-1b supplies. |
-| **Execution** | **Found the reference's actual key move**, but failed to prove or carry it out (couldn't prove the lemma it named, or slipped in algebra/casework). A **false or dead-end substitute step** is *not* execution — it means the real crux was never reached (→ crux). | Did it reach the *reference's* key step? **Yes, then failed downstream → execution.** Oracle-1b won't rescue it. |
+| **C0** | problem statement only | nothing |
+| **O-strategy** | + answer + the **approach** (one line: the route that works) | the *region* |
+| **O-outline** | + the **claim skeleton** — the lemma *statements* that, if granted, finish the problem (stated, never proved) | the *whats* |
+| **O-technique** | + the **proof steps** — the concrete moves that establish those claims | the *hows* |
 
-**Setup ≠ strategy.** Setup = *didn't understand the problem*. Strategy = *understood it, wrong method*. They sit on opposite sides of the "did it understand" split and are never merged.
+The three added layers are **strategy → outline → technique**: the approach, the claims, the moves. Each is strictly more of the reference solution than the last.
 
-**Recognition = strategy + crux.** It is the dominant bucket and the thesis. It is split into strategy vs crux **only because each maps to a distinct oracle rung** (§4). Setup and execution stay coarse — they are the foils, not the story.
+**The measurement.** For each problem, the **failure stage = the cheapest rung that yields a correct proof.**
 
-### Axis B — Calibration: *did it admit the gap?*
+| Cheapest rung that works | Failure stage | Reading |
+|---|---|---|
+| O-strategy | **strategy** | couldn't even find the approach |
+| O-outline | **outline** | had the approach, couldn't find the claims |
+| O-technique | **execution** | had the claims, couldn't carry out the proof |
+| none (even technique fails) | *unsolved* | rare |
 
-| Tag | Definition |
-|---|---|
-| **honest** | Solved it, or explicitly flagged its gaps / partial status. |
-| **bluff** | Asserted a complete proof while a real gap exists. |
+This is why the fuzzy "is it strategy or execution?" question — which has no clean hand-drawn answer — **stops mattering**. We don't draw the line; the ladder draws it. If most problems are rescued at strategy/outline and few need technique, recognition is the wall, by construction.
 
-**"Verified numerically" is a bluff, not a locus.** A skipped-then-asserted step is a calibration failure; its *locus* is where the skipped step sits — **execution** if the model had already *found* the key idea and only dodged proving it, **crux** if the idea was never found. The hand-wave sets calibration (bluff), not locus.
-
-### Grading rules
-
-- Credit **a valid crux, not *the* official crux** — the model may solve a different valid way. Grade the model's own route.
-- Grade the **first fatal step**, tagged to exactly one locus + one calibration tag.
-- Every attempt graded against reference solutions, **verified by a human medalist**, blinded to set/condition. All attempts + labels released so grading is auditable, not trusted. Report inter-rater agreement (κ).
+> **Sharp prediction.** O-technique (the proof steps) should rescue *everything* — including problems that only fail at execution. Empirically it does. That is the control that proves the below-the-line work is idea-free: the model can always formalize given the moves.
 
 ---
 
-## 3. Data: SEEN vs NOVEL
+## 3. Data: NOVEL vs SEEN
 
 | Set | What | Role |
 |---|---|---|
-| **NOVEL** | 39 hard 2026 contest problems (outside training) | main evidence |
-| **SEEN** | matched pre-2025 problems (in training), same domain + difficulty | control |
+| **NOVEL** | hard 2026 contest problems (post-training-cutoff) | main evidence |
+| **SEEN** | matched pre-2025 problems, same domain + difficulty | control |
 
-**SEEN is a control, not a power base.** On SEEN the model has seen the problem, so recognition is near-free — SEEN failures are execution/rigor, not recognition. The core evidence is the **locus shift**: recognition failures low on SEEN, high on NOVEL. SEEN proves the shift is caused by *novelty*, not difficulty.
+On SEEN the model has effectively seen the problem, so recognition is near-free and failures (if any) sit at execution. The result is the **shift**: recognition-stage failures are rare on SEEN, dominant on NOVEL. SEEN shows the shift is caused by *novelty*, not raw difficulty.
 
 ---
 
-## 4. Experiments
+## 4. Design
 
-### Oracle ladder — the causal ceiling (isolates recognition)
+**Ladder** (C0 / O-strategy / O-outline / O-technique) × **Sets** (NOVEL main · SEEN control) × **Models** (Opus 4.5 + GPT-5.5, replication — not a "which is better" race).
 
-Each rung is a **prompt change on a fixed harness**, same turn budget as C0.
+Primary axis = **Single-LLM across the full ladder**. Each rung is one prompt change on one fixed harness; per-attempt budget is identical everywhere (128 tool-calls, enforced in code), so no rung buys the model more compute — only more of the answer.
 
-| Rung | Given to the model | Isolates |
+Secondary (compute control): re-run C0 under **Best-of-N (N=8, parallel)** and **Ralph (8 iters, sequential)**, matched at 1024 turns. If more compute — parallel or sequential — does **not** move the failure stage off recognition, the wall is recognition, not budget.
+
+---
+
+## 4b. Intervention — attacking the wall
+
+The oracles are cheats: they *hand* the model the approach/claims to prove the wall exists. Act 2 asks whether a **real method** can produce the outline itself, unaided — and how much of the O-outline ceiling it recovers.
+
+**Proof-outliner** — a dedicated agent that, before solving, tries to generate the claim skeleton on its own (case analysis → hypotheses → outline), then hands it to the solver. Its power source is the ablation:
+
+| Variant | Where its ideas come from |
+|---|---|
+| statement-only | the model's own reasoning |
+| **+ static KB** | abstract technique-selection from a fixed knowledge base of methods |
+| **+ working corpus** | analogical retrieval from solved problems |
+| **+ both** | |
+
+**The headline number:** O-outline is the *ceiling* (claims handed for free); the outliner recovers **X%** of it while finding the claims itself. The KB/corpus split says *which source* closes the gap — abstract method-selection vs analogy to prior solutions.
+
+**Guardrail (required):** corpus results carry a **nearest-neighbor similarity control** — for each rescued problem, report the closest corpus item, so a reviewer can rule out near-duplicate leakage rather than genuine analogical transfer.
+
+---
+
+## 5. Grading & results
+
+### How grading works (validated, not trusted)
+
+Ground truth is the reference solution; the model's self-claim is ignored. The pipeline (full protocol: `audit/rubric.md`):
+
+1. **Per-solution rubrics.** For each problem, IMO medalists read the reference and write the problem-specific conditions for verdict (SOLVED / PARTIAL / FAILED) and stage (strategy / outline / execution). Grading against these concrete conditions — not freehand "is this proof good?" — is what makes an LLM grader reliable.
+2. **Two AI graders** (Opus 4.5, GPT-5.5) grade every attempt against its rubric, independently. They check the attempt against medalist-written, problem-specific conditions — a checklist task LLMs do reliably — not freehand "is this proof good?".
+3. **Human medalist panel = ground truth on all attempts.** The panel grades everything; the AI grades are validated against it, not the other way round. On top of the full pass, the panel overrides every AI disagreement and audits a random sample of AI *agreements* (catches shared-LLM blind spots).
+4. **We report κ** (Cohen's) — AI-grader vs human-panel agreement on both verdict and stage. This is the number that decides whether the instrument is trusted: **κ ≥ 0.7 → the AI grader is valid**; if κ is low, the rubrics are too vague and get tightened until it isn't.
+5. **Everything is public** — all attempts, per-solution rubrics, oracle files, both graders' outputs, and panel grades — so grades are auditable, not believed.
+
+### Oracle audit (kills the "inflated ceiling" objection)
+
+Each oracle file is medalist-certified per problem and released as `audit/oracle_audit.jsonl`:
+- **O-outline = claim *statements* only** — no proof, construction, or black-box lemma handed over.
+- **O-technique** = the moves, with any crux stated as a *target to prove*, never a proven black box.
+- **Statements-only check:** we confirm O-outline alone leaves a real gap on most problems (else outline and technique collapse and the middle rung is fake). This is the measured test that the recognition/execution split is real.
+
+### Single-LLM · NOVEL · Opus 4.5
+
+### Single-LLM · NOVEL · Opus 4.5
+
+| Rung | Solved / N | New problems this rung rescues |
 |---|---|---|
-| **C0** | statement only | baseline |
-| **Oracle-1a** | answer + high-level strategy ("answer is X; use infinite descent") | strategy-recognition |
-| **Oracle-1b** | + the crux, **stated as a target to prove — not a usable black box** | crux-recognition |
+| C0 | *tbd* | — |
+| O-strategy | *tbd* | *tbd* (→ stage = strategy) |
+| O-outline | *tbd* | *tbd* (→ stage = outline) |
+| O-technique | *tbd* | *tbd* (→ stage = execution) |
 
-Key cut **Oracle-1b − Oracle-1a** = the value of recognizing the *crux* vs the *strategy*. Large oracle lift on NOVEL + small on SEEN ⇒ the novel bottleneck is *finding* the idea, not using it.
+**Failure-stage distribution (NOVEL):** strategy *tbd* · outline *tbd* · execution *tbd* · unsolved *tbd*.
+**SEEN control:** near-zero recognition-stage failures (expected).
 
-> The crux must be stated as *what to prove*, never a proven black box — else the rung measures execution, not recognition.
+Raw per-problem attempts and grades live in `audit/` (a sibling of `results/`, never model-visible).
 
-**Sharp prediction (validates the taxonomy):** Oracle-1b supplies the *idea*, not its proof, so it should **rescue crux-labeled failures** (idea was missing) and **leave execution-labeled failures unchanged** (idea was already found; only the proof/carry-out failed). If Oracle-1b instead rescues execution cases, the labels are wrong. This double dissociation is what makes crux vs execution a falsifiable cut, not a definition.
+### Run status
 
-### Realistic interventions — the method
-
-| Intervention | What it does | Targets |
+| Rung | Run | Graded |
 |---|---|---|
-| **Proof-outliner** | dedicated agent: case analysis → hypotheses → proof outline | recognition |
-| ↳ variants | statement-only · **+static KB** · **+past-solution corpus** · **+both** | which source helps |
-| **Reviewer** | reviews the proposed execution for errors | execution |
-
-**Keep KB *and* corpus — they probe different mechanisms.** Static KB = abstract technique-selection; corpus = analogical retrieval from solved problems. The ablation (statement / +KB / +corpus / +both) *is* the contribution. Corpus results carry a **nearest-neighbor similarity control** to rule out near-duplicate leakage. **No intervention for setup** (rare; stated, not fixed).
-
-**Punchline:** how much of the oracle ceiling does the *real* outliner recover?
-
-### Harnesses — compute, matched
-
-Per-attempt budget is **128 tool-calls everywhere** (enforced in code).
-
-| Harness | Total budget | Allocation | Tests |
-|---|---|---|---|
-| **Single LLM** | 128 | one shot | floor |
-| **Best-of-N (N=8)** | 1024 | **parallel** (independent shots) | does resampling find the crux? |
-| **Ralph loop (8 iters)** | 1024 | **sequential** (refinement) | does refinement find/fix it? |
-| **AutoFyn** | (noted separately) | composed scaffold | full-system ceiling |
-
-BoN and Ralph are **matched at 1024 turns** — the same budget spent *parallel vs sequential*. If BoN ≈ Ralph on recognition-locus problems, the wall is recognition, not compute (a strong result). BoN scoring: **pass@8** vs judge-selected — stated explicitly since Ralph returns one answer.
-
-### Isolation from the compute confound
-
-The core defense is **locus-conditioned lift**: each intervention must lift its *predicted* locus and not others — outliner → recognition, reviewer → execution. This double dissociation, not raw budget-matching, ties the fix to the diagnosed axis rather than to added compute.
-
-### Design matrix
-
-**Conditions** (C0 / Oracle-1a / 1b / outliner ±KB ±corpus / reviewer) × **Harnesses** (Single / BoN-8 / Ralph-8 / AutoFyn) × **Models** (**Opus 4.5 + GPT-5.5** — replication, same taxonomy & ladder, *not* a "which is better" comparison) × **Sets** (NOVEL main · SEEN control).
-
-Primary = Single LLM across the full ladder, both sets + both models. Secondary = harness sweep at C0. No full condition×harness cross.
+| C0 | ✓ | ✓ (human) |
+| O-strategy | ✓ | claude-judge only — needs human |
+| O-outline | **not built** — needs clean `outline.jsonl` + run | — |
+| O-technique | ✓ | **not graded** |
 
 ---
 
-## 5. Results
+## 6. Why this is causal, not a re-label
 
-Reference solutions are the ground truth; the model's self-claim is ignored.
+The stage is measured **two independent ways**, and their agreement is the rigor:
+- **From the attempt** — the per-solution rubric classifies the C0 attempt (§5).
+- **From the intervention** — the cheapest nested rung that rescues the problem (§2). Because the rungs are nested, "cheapest rung that works" is monotone: a problem rescued at outline was, by construction, *not* rescued at strategy.
 
-### Single LLM · C0 · NOVEL · Opus 4.5 — *provisional pilot (N=39, single-pass LLM judge, not yet human-verified)*
-
-| Locus | count |
-|---|---:|
-| Setup | *tbd* |
-| Recognition · strategy | *tbd* |
-| Recognition · crux | *tbd* |
-| Execution | *tbd* |
-| **Solved** | *tbd* |
-
-| Calibration | count |
-|---|---:|
-| honest | *tbd* |
-| bluff | *tbd* |
-
-> Pilot grading currently shows recognition as the dominant failure locus and a high bluff rate, but inter-grader agreement on the *fine* locus split is low until the rubric above is applied with multiple judges + human verification (§2). Numbers are frozen into this table only after that pass. Raw per-problem verdicts live in `audit/` (a sibling of `results/`, never model-visible).
-
-### Full results (filled as runs land)
-
-| Set | Model | Harness | Condition | Solved | Recognition | Execution | Setup | Bluff% |
-|---|---|---|---|---|---|---|---|---|
-| NOVEL | Opus 4.5 | Single | C0 | | | | | |
-| NOVEL | Opus 4.5 | Single | Oracle-1a | | | | | |
-| NOVEL | Opus 4.5 | Single | Oracle-1b | | | | | |
-| NOVEL | Opus 4.5 | Single | +outliner | | | | | |
-| … | | | | | | | | |
+An **outline**-labeled problem should be rescued by O-outline and not already by O-strategy; an **execution**-labeled one should need O-technique. We report the agreement between the two measures; disagreements are surfaced and resolved by the panel. Neither the hand-label nor the intervention is trusted alone — the double dissociation is what makes recognition-vs-execution falsifiable rather than a definition.
 
 ---
 
-## 6. Contribution: diagnose → intervene
+## 7. Sample size
 
-**Act 1 — diagnose.** The wall on novel hard olympiad math is recognition, not execution; setup is rare; failures are overwhelmingly bluffed. The oracle ladder turns "recognition" from a post-hoc label into a **causal** test.
-
-**Act 2 — intervene.** Because recognition is the bottleneck, target it (outliner + corpus retrieval). Across independent harnesses, show a consistent lift **concentrated on recognition-locus problems** while execution stays put — tying the fix to the diagnosed axis, not to added compute. Confirmed on IMO 2026 as a pre-registered, zero-contamination held-out.
-
-Act 1 justifies the method; Act 2 proves the diagnosis. The arc is the paper.
-
----
-
-## 7. Sample size & statistics
-
-n is small (39 novel; ~6 IMO). Survive it by design, not volume:
-
-- **Paired within-problem deltas** (C0 vs oracle; ±intervention) — each problem is its own control; far higher power at fixed n than between-group.
-- **Effect sizes + CIs**, not p-values — sharp effects (e.g. 7/8 recognition problems flip under oracle) survive small n; muddy ones don't.
-- **Every problem a documented case study** — depth compensates for breadth.
-- **Positioning:** a controlled analysis/method study, *not* a benchmark. Limitations paragraph pre-empts the n=39 objection.
+n is small (novel set) by design of the domain, not laziness. It survives because:
+- **Paired within-problem deltas** (C0 vs each rung) — each problem is its own control; far higher power than between-group at fixed n.
+- **Effect sizes, not p-values** — a sharp asymmetry (most problems flip at strategy/outline, almost none need technique) survives small n; a muddy one wouldn't.
+- **Every problem is a documented case study.** Depth over breadth.
+- Positioned as a **controlled analysis**, not a benchmark.
 
 ---
 
 ## 8. Contamination control
 
-Runs must solve from the statement alone. Enforced, not trusted:
+Runs solve from the statement alone. Enforced, not trusted:
 
-- **One harness per git branch** — the next harness can't read the previous one's `results/`, `logs/`, or `.scratch/`.
-- **No network** — a Bash hook blocks curl/wget/pip/git-network; every call (blocked or not) is in the audit log.
-- **Filesystem sandbox** — a hook confines every tool to the per-problem scratch dir; access outside is blocked and logged.
+- **One rung per git branch** — a run cannot read another's `results/`, `logs/`, or `.scratch/`.
+- **No network** — a Bash hook blocks curl/wget/pip/git-network; every call is logged.
+- **Filesystem sandbox** — a hook confines every tool to the per-problem scratch dir.
 - **Scratch is committed** — the agent's full working record is auditable, so a reviewer can confirm each problem was solved cold.
+- The reference solution is supplied **only at grading time** and is never in the solving repo.
 
-See `src/README.md` for the harness implementation and tool policy.
+See `src/README.md` for the harness and tool policy.

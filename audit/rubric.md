@@ -1,131 +1,84 @@
-# Grading rubric (operational)
+# Grading protocol
 
-Grade one attempt against the reference solution. Two **orthogonal** axes: **Locus** (where the first genuine gap is) and **Calibration** (did it admit the gap). This is the frozen taxonomy from the top-level README §2, made operational with decision rules, tie-breaks, and worked examples.
+We classify each **baseline (C0) attempt** into a **verdict** (SOLVED / PARTIAL / FAILED) and a **failure stage** (strategy / outline / execution), graded against a **per-solution rubric** written by human IMO medalists. Two AI graders apply that rubric independently; a medalist panel resolves disagreements. The oracle ladder (README §2) then **validates** the stage labels causally — it does not define them.
 
-The unit graded is the model's **`## Final Solution`** section. Ignore scratch and exploration; grade the final write-up as a referee would.
+The unit graded is the model's **`## Final Solution`** section. Ignore scratch; grade the final write-up as a referee would.
 
-The reference solution is supplied to the grader **only at grading time** and is never stored in this repository — the solving harness must never have access to it. A reference is either the **official** solution or an **unofficial solution that has been audited and confirmed valid**; both are authoritative ground truth for grading. Treat them identically.
-
-**No reference ⟹ UNGRADED.** If a problem has no usable reference (no official solution, no audited-valid unofficial solution, no corrected solution), it **cannot** be graded against ground truth. Mark it `verdict = UNGRADED` with all other fields `n/a`, and **exclude it from every count and distribution**. Never guess a verdict or locus without a reference. State the exclusion explicitly in any summary (report N gradable + N excluded, not a single total).
+The reference solution is given to the grader **only at grading time** and is never in the solving repo. A reference is the **official** solution or an **audited-valid unofficial** one. **No reference ⟹ UNGRADED**, excluded from every count.
 
 ---
 
-## Step 1 — Verdict
+## 1. Shared scaffold (inherited by every per-solution rubric)
 
-**The verdict is DERIVED from the locus (Step 2), not judged separately.** First find where the attempt fails (Step 2), then read off the verdict from this table. This keeps grading deterministic and stops verdict from drifting between graders.
+### Verdict
 
-| Locus | Verdict | Why |
-|---|---|---|
-| **none** (solved) | **SOLVED** | full marks, no gap a referee deducts for. |
-| **setup** | **FAILED** | misread the problem — no viable route, no credit. |
-| **strategy** | **FAILED** | committed to a method family not shown to work — no credit. |
-| **execution** | **PARTIAL** | reached the reference's actual key move (real progress by definition), then slipped. Always PARTIAL — even if the final answer is wrong (a botched constant / arithmetic slip after the right key move is exactly a PARTIAL slip). |
-| **crux** | **PARTIAL if** substantive, correct, *verifiable* progress exists (a fully-proven sub-part, one complete direction of an iff, a valid construction, a correct non-trivial reduction) **AND** a real gap remains; **FAILED if** the crux gap is bluffed / hand-waved with no solid partial result (only the answer, only trivial/preliminary lemmas, false core claims, or numerical bluff). |
-
-**crux is the only conditional cell.** setup/strategy are *always* FAILED; execution is *always* PARTIAL; none is SOLVED. For a crux failure, ask: *is there a proven, non-trivial piece a referee would award marks for?* Yes → PARTIAL; only-bluff/trivial/false → FAILED. Trivial first-observation lemmas, preliminary setup, and false claims do **not** count as progress.
-
-- **SOLVED** — every claim proven; a *different* valid method than the official still counts (see the "valid crux" rule).
-- No credit for confident tone. A confidently-asserted non-proof is FAILED or PARTIAL, never SOLVED.
-
----
-
-## Step 2 — Locus (WHERE the first genuine gap is)
-
-Exclusive and ordered. Walk the tree top-down; the **first NO wins**. If SOLVED, locus = `none`. **Output the bare value: `setup`, `strategy`, `crux`, `execution`, or `none`** (the "recognition ·" prefix below is just grouping, not the label).
-
-```
-Did it UNDERSTAND the problem?                (right target, right claim/answer)
-  NO  → SETUP
-  YES → Did it find the right STRATEGY?       (the general approach/method)
-          NO  → RECOGNITION · strategy
-          YES → Did it find the CRUX?         (the load-bearing lemma/key move)
-                  NO  → RECOGNITION · crux
-                  YES → EXECUTION             (has it all, slips while filling in)
-```
-
-### The four loci
-
-| Locus | Assign when… |
+| Verdict | Assign when… |
 |---|---|
-| **setup** | The model misread the problem: wrong target, wrong quantity, wrong claimed answer, solved a *different* question, or misstated the constraint. Nothing downstream can be right because it is not the right problem. |
-| **recognition · strategy** | The model understood the problem correctly but never found the right general approach — picked a method that cannot work, or flailed between approaches, none of them the right family. |
-| **recognition · crux** | The model had the right general approach but never **found the idea** — never identified/conjectured the load-bearing lemma or key move the proof hinges on. The missing step is an act of **insight**. This is what Oracle-1b supplies (the idea as a target), so these are the cases the oracle should rescue. |
-| **execution** | The model **found the reference's actual key move** — identified/conjectured the load-bearing step a valid solution uses (not a plausible-looking substitute) — but then failed on the **proving/carrying-out**: it could not prove the lemma it correctly named, botched the algebra/casework/bound, or slipped in the routine work. Oracle-1b (idea-only) hands these nothing new, so the oracle should **not** rescue them. |
+| **SOLVED** | Every claim proven by a valid route (the model's own or the official's — a different valid method counts). No gap a referee would deduct. |
+| **PARTIAL** | Real, verifiable progress (a proven sub-part, one direction of an iff, a valid construction, a correct non-trivial reduction) **and** a real gap remains. |
+| **FAILED** | No solid progress: only the answer, only trivial observations, false core claims, or a gap hidden behind "verified numerically / easy to see / one checks". |
 
-### Decisive tests (use these, not gut feel)
+### Failure stage (the first thing the attempt was missing)
 
-- **setup vs strategy:** *"If I restated the problem correctly, would it be on track?"* Yes → misunderstood the problem → **setup**. No, it understood the problem but the method is doomed → **strategy**.
-- **strategy vs crux:** *"Is the general approach the one the official (or any valid) solution uses?"* No / a different, non-viable family → **strategy**. Yes, but never found the key idea → **crux**.
-- **crux vs execution — the idea test:** *"Did the model FIND the idea (identify/conjecture the load-bearing lemma or key move), yes or no?"* **No — never named it → crux** (an insight is missing; Oracle-1b would rescue it). **Yes — named/conjectured it, then failed to prove or carry it out → execution** (the idea is in hand; proving-the-hard-lemma-it-named counts here; Oracle-1b would NOT rescue it). The split is *finding the idea* vs *proving/executing it*, not *stated* vs *proven*.
-
-### Tie-breaks (the boundaries where graders diverge)
-
-1. **Never found the idea AND a later slip** → grade the **earliest** genuine gap. A missing *idea* dominates a downstream slip → **crux**, not execution.
-2. **"Verified numerically / it is easy to see / one checks" on a step**: this is a **calibration** call (bluff), not a locus call. If the idea it skipped was **found/named** → **execution** (it had the idea, dodged the proof); if the idea was **never found** → **crux**. Either way the hand-wave itself = bluff.
-3. **Substitute-step test (crux vs execution):** if the model's asserted key step is not merely unproven but **false or a dead end** — a valid solution's crux is a *different* move the model never reached — that is **crux** (it never found the load-bearing idea), NOT execution. Execution requires the model to have reached the *reference's actual* key step and slipped while proving it; wandering into a wrong substitute step (even a plausible-looking one) is a missed crux. A provably-false substitute is decisive: it shows the model was on a dead-end route, not one routine step from done.
-4. **"Sort of the right approach"** — if the approach would need a fundamentally different idea to work, it's **strategy**; if it's the right approach and only the key lemma is missing, it's **crux**.
-5. **Right answer, no or bad proof** (common for "find the value" problems): the answer being right does NOT make it execution. If the *justification* never finds the key idea → **crux** (or **strategy**). Locus is about the proof, not the numeric answer.
-6. **Correct but different method than official:** grade the model's OWN route (see valid-crux rule). Do not mark "missed key idea" just because it didn't use the official's idea.
-
----
-
-## Step 3 — Calibration (did it admit the gap?) — orthogonal to locus
-
-| Tag | Assign when… |
+| Stage | The attempt… |
 |---|---|
-| **honest** | SOLVED, **or** the model explicitly flags its gap / states a step as unproven / labels itself partial. |
-| **bluff** | The model asserts a complete proof (QED / "thus proved" / closes the argument) while a real gap exists — including hiding the gap behind "verified numerically", "it is easy to see", "one can check", "follows analogously". |
-| **truncated** | The attempt was cut off (no `## Final Solution`, or it ends mid-argument): it never got to assert done, so it is not a bluff. |
+| **strategy** | never found a viable approach — the route it took cannot reach the answer. |
+| **outline** | found the viable approach, but never produced the **claim skeleton** — the lemma *statements* that, granted, finish the problem. |
+| **execution** | had the claim skeleton, but failed to **prove** the steps — couldn't prove a lemma it correctly named, or slipped in the algebra/casework. |
 
-A SOLVED attempt is always `honest`. A non-SOLVED attempt is `bluff` if it asserts completeness over a gap, `honest` if it owns the gap, `truncated` if it was cut off.
+SOLVED ⟹ stage = `none`. Otherwise assign the **earliest** stage that is missing (strategy before outline before execution): a missing approach dominates a downstream slip.
 
----
-
-## Step 4 — Supporting fields
-
-- **final_answer_correct**: `true` / `false` / `"n/a"` (n/a for pure proof problems with no numeric answer).
-- **found_valid_key_idea**: did the model find *a* valid central idea (its own or the official's)? `true` / `partial` / `false`. **Grade a valid crux, not THE official crux.** If the model's route differs but is sound and it found that route's key idea → `true`.
+**Shared rules**
+- Ground truth is the reference, never the model's tone. A confident non-proof is FAILED/PARTIAL, never SOLVED.
+- Grade the model's **own route**; only call the approach doomed if *no* viable route was found, not merely a different one than the reference.
+- A right final answer with no valid justification is FAILED (or PARTIAL if a real sub-part is proven). Stage is about the proof, not the number.
 
 ---
 
-## The "valid crux" rule (critical, reduces false "missed idea")
+## 2. Per-solution rubric (medalists author this, one per problem)
 
-The official solution is ONE valid path. If the model solves it a **different but valid way**, grade *its* path: verdict is SOLVED if its own argument is complete and correct; its locus/idea is judged against *its* approach's key step, not the official's.
+The shared scaffold is abstract. For each problem, medalists read the reference and instantiate it — writing the **problem-specific conditions** that place an attempt into each stage:
 
-Only mark `found_valid_key_idea=false` when the model found **no** viable central idea by any route — not merely a different one than the reference. If you cannot verify the model's alternative route is valid within reasonable effort, mark `partial` and say so in `gap_detail` — do not guess `true`.
+- **strategy conditions** — what the viable approach(es) are; what routes are dead ends.
+- **outline conditions** — the specific claim skeleton (the lemma statements) an attempt must reach to clear the outline stage.
+- **execution conditions** — the specific steps that must be *proved*; where the known slip points are.
 
----
-
-## Worked examples (anchors)
-
-- **SOLVED / none / honest** — model proves the result rigorously by a valid route (its own or the official's), every step justified. *E.g. a vector-geometry proof reaching the conclusion by a different, fully-justified computation.*
-- **FAILED / crux / bluff** — right general approach, correct final answer, but never identifies the key lemma the proof hinges on; substitutes hand-waving where the idea should be, closes with QED. Idea never found → crux; QED over the gap → bluff.
-- **FAILED / strategy / bluff** — understood the problem but committed to a method that cannot work (e.g. a counting frame that misses the needed structure), then asserts done. Wrong approach family → strategy; asserted → bluff.
-- **FAILED / setup / bluff** — imposed the wrong invariant / solved a different question (e.g. assumed a stronger periodicity than the problem states), producing a wrong answer. Misunderstood problem → setup.
-- **FAILED / execution / bluff** — **identified** the load-bearing lemma correctly, but could not prove it (or slipped in the algebra/casework after it) and claimed completeness anyway. Idea found, proof/carry-out failed → execution; asserted → bluff.
+The grader is never asked "where do you feel it failed?" — it checks the attempt against these concrete, pre-written conditions. This is what makes the label reproducible across graders.
 
 ---
 
-## Output (one JSON object per attempt)
+## 3. Dual AI graders + panel
+
+1. **Opus 4.5** and **GPT-5.5** each grade every attempt against its per-solution rubric, independently, blinded to condition/set.
+2. **Agreements stand.** **Disagreements → medalist panel** resolves.
+3. Report inter-grader agreement (**κ**) on verdict and on stage.
+
+---
+
+## 4. Ladder validation (causal cross-check — not part of grading)
+
+The rubric assigns the stage from the *attempt*. The oracle ladder confirms it from the *intervention*:
+
+- A **strategy**-labeled problem should be rescued by **O-strategy**.
+- An **outline**-labeled problem should be rescued by **O-outline**, and *not already* by O-strategy.
+- An **execution**-labeled problem should need **O-technique**.
+
+Where the rescuing rung contradicts the rubric stage, the label is wrong — surfaced, not hidden. This double dissociation between *rubric stage* and *rescuing rung* is the paper's rigor: neither the hand-label nor the intervention is trusted alone.
+
+---
+
+## 5. Output (one JSON object per attempt, per grader)
 
 ```json
 {
   "problem_id": "...",
+  "grader": "opus-4.5 | gpt-5.5 | panel",
   "verdict": "SOLVED|PARTIAL|FAILED|UNGRADED",
+  "stage": "strategy|outline|execution|none",
   "final_answer_correct": true | false | "n/a",
-  "found_valid_key_idea": true | false | "partial",
-  "locus": "setup|strategy|crux|execution|none",
-  "honesty": "honest|bluff|truncated",
   "one_line": "<=25 words: what happened vs a valid solution",
-  "gap_detail": "<=50 words: the specific first fatal step, or 'complete' if solved"
+  "gap_detail": "<=50 words: the first fatal gap, or 'complete' if solved"
 }
 ```
 
-**Valid combinations only (verdict is derived from locus — Step 1 table):**
-- `none` ⟺ `SOLVED` (and `honesty=honest`, `found_valid_key_idea=true`).
-- `setup` ⟹ `FAILED`. `strategy` ⟹ `FAILED`.
-- `execution` ⟹ `PARTIAL` (always, even with a wrong final answer).
-- `crux` ⟹ `PARTIAL` or `FAILED` (the only conditional cell — PARTIAL iff substantive verifiable progress, else FAILED).
-Never emit SOLVED with a locus, a bluff, or a missing idea. Never emit setup/strategy as anything but FAILED, or execution as anything but PARTIAL.
-
-Be adversarial. Grade the first fatal step to fix the locus, then read the verdict off the table. When unsure between two loci, apply the decisive test, then the tie-breaks, in order.
+Be adversarial. Find the first fatal gap against the per-solution rubric, then read off verdict and stage. When unsure between PARTIAL and FAILED: *is there a proven, non-trivial piece a referee would award marks for?* Yes → PARTIAL, else → FAILED.
