@@ -63,7 +63,7 @@ def _fetch_jsonl(env_name: str, url: str) -> list[dict[str, Any]]:
 
 
 def _outline_text(steps: list[dict[str, Any]]) -> str:
-    """Render an outline's steps as a numbered list (the H2 hint text)."""
+    """Render an outline's steps as a numbered list (the h3 hint text)."""
     return "\n".join(f"{i}. {step['step']}" for i, step in enumerate(steps, start=1))
 
 
@@ -107,7 +107,7 @@ def seed_output_dir(
     config: ExperimentConfig, arm: ArmConfig, problem_id: str, seed: int
 ) -> Path:
     """Result directory for one (model, arm, problem, seed) attempt."""
-    return RESULTS_ROOT / config.model / arm.name / problem_id / f"seed_{seed}"
+    return RESULTS_ROOT / config.model_dirname / arm.name / problem_id / f"seed_{seed}"
 
 
 def seed_done(output_dir: Path) -> bool:
@@ -352,7 +352,7 @@ def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, i
     that subset. One JSON line per audited (problem, seed), sorted. Returns
     the file path and the number of records written.
     """
-    arm_root = RESULTS_ROOT / config.model / arm.name
+    arm_root = RESULTS_ROOT / config.model_dirname / arm.name
     records: list[dict[str, object]] = []
     for audit_file in sorted(arm_root.glob(f"*/seed_*/{SEED_AUDIT_FILENAME}")):
         records.append(json.loads(audit_file.read_text(encoding="utf-8")))

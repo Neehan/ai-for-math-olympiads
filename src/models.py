@@ -45,12 +45,19 @@ class ExperimentConfig:
     unit_output_tokens: int
     wrap_up_reserve_tokens: int
     max_turns_per_phase: int
+    sequential_max_rounds: int
+    audit_max_turns: int
     max_concurrency: int
     arms: dict[str, ArmConfig]
 
     def budget_tokens(self, arm: ArmConfig) -> int:
         """Total output-token budget for one attempt of this arm."""
         return self.unit_output_tokens * arm.budget_units
+
+    @property
+    def model_dirname(self) -> str:
+        """Filesystem-safe model name for results paths ('/' becomes '-')."""
+        return self.model.replace("/", "-")
 
 
 class RateLimitExhausted(Exception):

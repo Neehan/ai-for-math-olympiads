@@ -5,9 +5,11 @@ Usage:
     python -m src.audit --arm hint --problems usamo-2026-3
 
 Per the paper's grading protocol: the judge is a frontier model OTHER than the
-solution's author (enforced in config), sees only the problem statement and
-the standalone solution.md (hint stripped, blind to arm), and grades on the
-near-binary 7/0 standard with a written note (why valid, or what is
+solution's author (enforced in config), is given only the problem statement
+and the standalone solution.md (the hint is not included), grades only the
+'## Final Solution' section, and scores 7 (complete and rigorous), 6/5
+(complete in essence, small obviously-fixable gap), or 0 (anything else — no
+other partial credit) with a written note (why valid, or what is
 missing/wrong). Each attempt's verdict is audit.json in its seed dir
 (resumable marker); the per-arm compiled file is
 results/<model>/<arm>/audit.jsonl, one line per (problem, seed).
@@ -30,21 +32,19 @@ from src.config import load_config
 from src.constants import (
     AGENT_SETTINGS_PATH,
     ALLOWED_TOOLS,
-    AUDIT_MAX_TURNS,
     AUDIT_SCORE_INVALID,
-    AUDIT_SCORE_VALID,
+    AUDIT_SCORES,
     AUDIT_SCRATCH_SUBDIR,
     CONFIG_PATH,
     DISALLOWED_TOOLS,
     LOG_FORMAT,
     LOG_LEVEL,
-    OAUTH_TOKEN_ENV,
     PERMISSION_MODE,
 )
 from src.models import ArmConfig, ExperimentConfig, Problem, RateLimitExhausted
 from src.prompts import audit_prompt
 from src.run import select_problems
-from src.solver import run_resumable
+from src.solver import provider_env, run_resumable, token_env_name
 from src.storage import (
     archive_audit_scratch,
     budget_cut_multipliers,
@@ -63,11 +63,11 @@ from src.token_pool import TokenPool
 log = logging.getLogger("audit")
 
 # Structured output contract for the judge; enforced by the API, so a verdict
-# always parses. Score is strictly near-binary: 7 (valid) or 0 (not).
+# always parses. Scores restricted to the protocol's 0/5/6/7 scale.
 AUDIT_OUTPUT_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
-        "score": {"type": "integer", "enum": [AUDIT_SCORE_INVALID, AUDIT_SCORE_VALID]},
+        "score": {"type": "integer", "enum": list(AUDIT_SCORES)},
         "note": {"type": "string", "minLength": 1},
     },
     "required": ["score", "note"],
@@ -79,7 +79,7 @@ def _audit_options(
     config: ExperimentConfig, oauth_token: str, scratch_dir: str
 ) -> ClaudeAgentOptions:
     """Judge session options: scratch tools to CHECK (audit, not solve),
-    structured 7/0 output, opaque scratch cwd (never the repo root).
+    structured 0/5/6/7 output, opaque scratch cwd (never the repo root).
 
     Same tool policy as the solver — the judge may verify a computation but,
     per prompts/audit.md, a passing check never substitutes for written proof.
@@ -88,13 +88,13 @@ def _audit_options(
     return ClaudeAgentOptions(
         model=config.audit_model,
         effort=config.effort,  # type: ignore[arg-type]
-        env={OAUTH_TOKEN_ENV: oauth_token},
+        env=provider_env(config.audit_model, oauth_token),
         allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
         settings=str(AGENT_SETTINGS_PATH),
         extra_args={"setting-sources": ""},
         permission_mode=PERMISSION_MODE,
-        max_turns=AUDIT_MAX_TURNS,
+        max_turns=config.audit_max_turns,
         cwd=scratch_dir,
         output_format={"type": "json_schema", "schema": AUDIT_OUTPUT_SCHEMA},
     )
@@ -230,7 +230,7 @@ async def main() -> None:
         len(generated) - len(pending),
     )
 
-    pool = TokenPool.from_env()
+    pool = TokenPool.from_env(token_env_name(config.audit_model))
     tasks = [
         lambda p=problem, s=seed: run_resumable(
             pool, lambda token: audit_seed(config, arm, p, s, token)

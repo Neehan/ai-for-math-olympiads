@@ -33,16 +33,14 @@ def _render(template: str, values: dict[str, str]) -> str:
 
     Placeholders are checked on the TEMPLATE, never on the rendered output —
     substituted content (LaTeX, model solutions) may legitimately contain
-    '{{' and must not trip the check.
+    '{{' and must not trip the check. Substitution is a single pass over the
+    template, so substituted content is never itself re-substituted.
     """
     names = set(_PLACEHOLDER.findall(template))
     missing = names - set(values)
     if missing:
         raise ValueError(f"Unfilled placeholders in prompt template: {sorted(missing)}")
-    rendered = template
-    for key, value in values.items():
-        rendered = rendered.replace("{{" + key + "}}", value)
-    return rendered
+    return _PLACEHOLDER.sub(lambda match: values[match.group(1)], template)
 
 
 def system_prompt() -> str:
@@ -56,8 +54,9 @@ def task_prompt(
     """Initial solve prompt: ONLY the statement (plus scratch dir, token
     budget, and optional hint) — no metadata that could identify the contest.
 
-    hint_text is the raw hint text (H1 tags or H2 outline) or None for the
-    no-hint arm; when present it is wrapped by prompts/hint.md.
+    hint_text is the raw hint text for the arm's tier (h1 placebo, h2 tags,
+    or h3 outline) or None for the no-hint arm; when present it is wrapped by
+    prompts/hint.md.
     """
     hint_block = "" if hint_text is None else _render(_load(HINT_PROMPT_FILE), {"hint": hint_text})
     return _render(
@@ -87,7 +86,7 @@ def wrap_up_prompt(tokens_left: int) -> str:
 
 
 def audit_prompt(problem: Problem, solution_text: str) -> str:
-    """Judge prompt: statement + standalone solution, blind to hint and arm."""
+    """Judge prompt: statement + standalone solution (the hint is not included)."""
     return _render(
         _load(AUDIT_PROMPT_FILE),
         {"statement": problem.statement.strip(), "solution": solution_text.strip()},

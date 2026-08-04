@@ -35,10 +35,8 @@ ZSTD_LEVEL: int = 9
 # per-arm compiled file: one JSON line per (problem, seed) with score + note.
 SEED_AUDIT_FILENAME: str = "audit.json"
 ARM_AUDIT_FILENAME: str = "audit.jsonl"
-# The judge has scratch tools to CHECK computations (audit, not solve), so it
-# gets a real turn budget; it still cannot fill gaps, only reveal errors.
-AUDIT_MAX_TURNS: int = 64
-AUDIT_SCORE_VALID: int = 7
+# Grading scale (prompts/audit.md): 7 complete, 6/5 small fixable gap, 0 else.
+AUDIT_SCORES: tuple[int, ...] = (0, 5, 6, 7)
 AUDIT_SCORE_INVALID: int = 0
 # Judge scratch copies are archived beside the attempt they graded.
 AUDIT_SCRATCH_SUBDIR: str = "audit_scratch"
@@ -53,12 +51,8 @@ WRAP_UP_PROMPT_FILE: str = "wrap_up.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
 
 # --- Problem/hint data sources -------------------------------------------
-# Problems and hints are NEVER committed to this repo (contest identity would
-# leak); they are fetched from these URLs straight into memory with stdlib
-# urllib — no hf_hub, no disk cache. In Docker, the entrypoint prefetches them
-# BEFORE the firewall closes (HF stays blocked while agents run) and points
-# these env vars at the temp copies, which the loader deletes on read so no
-# trace remains for the agent.
+# Never committed (contest identity); fetched straight into memory, or from
+# the entrypoint's pre-firewall temp copies, which the loader deletes on read.
 _DATASET_BASE: str = (
     "https://huggingface.co/datasets/notadib/math-contests-2026/resolve/main"
 )
@@ -71,9 +65,8 @@ OUTLINES_FILE_ENV: str = "OUTLINES_FILE"
 FETCH_TIMEOUT_SECONDS: int = 60
 
 # --- Arm vocabulary -------------------------------------------------------
-# Hint ladder: h1 = placebo (not yet authored — arms fail fast until the
-# dataset provides it), h2 = technique tags (the real hint arm), h3 = full
-# solution outline (a bigger tier; no arm uses it yet).
+# Hint ladder: h1 placebo (unauthored — fail fast), h2 tags (the hint arm),
+# h3 outline (bigger tier, unused).
 HINT_NONE: str = "none"
 HINT_H1: str = "h1"
 HINT_H2: str = "h2"
@@ -89,14 +82,8 @@ PHASE_CRITIQUE: str = "critique"
 PHASE_REVISE: str = "revise"
 PHASE_WRAP_UP: str = "wrap_up"
 
-# Runaway guard on critique->revise rounds; the output-token budget is the
-# real stop, this only caps a session whose usage reporting has broken.
-SEQUENTIAL_MAX_ROUNDS: int = 64
-
 # --- Tool policy ----------------------------------------------------------
-# Pre-approved tools (run headless without prompting). Network access is
-# blocked by the container firewall and the agent_settings.json deny list,
-# not by in-process guards.
+# Pre-approved tools; network is blocked by the firewall + settings denies.
 ALLOWED_TOOLS: list[str] = [
     "Read",
     "Write",
@@ -108,22 +95,55 @@ ALLOWED_TOOLS: list[str] = [
     "TodoWrite",
 ]
 
-# Built-in tools removed from the agent entirely (disallowed_tools is the
-# mechanism that reliably strips SDK built-ins).
+# Strip network, subagent, publishing, and scheduling built-ins entirely;
+# unknown names are a no-op in older CLIs, so the list blocks generously.
 DISALLOWED_TOOLS: list[str] = [
     "WebSearch",
     "WebFetch",
     "Task",
     "Agent",
+    "Workflow",
+    "Skill",
+    "SlashCommand",
+    "Artifact",
+    "SendMessage",
+    "SendUserFile",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskUpdate",
+    "TaskOutput",
+    "TaskStop",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "ScheduleWakeup",
+    "Monitor",
+    "PushNotification",
+    "RemoteTrigger",
+    "EnterWorktree",
+    "ExitWorktree",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "EndConversation",
     "ToolSearch",
     "AskUserQuestion",
-    "SlashCommand",
     "NotebookEdit",
+    "PowerShell",
 ]
 
 # Permission mode: bypass interactive prompts; policy enforced by the
 # agent_settings.json deny list and disallowed_tools.
 PERMISSION_MODE: PermissionMode = "bypassPermissions"
+
+# --- Providers ------------------------------------------------------------
+# 'vendor/model' ids (e.g. openai/gpt-5.5) route through OpenRouter's
+# Anthropic-compatible endpoint; bare ids use the Anthropic API directly.
+OPENROUTER_BASE_URL: str = "https://openrouter.ai/api"
+OPENROUTER_KEY_ENV: str = "OPENROUTER_API_KEY"
+ANTHROPIC_BASE_URL_ENV: str = "ANTHROPIC_BASE_URL"
+ANTHROPIC_AUTH_TOKEN_ENV: str = "ANTHROPIC_AUTH_TOKEN"
+ANTHROPIC_API_KEY_ENV: str = "ANTHROPIC_API_KEY"
 
 # --- Auth / resume --------------------------------------------------------
 OAUTH_TOKEN_ENV: str = "CLAUDE_CODE_OAUTH_TOKEN"

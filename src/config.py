@@ -16,6 +16,8 @@ _REQUIRED_TOP_KEYS: frozenset[str] = frozenset(
         "unit_output_tokens",
         "wrap_up_reserve_tokens",
         "max_turns_per_phase",
+        "sequential_max_rounds",
+        "audit_max_turns",
         "max_concurrency",
         "arms",
     }
@@ -67,6 +69,8 @@ def load_config(path: Path) -> ExperimentConfig:
         unit_output_tokens=int(raw["unit_output_tokens"]),
         wrap_up_reserve_tokens=int(raw["wrap_up_reserve_tokens"]),
         max_turns_per_phase=int(raw["max_turns_per_phase"]),
+        sequential_max_rounds=int(raw["sequential_max_rounds"]),
+        audit_max_turns=int(raw["audit_max_turns"]),
         max_concurrency=int(raw["max_concurrency"]),
         arms=arms,
     )
@@ -74,6 +78,8 @@ def load_config(path: Path) -> ExperimentConfig:
         raise ValueError(f"{path}: effort must be one of {sorted(_VALID_EFFORTS)}")
     if config.unit_output_tokens < 1 or config.max_turns_per_phase < 1:
         raise ValueError(f"{path}: token and turn budgets must be positive")
+    if config.sequential_max_rounds < 1 or config.audit_max_turns < 1:
+        raise ValueError(f"{path}: round and audit turn guards must be positive")
     if not 0 < config.wrap_up_reserve_tokens < config.unit_output_tokens:
         raise ValueError(
             f"{path}: wrap_up_reserve_tokens must be positive and below "

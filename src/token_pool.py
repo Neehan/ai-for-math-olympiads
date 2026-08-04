@@ -1,10 +1,8 @@
-"""Round-robin pool of Claude OAuth tokens with rate-limit cooldown.
+"""Round-robin pool of provider API keys with rate-limit cooldown.
 
-The .env file may hold several subscription tokens (CLAUDE_CODE_OAUTH_TOKEN,
-CLAUDE_CODE_OAUTH_TOKEN_2, ...). Attempts acquire tokens round-robin; a token
-whose account hits its usage limit is put on cooldown until its reported reset
-time, and acquire() only sleeps when EVERY token is cooling — so a rate limit
-rotates to the next key instead of stalling (or killing) the run.
+The .env file may hold several keys per provider (NAME, NAME_2, NAME_3, ...).
+Attempts acquire keys round-robin; a rate-limited key cools down until its
+reported reset time, and acquire() only sleeps when EVERY key is cooling.
 """
 
 import logging
@@ -15,27 +13,22 @@ import time
 import anyio
 
 from src.constants import (
-    OAUTH_TOKEN_ENV,
     RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS,
     RESET_WAIT_BUFFER_SECONDS,
 )
 
 log = logging.getLogger("token_pool")
 
-# Exactly CLAUDE_CODE_OAUTH_TOKEN or a numbered variant (_2, _3, ...) — a
-# loose prefix match would swallow unrelated vars like ..._EXPIRES_AT.
-_TOKEN_VAR = re.compile(rf"^{OAUTH_TOKEN_ENV}(_\d+)?$")
-
 
 class TokenPool:
     """Round-robin token dispenser with per-token rate-limit cooldowns."""
 
-    def __init__(self, tokens: list[str]) -> None:
+    def __init__(self, tokens: list[str], env_name: str) -> None:
         """tokens must be non-empty; order defines the round-robin rotation."""
         if not tokens:
             raise ValueError(
-                f"No OAuth tokens found; set {OAUTH_TOKEN_ENV} (and optionally "
-                f"{OAUTH_TOKEN_ENV}_2, _3, ...) in .env"
+                f"No API keys found; set {env_name} (and optionally "
+                f"{env_name}_2, _3, ...) in .env"
             )
         self._tokens = tokens
         self._cool_until: dict[str, float] = {token: 0.0 for token in tokens}
@@ -43,16 +36,21 @@ class TokenPool:
         self._lock = anyio.Lock()
 
     @classmethod
-    def from_env(cls) -> "TokenPool":
-        """Collect CLAUDE_CODE_OAUTH_TOKEN and numbered variants, sorted by name."""
+    def from_env(cls, env_name: str) -> "TokenPool":
+        """Collect env_name and its numbered variants, sorted by name.
+
+        Matches exactly NAME or NAME_<digits> — a loose prefix match would
+        swallow unrelated vars like ..._EXPIRES_AT.
+        """
+        pattern = re.compile(rf"^{env_name}(_\d+)?$")
         names = sorted(
             name
             for name, value in os.environ.items()
-            if _TOKEN_VAR.match(name) and value.strip()
+            if pattern.match(name) and value.strip()
         )
         tokens = [os.environ[name].strip() for name in names]
-        log.info("Token pool: %d token(s) loaded (%s)", len(tokens), ", ".join(names))
-        return cls(tokens)
+        log.info("Token pool: %d key(s) loaded (%s)", len(tokens), ", ".join(names))
+        return cls(tokens, env_name)
 
     async def acquire(self) -> str:
         """Return the next available token, sleeping only if all are cooling."""

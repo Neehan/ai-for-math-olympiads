@@ -5,6 +5,8 @@
   "unit_output_tokens": 200000,
   "wrap_up_reserve_tokens": 20000,
   "max_turns_per_phase": 128,
+  "sequential_max_rounds": 64,
+  "audit_max_turns": 64,
   "max_concurrency": 8,
   "arms": {
     "baseline": { "hint": "none", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },

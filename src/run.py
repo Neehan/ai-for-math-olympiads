@@ -32,11 +32,16 @@ from src.constants import (
     PHASE_REVISE,
     PHASE_SOLVE,
     PHASE_WRAP_UP,
-    SEQUENTIAL_MAX_ROUNDS,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
 from src.prompts import critique_prompt, revise_prompt, task_prompt, wrap_up_prompt
-from src.solver import BudgetTracker, build_options, run_phase, run_resumable
+from src.solver import (
+    BudgetTracker,
+    build_options,
+    run_phase,
+    run_resumable,
+    token_env_name,
+)
 from src.storage import (
     clear_scratch_root,
     fresh_scratch_dir,
@@ -113,7 +118,7 @@ async def solve_seed(
 
         if arm.mode == MODE_SEQUENTIAL:
             round_num = 0
-            while not tracker.soft_exhausted and round_num < SEQUENTIAL_MAX_ROUNDS:
+            while not tracker.soft_exhausted and round_num < config.sequential_max_rounds:
                 round_num += 1
                 critique = await run_phase(
                     client,
@@ -216,7 +221,7 @@ async def main() -> None:
         len(pending),
         total - len(pending),
     )
-    pool = TokenPool.from_env()
+    pool = TokenPool.from_env(token_env_name(config.model))
     tasks = [
         lambda p=problem, s=seed: run_resumable(
             pool, lambda token: solve_seed(config, arm, p, s, token)

@@ -47,7 +47,7 @@ Compute is operationalized as the **total output-token budget of an attempt** (t
 
 - **Authors:** the IMO medalist panel, from problems + official human solutions ONLY, before any model run exists. Hints frozen, committed, hashed, published verbatim in the appendix. A panelist who did not author a problem's hints audits them for strategic leakage and template compliance.
 - **H1 — placebo:** restates the problem's objects plus true-but-useless context, zero strategy; length-matched to H2 so a short real hint beating longer padding is a stronger result, not a length confound.
-- **H2 — the one-line hint (the "hint" arm of the 2×2):** the key idea in 1–2 sentences, no steps; tagged at authoring as **analog** (known past technique) vs **novel** (original insight).
+- **H2 — the one-line hint (the "hint" arm of the 2×2):** the key idea as up to 5 tag keywords, each a well-known named technique from a standard source, no steps; tagged at authoring as **analog** (known past technique) vs **novel** (original insight).
 - Hint effects are measured against H1, and H1 against no-hint globally (padding may distract; every H2 − H1 effect is partly "useful hint vs. harmful padding").
 - No outline tier: two tiers are the minimal set — H2 is the arm, H1 kills the length/attention confound. A deeper outline probe on unrescued problems is rebuttal ammo (October), not core protocol.
 
@@ -76,7 +76,7 @@ Worst case 26 runs per problem × model; gating makes the realistic average far 
 
 ## Grading (validated, not trusted)
 
-- Near-binary 7/0 completeness standard. Every run graded by a frontier-model auditor other than its author, seeing the proof standalone (hint stripped, blind to arm).
+- Completeness standard: **7** = complete and rigorous; **6/5** = complete in essence, one small gap with an obvious one-line fix; **0** = anything else, with no other partial credit (a solution missing one of two required bounds scores 0). Every run graded by a frontier-model auditor other than its author, seeing the proof standalone (hint not shown, arm not disclosed).
 - **Human validation subset:** 45 unique solutions (30 auditor-passed — false 7s are what corrupt results — 15 auditor-failed), stratified across models × cells, enriched around pivotal cells (the bold predictions). Two medalists grade independently, a third resolves; graders blind to arm. Report precision/recall (positive = 7; precision is load-bearing) with a one-sided lower confidence bound as the acceptance criterion, Cohen's κ, and inter-medalist agreement as the ceiling. Pre-commit: if the precision bound fails, pivotal cells are re-graded by humans.
 
 ## Case studies (required section)

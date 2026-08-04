@@ -26,7 +26,12 @@ from src.constants import (
     AGENT_SETTINGS_PATH,
     ALLOWED_TOOLS,
     DISALLOWED_TOOLS,
+    ANTHROPIC_API_KEY_ENV,
+    ANTHROPIC_AUTH_TOKEN_ENV,
+    ANTHROPIC_BASE_URL_ENV,
     OAUTH_TOKEN_ENV,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_KEY_ENV,
     PERMISSION_MODE,
 )
 from src.models import (
@@ -101,6 +106,27 @@ class BudgetTracker:
         return delta
 
 
+def uses_openrouter(model: str) -> bool:
+    """True for 'vendor/model' ids, which route through OpenRouter."""
+    return "/" in model
+
+
+def token_env_name(model: str) -> str:
+    """Name of the env var family holding this model's provider API keys."""
+    return OPENROUTER_KEY_ENV if uses_openrouter(model) else OAUTH_TOKEN_ENV
+
+
+def provider_env(model: str, api_key: str) -> dict[str, str]:
+    """Per-session auth env: OpenRouter base-URL route, or Anthropic OAuth."""
+    if uses_openrouter(model):
+        return {
+            ANTHROPIC_BASE_URL_ENV: OPENROUTER_BASE_URL,
+            ANTHROPIC_AUTH_TOKEN_ENV: api_key,
+            ANTHROPIC_API_KEY_ENV: "",
+        }
+    return {OAUTH_TOKEN_ENV: api_key}
+
+
 def build_options(
     config: ExperimentConfig, scratch_dir: str, budget_tokens: int, oauth_token: str
 ) -> ClaudeAgentOptions:
@@ -116,7 +142,7 @@ def build_options(
     """
     return ClaudeAgentOptions(
         model=config.model,
-        env={OAUTH_TOKEN_ENV: oauth_token},
+        env=provider_env(config.model, oauth_token),
         effort=config.effort,  # type: ignore[arg-type]
         system_prompt=system_prompt(),
         allowed_tools=list(ALLOWED_TOOLS),
