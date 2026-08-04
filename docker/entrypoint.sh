@@ -92,4 +92,9 @@ except OSError as error:
 print("firewall ok: egress restricted to the allowed LLM APIs")
 PY
 
-exec python -m "src.$STAGE" "$@"
+# Drop root for the harness and every agent it spawns: the CLI refuses
+# bypassPermissions as root, and a non-root agent cannot alter the firewall.
+chown appuser /app
+chown -R appuser /run/contest
+export HOME=/home/appuser
+exec gosu appuser python -m "src.$STAGE" "$@"

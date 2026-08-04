@@ -4,11 +4,13 @@
 # limits egress to the Anthropic API alone.
 FROM python:3.12-slim
 
-# nodejs/npm for the Claude Code CLI the SDK drives; iptables for the firewall.
+# The pinned claude-agent-sdk wheel ships its own standalone CLI binary.
+# iptables for the firewall; gosu to drop root — the CLI refuses
+# bypassPermissions as root, and a non-root agent cannot touch iptables.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm iptables ca-certificates \
+    && apt-get install -y --no-install-recommends iptables gosu ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code@2.1.209
+    && useradd -m appuser
 
 WORKDIR /app
 COPY pyproject.toml ./
