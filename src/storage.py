@@ -8,11 +8,11 @@ Per-seed output layout (nothing mixed):
         meta.json        attempt metadata; written LAST = completion marker
 """
 
+import itertools
 import json
 import os
 import shutil
 import urllib.request
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -115,26 +115,25 @@ def seed_done(output_dir: Path) -> bool:
     return (output_dir / META_FILENAME).exists()
 
 
+_scratch_counter = itertools.count()
+
+
 def fresh_scratch_dir() -> Path:
-    """Create an EMPTY per-attempt scratch dir with an OPAQUE (uuid) name.
+    """Create an EMPTY per-attempt scratch dir with a short OPAQUE name (r0, r1...).
 
     The path appears in the model's prompt, so it must carry no arm, contest,
     problem, or seed identity — a named path like '.scratch/placebo-hint/
-    china-2026-3' would tell the model which arm it is in and which contest
-    the problem came from. The mapping back to the canonical attempt is the
-    location of the archived scratch copy in results/ (plus meta.json).
+    china-2026-3' would tell the model which arm it is in. Short names, not
+    uuids: models truncate long hex paths and write to the parent. The mapping
+    back to the canonical attempt is the archived copy in results/ + meta.json.
     """
-    path = SCRATCH_ROOT / uuid.uuid4().hex
+    path = SCRATCH_ROOT / f"r{next(_scratch_counter)}"
     path.mkdir(parents=True, exist_ok=False)
     return path
 
 
 def clear_scratch_root() -> None:
-    """Delete all leftover scratch dirs from killed runs (call at run start).
-
-    Attempts create fresh uuid dirs, so stale ones are never reused — this
-    only reclaims disk and keeps aborted work out of the container image.
-    """
+    """Delete all leftover scratch dirs from killed runs (call at stage start)."""
     if SCRATCH_ROOT.exists():
         shutil.rmtree(SCRATCH_ROOT)
 

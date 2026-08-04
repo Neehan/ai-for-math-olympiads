@@ -48,6 +48,7 @@ from src.solver import provider_env, run_resumable, token_env_name
 from src.storage import (
     archive_audit_scratch,
     budget_cut_multipliers,
+    clear_scratch_root,
     compile_arm_audit,
     cut_solution_path,
     fresh_scratch_dir,
@@ -205,6 +206,7 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
+    clear_scratch_root()
     problems = select_problems(load_problems(), args.problems, args.domain)
 
     generated = [

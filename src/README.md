@@ -49,7 +49,7 @@ All prompts are editable markdown files: `system.md`, `task.md`, `hint.md`, `cri
 
 - `logs.jsonl.zst` — one JSON line per phase: prompt, full response text, every tool call (full input/result), per-phase and cumulative output tokens, turns, duration, cost, stop reason.
 - `solution.md` — the graded artifact: the last COMPLETE non-critique phase (normally the wrap-up), same convention as the budget cuts so the full-budget point can never score below a lower cut by truncation artifact. The judge grades ONLY its `## Final Solution` section (anything before the heading is working notes; no heading at all scores 0).
-- `scratch/` — copy of the agent's scratch directory. The live scratch path shown to the model is an opaque uuid (`.scratch/<uuid>`) so the prompt carries no arm, contest, or seed identity; the mapping back to the canonical attempt is this archived location plus `scratch_dir_name` in meta.json.
+- `scratch/` — copy of the agent's scratch directory. The live scratch path shown to the model is short and opaque (`.scratch/r3`) so the prompt carries no arm, contest, or seed identity, and the session's cwd IS that dir (the model is told to use relative paths); the mapping back to the canonical attempt is this archived location plus `scratch_dir_name` in meta.json.
 - `meta.json` — attempt metadata and totals; written last, so its presence is the completion marker for resumable runs.
 - `audit.json` — the judge's verdict (full solution + per-cut scores/notes); `audit_scratch/` — any computations the judge ran while grading.
 
