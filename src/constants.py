@@ -136,6 +136,11 @@ DISALLOWED_TOOLS: list[str] = [
 # agent_settings.json deny list and disallowed_tools.
 PERMISSION_MODE: PermissionMode = "bypassPermissions"
 
+# Per-RESPONSE output cap for the CLI (its 32k default kills long single
+# thinking turns); the attempt budget is enforced by BudgetTracker, not this.
+MAX_OUTPUT_TOKENS_ENV: str = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+MAX_OUTPUT_TOKENS_PER_RESPONSE: int = 64000
+
 # --- Providers ------------------------------------------------------------
 # 'vendor/model' ids (e.g. openai/gpt-5.5) route through OpenRouter's
 # Anthropic-compatible endpoint; bare ids use the Anthropic API directly.

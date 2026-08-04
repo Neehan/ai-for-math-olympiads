@@ -20,7 +20,7 @@ Single source of experiment knobs: `model` (solver), `audit_model` (judge; must 
 Compute = the attempt's total output-token budget. Three layers:
 
 1. `task_budget` (API-side): the model is told its remaining token budget so it paces itself.
-2. Harness cutoff: every assistant message's `usage.output_tokens` is accumulated (deduped by message id) in a per-attempt `BudgetTracker`; the moment a cutoff is crossed the session is interrupted and the phase is marked `budget_exhausted`.
+2. Harness cutoff: every assistant message's `usage.output_tokens` is accumulated in a per-attempt `BudgetTracker` (the max usage snapshot per message id — the CLI streams growing snapshots per message, so first-seen undercounts and summing double-counts); the moment a cutoff is crossed the session is interrupted and the phase is marked `budget_exhausted`. Single responses are capped at 64k via `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (the CLI's 32k default kills long thinking turns).
 3. Wrap-up protocol: working phases run against the soft limit (budget − `wrap_up_reserve_tokens`, config). When it is reached, the harness injects a wrap-up prompt — "you have ~N tokens left, stop working, write down what you have" — and only that final phase may spend the reserve, up to the hard budget. Every graded artifact is therefore a deliberate write-up, not a mid-sentence truncation; the reserve is inside the budget and identical across all arms and cells (same protocol as an exam room's time call). API-error phases are never written as results (the attempt fails and is retried on resume), and sequential rounds carry a runaway cap on top of the budget.
 
 ## Problem data (never committed)

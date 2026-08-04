@@ -29,6 +29,8 @@ from src.constants import (
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_AUTH_TOKEN_ENV,
     ANTHROPIC_BASE_URL_ENV,
+    MAX_OUTPUT_TOKENS_ENV,
+    MAX_OUTPUT_TOKENS_PER_RESPONSE,
     OAUTH_TOKEN_ENV,
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
@@ -64,19 +66,28 @@ class BudgetTracker:
         self.budget_tokens = budget_tokens
         self.soft_limit_tokens = budget_tokens - wrap_up_reserve_tokens
         self.spent = 0
-        self._seen_message_ids: set[str] = set()
+        self._message_tokens: dict[str, int] = {}
         self._prev_session_cost = 0.0
         self._prev_session_turns = 0
 
     def add(self, message_id: str | None, usage: dict[str, object] | None) -> None:
-        """Accumulate one assistant message's output tokens (deduped by id)."""
+        """Accumulate one assistant message's output tokens.
+
+        The CLI streams several events per API message (one per content
+        block), all sharing one id, each carrying that message's cumulative
+        usage snapshot — so track the MAX snapshot per id, never the first
+        (undercounts) nor the sum (double counts).
+        """
         if usage is None:
             return
-        if message_id is not None:
-            if message_id in self._seen_message_ids:
-                return
-            self._seen_message_ids.add(message_id)
-        self.spent += int(str(usage.get("output_tokens", 0)))
+        tokens = int(str(usage.get("output_tokens", 0)))
+        if message_id is None:
+            self.spent += tokens
+            return
+        previous = self._message_tokens.get(message_id, 0)
+        if tokens > previous:
+            self.spent += tokens - previous
+            self._message_tokens[message_id] = tokens
 
     @property
     def exhausted(self) -> bool:
@@ -117,14 +128,16 @@ def token_env_name(model: str) -> str:
 
 
 def provider_env(model: str, api_key: str) -> dict[str, str]:
-    """Per-session auth env: OpenRouter base-URL route, or Anthropic OAuth."""
+    """Per-session env: provider auth plus the raised per-response output cap."""
+    cap = {MAX_OUTPUT_TOKENS_ENV: str(MAX_OUTPUT_TOKENS_PER_RESPONSE)}
     if uses_openrouter(model):
         return {
             ANTHROPIC_BASE_URL_ENV: OPENROUTER_BASE_URL,
             ANTHROPIC_AUTH_TOKEN_ENV: api_key,
             ANTHROPIC_API_KEY_ENV: "",
+            **cap,
         }
-    return {OAUTH_TOKEN_ENV: api_key}
+    return {OAUTH_TOKEN_ENV: api_key, **cap}
 
 
 def build_options(
