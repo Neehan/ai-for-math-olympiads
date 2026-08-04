@@ -46,14 +46,7 @@ export PROBLEMS_FILE=/run/contest/problems.jsonl
 export HINTS_FILE=/run/contest/hints.jsonl
 export OUTLINES_FILE=/run/contest/outlines.jsonl
 
-API_HOSTS="api.anthropic.com claude.ai console.anthropic.com"
-# Open openrouter.ai only when config.json routes a model through it.
-OPENROUTER_ALLOWED=0
-if grep -qE '"(audit_)?model": *"[^"]+/' /app/config.json; then
-    API_HOSTS="$API_HOSTS openrouter.ai"
-    OPENROUTER_ALLOWED=1
-fi
-export OPENROUTER_ALLOWED
+API_HOSTS="api.anthropic.com claude.ai console.anthropic.com openrouter.ai"
 
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED -j ACCEPT
@@ -71,7 +64,6 @@ done
 iptables -P OUTPUT DROP
 
 python - <<'PY'
-import os
 import socket
 import sys
 import urllib.error
@@ -91,13 +83,12 @@ except urllib.error.HTTPError:
     pass  # any HTTP response means the API is reachable
 except OSError as error:
     sys.exit(f"FIREWALL SELF-TEST FAILED: Anthropic API unreachable: {error}")
-if os.environ.get("OPENROUTER_ALLOWED") == "1":
-    try:
-        urllib.request.urlopen("https://openrouter.ai/")
-    except urllib.error.HTTPError:
-        pass
-    except OSError as error:
-        sys.exit(f"FIREWALL SELF-TEST FAILED: OpenRouter unreachable: {error}")
+try:
+    urllib.request.urlopen("https://openrouter.ai/")
+except urllib.error.HTTPError:
+    pass
+except OSError as error:
+    sys.exit(f"FIREWALL SELF-TEST FAILED: OpenRouter unreachable: {error}")
 print("firewall ok: egress restricted to the allowed LLM APIs")
 PY
 
