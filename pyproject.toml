@@ -1,0 +1,23 @@
+[project]
+name = "recognition-is-the-wall"
+version = "0.2.0"
+description = "Harness for the hint-vs-compute olympiad experiment (ICLR)"
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk==0.1.56",
+    "anyio==4.14.2",
+    "python-dotenv==1.2.2",
+    "zstandard==0.25.0",
+    "numpy==2.5.1",
+    "sympy==1.14.0",
+    "scipy==1.18.0",
+    "mpmath==1.3.0",
+]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+
+[tool.setuptools]
+packages = ["src"]

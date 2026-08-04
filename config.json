@@ -1,0 +1,16 @@
+{
+  "model": "claude-opus-4-8",
+  "audit_model": "claude-fable-5",
+  "effort": "high",
+  "unit_output_tokens": 200000,
+  "max_turns_per_phase": 128,
+  "max_concurrency": 8,
+  "arms": {
+    "baseline": { "hint": "none", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
+    "baseline-parallel": { "hint": "none", "mode": "single", "budget_units": 1, "seeds": [4, 5, 6, 7, 8] },
+    "baseline-sequential": { "hint": "none", "mode": "sequential", "budget_units": 8, "seeds": [1, 2, 3] },
+    "placebo-hint": { "hint": "h1", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
+    "hint": { "hint": "h2", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
+    "hint-sequential": { "hint": "h2", "mode": "sequential", "budget_units": 8, "seeds": [1, 2, 3] }
+  }
+}

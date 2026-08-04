@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "deny": [
+      "WebSearch",
+      "WebFetch",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(git:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(sftp:*)",
+      "Bash(ftp:*)",
+      "Bash(rsync:*)",
+      "Bash(nc:*)",
+      "Bash(ncat:*)",
+      "Bash(telnet:*)",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(pip download:*)",
+      "Bash(npm install:*)",
+      "Bash(npm i:*)",
+      "Bash(apt:*)",
+      "Bash(apt-get:*)",
+      "Bash(brew:*)",
+      "Bash(conda install:*)"
+    ]
+  }
+}
