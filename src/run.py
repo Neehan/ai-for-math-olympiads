@@ -164,6 +164,17 @@ async def solve_seed(
     log.info("%s/%s seed %d done -> %s", arm.name, problem.problem_id, seed, output_dir)
 
 
+def select_seeds(arm: ArmConfig, seeds_csv: str | None) -> list[int]:
+    """Seed subset for this invocation (pilot runs); must be the arm's seeds."""
+    if seeds_csv is None:
+        return arm.seeds
+    wanted = [int(s) for s in seeds_csv.split(",") if s.strip()]
+    unknown = [s for s in wanted if s not in arm.seeds]
+    if not wanted or unknown:
+        raise ValueError(f"Seeds {unknown} not in arm '{arm.name}' seeds {arm.seeds}")
+    return wanted
+
+
 def select_problems(
     problems: list[Problem], ids_csv: str | None, domain: str | None
 ) -> list[Problem]:
@@ -193,6 +204,11 @@ async def main() -> None:
     parser.add_argument(
         "--domain", default=None, help="Only problems in this domain (default: all)"
     )
+    parser.add_argument(
+        "--seeds",
+        default=None,
+        help="Comma-separated seed subset for pilot runs (default: the arm's seeds)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
@@ -202,6 +218,7 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
+    seeds = select_seeds(arm, args.seeds)
     clear_scratch_root()
     problems = select_problems(load_problems(), args.problems, args.domain)
     # Fail fast BEFORE spending tokens if any selected problem lacks the hint.
@@ -211,10 +228,10 @@ async def main() -> None:
     pending = [
         (problem, seed)
         for problem in problems
-        for seed in arm.seeds
+        for seed in seeds
         if not seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
     ]
-    total = len(problems) * len(arm.seeds)
+    total = len(problems) * len(seeds)
     log.info(
         "Arm %s: %d attempts to run, %d already done",
         arm.name,

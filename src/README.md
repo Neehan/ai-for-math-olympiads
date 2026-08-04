@@ -41,8 +41,8 @@ All prompts are editable markdown files: `system.md`, `task.md`, `hint.md`, `cri
 
 - **Docker is the boundary.** `./run.sh run --arm <slug>` builds a throwaway container (`--rm`) that holds only the harness, problems, and prompts — no reference solutions, nothing else from the machine.
 - **Prior results never enter a generation container.** The run stage mounts a staging dir pre-seeded with only the `meta.json` completion markers (resume still works) and merges new outputs back into `results/` after the container exits — so an agent can never read past arms' solutions or hint-carrying logs, even by exploring the filesystem. The audit stage mounts the real tree (the judge must read solutions).
-- **Network:** the entrypoint installs an egress firewall (loopback + established + TLS to Anthropic endpoints only, default DROP) and self-tests it before any token is spent: the run aborts unless a non-Anthropic host is unreachable and the API is reachable. Only the LLM connection leaves the container.
-- **Tools:** `agent_settings.json` (passed via the SDK's `--settings`) denies `WebSearch`, `WebFetch`, and network/download Bash commands (`curl`, `wget`, `git`, `pip install`, …); `disallowed_tools` strips the multi-agent/web built-ins. `setting_sources=[]` keeps user/project settings out of the run.
+- **Network:** the entrypoint installs an egress firewall (loopback + established + TLS to the configured LLM API endpoints only — Anthropic, plus `openrouter.ai` only when config.json routes a model through it — default DROP) and self-tests it before any token is spent: the run aborts unless a non-allowlisted host is unreachable and every allowed API is reachable. Only the LLM connection leaves the container.
+- **Tools:** `agent_settings.json` (passed via the SDK's `--settings`) denies `WebSearch`, `WebFetch`, and network/download Bash commands (`curl`, `wget`, `git`, `pip install`, …); `disallowed_tools` strips the web, subagent/fleet, publishing, and background-scheduling built-ins. User/project settings are excluded by passing `--setting-sources` explicitly empty (the SDK silently drops a falsy `setting_sources=[]`).
 - Every tool call is captured untruncated in the logs, so a run can be proven clean after the fact.
 
 ## Outputs — `results/<model>/<arm>/<problem_id>/seed_<k>/`
@@ -63,6 +63,7 @@ After generation, `./run.sh audit --arm <slug>` grades every completed attempt �
 cp .env.example .env                         # set CLAUDE_CODE_OAUTH_TOKEN (one or more)
 ./run.sh run --arm baseline                  # generation, in Docker
 ./run.sh run --arm baseline --domain algebra # one whole domain
+./run.sh run --arm baseline --seeds 1        # pilot: one run instead of k = 3
 ./run.sh audit --arm baseline                # grading, same firewalled container
 python -m src.run --arm baseline             # dev-only host run (NO firewall — never for canonical data)
 ```
