@@ -9,13 +9,22 @@ rotates to the next key instead of stalling (or killing) the run.
 
 import logging
 import os
+import re
 import time
 
 import anyio
 
-from src.constants import OAUTH_TOKEN_ENV, RESET_WAIT_BUFFER_SECONDS
+from src.constants import (
+    OAUTH_TOKEN_ENV,
+    RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS,
+    RESET_WAIT_BUFFER_SECONDS,
+)
 
 log = logging.getLogger("token_pool")
+
+# Exactly CLAUDE_CODE_OAUTH_TOKEN or a numbered variant (_2, _3, ...) — a
+# loose prefix match would swallow unrelated vars like ..._EXPIRES_AT.
+_TOKEN_VAR = re.compile(rf"^{OAUTH_TOKEN_ENV}(_\d+)?$")
 
 
 class TokenPool:
@@ -35,11 +44,11 @@ class TokenPool:
 
     @classmethod
     def from_env(cls) -> "TokenPool":
-        """Collect every CLAUDE_CODE_OAUTH_TOKEN* env var, sorted by name."""
+        """Collect CLAUDE_CODE_OAUTH_TOKEN and numbered variants, sorted by name."""
         names = sorted(
             name
             for name, value in os.environ.items()
-            if name.startswith(OAUTH_TOKEN_ENV) and value.strip()
+            if _TOKEN_VAR.match(name) and value.strip()
         )
         tokens = [os.environ[name].strip() for name in names]
         log.info("Token pool: %d token(s) loaded (%s)", len(tokens), ", ".join(names))
@@ -66,8 +75,16 @@ class TokenPool:
             await anyio.sleep(delay)
 
     async def mark_rate_limited(self, token: str, resets_at: int) -> None:
-        """Put a token on cooldown until its reported reset time (plus buffer)."""
+        """Put a token on cooldown until its reported reset time (plus buffer).
+
+        A missing/past reset time (the SDK can report resets_at=None → 0)
+        falls back to a fixed cooldown — otherwise the token would re-enter
+        rotation immediately and hot-loop.
+        """
+        now = time.time()
         cool_until = float(resets_at + RESET_WAIT_BUFFER_SECONDS)
+        if cool_until <= now:
+            cool_until = now + RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS
         async with self._lock:
             self._cool_until[token] = max(self._cool_until[token], cool_until)
         log.warning(

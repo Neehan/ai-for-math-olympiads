@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir .
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# problems.jsonl, prompts/, config.json, agent_settings.json, and results/ are
-# bind-mounted at run time (see run.sh), so editing them needs no rebuild.
+# prompts/, config.json, agent_settings.json, and results/ are bind-mounted
+# at run time (see run.sh); problems/hints are fetched by the entrypoint
+# before the firewall closes and never stored in the image.
 ENTRYPOINT ["/entrypoint.sh"]

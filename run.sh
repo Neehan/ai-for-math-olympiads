@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# Build the image and run ONE experiment arm in a throwaway container.
+# Build the image and run ONE harness stage (run = generation, audit =
+# grading) in a throwaway container. Both stages sit behind the same egress
+# firewall — a judge with internet could fetch official solutions.
 #
 # The container is removed on exit (--rm); results land in ./results/ via the
-# bind mount. problems.jsonl, prompts/, config.json, and agent_settings.json
-# are mounted read-only so editing them needs no image rebuild.
+# bind mount. Problems and hints are fetched from the dataset URLs by the
+# entrypoint (never stored in the image); prompts/, config.json, and
+# agent_settings.json are mounted read-only so editing them needs no rebuild.
 #
 # Usage:
 #   cp .env.example .env             # set CLAUDE_CODE_OAUTH_TOKEN in it
-#   ./run.sh --arm baseline
-#   ./run.sh --arm hint --problems usamo-2026-3,china-2026-5
+#   ./run.sh run --arm baseline
+#   ./run.sh run --arm baseline --domain combinatorics
+#   ./run.sh audit --arm baseline
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-if [ $# -lt 2 ]; then
-    echo "Usage: ./run.sh --arm <ARM> [--problems id1,id2,...]" >&2
+if [ $# -lt 3 ] || { [ "$1" != "run" ] && [ "$1" != "audit" ]; }; then
+    echo "Usage: ./run.sh <run|audit> --arm <ARM> [--problems id1,id2] [--domain d]" >&2
     exit 2
 fi
 

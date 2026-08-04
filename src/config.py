@@ -6,12 +6,15 @@ from pathlib import Path
 from src.constants import HINT_KINDS, MODES
 from src.models import ArmConfig, ExperimentConfig
 
+_VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high", "max"})
+
 _REQUIRED_TOP_KEYS: frozenset[str] = frozenset(
     {
         "model",
         "audit_model",
         "effort",
         "unit_output_tokens",
+        "wrap_up_reserve_tokens",
         "max_turns_per_phase",
         "max_concurrency",
         "arms",
@@ -62,12 +65,20 @@ def load_config(path: Path) -> ExperimentConfig:
         audit_model=str(raw["audit_model"]),
         effort=str(raw["effort"]),
         unit_output_tokens=int(raw["unit_output_tokens"]),
+        wrap_up_reserve_tokens=int(raw["wrap_up_reserve_tokens"]),
         max_turns_per_phase=int(raw["max_turns_per_phase"]),
         max_concurrency=int(raw["max_concurrency"]),
         arms=arms,
     )
+    if config.effort not in _VALID_EFFORTS:
+        raise ValueError(f"{path}: effort must be one of {sorted(_VALID_EFFORTS)}")
     if config.unit_output_tokens < 1 or config.max_turns_per_phase < 1:
         raise ValueError(f"{path}: token and turn budgets must be positive")
+    if not 0 < config.wrap_up_reserve_tokens < config.unit_output_tokens:
+        raise ValueError(
+            f"{path}: wrap_up_reserve_tokens must be positive and below "
+            f"unit_output_tokens"
+        )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")
     if config.audit_model == config.model:

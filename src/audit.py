@@ -29,9 +29,11 @@ from src.concurrency import run_all
 from src.config import load_config
 from src.constants import (
     AGENT_SETTINGS_PATH,
+    ALLOWED_TOOLS,
     AUDIT_MAX_TURNS,
     AUDIT_SCORE_INVALID,
     AUDIT_SCORE_VALID,
+    AUDIT_SCRATCH_SUBDIR,
     CONFIG_PATH,
     DISALLOWED_TOOLS,
     LOG_FORMAT,
@@ -44,9 +46,11 @@ from src.prompts import audit_prompt
 from src.run import select_problems
 from src.solver import run_resumable
 from src.storage import (
+    archive_audit_scratch,
     budget_cut_multipliers,
     compile_arm_audit,
     cut_solution_path,
+    fresh_scratch_dir,
     load_problems,
     seed_audited,
     seed_done,
@@ -71,27 +75,39 @@ AUDIT_OUTPUT_SCHEMA: dict[str, object] = {
 }
 
 
-def _audit_options(config: ExperimentConfig, oauth_token: str) -> ClaudeAgentOptions:
-    """Judge session options: no tools at all, structured 7/0 output."""
+def _audit_options(
+    config: ExperimentConfig, oauth_token: str, scratch_dir: str
+) -> ClaudeAgentOptions:
+    """Judge session options: scratch tools to CHECK (audit, not solve),
+    structured 7/0 output, opaque scratch cwd (never the repo root).
+
+    Same tool policy as the solver — the judge may verify a computation but,
+    per prompts/audit.md, a passing check never substitutes for written proof.
+    setting_sources exclusion needs extra_args (a falsy [] is dropped).
+    """
     return ClaudeAgentOptions(
         model=config.audit_model,
         effort=config.effort,  # type: ignore[arg-type]
         env={OAUTH_TOKEN_ENV: oauth_token},
-        allowed_tools=[],
+        allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
         settings=str(AGENT_SETTINGS_PATH),
-        setting_sources=[],
+        extra_args={"setting-sources": ""},
         permission_mode=PERMISSION_MODE,
         max_turns=AUDIT_MAX_TURNS,
+        cwd=scratch_dir,
         output_format={"type": "json_schema", "schema": AUDIT_OUTPUT_SCHEMA},
     )
 
 
-async def _judge(config: ExperimentConfig, prompt: str, oauth_token: str) -> dict[str, object]:
+async def _judge(
+    config: ExperimentConfig, prompt: str, oauth_token: str, scratch_dir: str
+) -> dict[str, object]:
     """Run one judge call and return its validated structured verdict."""
     result: ResultMessage | None = None
     rate_limit_reset: int | None = None
-    async for message in query(prompt=prompt, options=_audit_options(config, oauth_token)):
+    options = _audit_options(config, oauth_token, scratch_dir)
+    async for message in query(prompt=prompt, options=options):
         if isinstance(message, ResultMessage):
             result = message
         elif isinstance(message, RateLimitEvent):
@@ -100,7 +116,9 @@ async def _judge(config: ExperimentConfig, prompt: str, oauth_token: str) -> dic
                 rate_limit_reset = info.resets_at if info.resets_at is not None else 0
     if rate_limit_reset is not None:
         raise RateLimitExhausted(rate_limit_reset)
-    if result is None or not isinstance(result.structured_output, dict):
+    if result is None or result.is_error:
+        raise RuntimeError(f"Judge call failed: {result and result.errors}")
+    if not isinstance(result.structured_output, dict):
         raise RuntimeError("Judge returned no structured verdict")
     verdict: dict[str, object] = result.structured_output
     return verdict
@@ -122,7 +140,9 @@ async def audit_seed(
     """
     output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
     solution = seed_solution_text(output_dir)
-    verdict = await _judge(config, audit_prompt(problem, solution), oauth_token)
+    scratch_path = fresh_scratch_dir()
+    scratch = str(scratch_path)
+    verdict = await _judge(config, audit_prompt(problem, solution), oauth_token, scratch)
 
     cuts: dict[str, dict[str, object]] = {}
     for multiplier in budget_cut_multipliers(arm.budget_units):
@@ -134,12 +154,15 @@ async def audit_seed(
             }
             continue
         cut_text = cut_path.read_text(encoding="utf-8")
-        cut_verdict = await _judge(config, audit_prompt(problem, cut_text), oauth_token)
+        cut_verdict = await _judge(
+            config, audit_prompt(problem, cut_text), oauth_token, scratch
+        )
         cuts[f"{multiplier}x"] = {
             "audit_score": cut_verdict["score"],
             "note": cut_verdict["note"],
         }
 
+    archive_audit_scratch(output_dir, scratch_path)
     write_seed_audit(
         output_dir,
         {
@@ -216,7 +239,7 @@ async def main() -> None:
     ]
     await run_all(tasks, config.max_concurrency)
 
-    path, count = compile_arm_audit(config, arm, problems)
+    path, count = compile_arm_audit(config, arm)
     log.info("Compiled %d verdicts -> %s", count, path)
 
 

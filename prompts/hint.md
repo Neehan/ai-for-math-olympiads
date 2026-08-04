@@ -1,2 +1,3 @@
 
-Hint: {{hint}}
+Hint:
+{{hint}}

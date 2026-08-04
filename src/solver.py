@@ -46,13 +46,22 @@ STOP_BUDGET_EXHAUSTED: str = "budget_exhausted"
 
 
 class BudgetTracker:
-    """Cumulative output-token counter for one attempt (all phases share it)."""
+    """Per-attempt session accounting: output tokens, cost, and turn deltas.
 
-    def __init__(self, budget_tokens: int) -> None:
+    All phases of one attempt share one tracker (and one SDK session). The
+    soft limit (budget minus the wrap-up reserve) is where working phases are
+    interrupted so a final wrap-up phase can spend the reserve writing the
+    solution down; the hard budget is the absolute cutoff.
+    """
+
+    def __init__(self, budget_tokens: int, wrap_up_reserve_tokens: int) -> None:
         """budget_tokens is the attempt's total output-token budget."""
         self.budget_tokens = budget_tokens
+        self.soft_limit_tokens = budget_tokens - wrap_up_reserve_tokens
         self.spent = 0
         self._seen_message_ids: set[str] = set()
+        self._prev_session_cost = 0.0
+        self._prev_session_turns = 0
 
     def add(self, message_id: str | None, usage: dict[str, object] | None) -> None:
         """Accumulate one assistant message's output tokens (deduped by id)."""
@@ -69,6 +78,28 @@ class BudgetTracker:
         """True once the attempt has spent its full output-token budget."""
         return self.spent >= self.budget_tokens
 
+    @property
+    def soft_exhausted(self) -> bool:
+        """True once only the wrap-up reserve remains."""
+        return self.spent >= self.soft_limit_tokens
+
+    @property
+    def remaining(self) -> int:
+        """Output tokens left before the hard budget."""
+        return max(0, self.budget_tokens - self.spent)
+
+    def phase_cost_delta(self, session_cost_usd: float) -> float:
+        """This phase's cost from the session-cumulative figure the SDK reports."""
+        delta = max(0.0, session_cost_usd - self._prev_session_cost)
+        self._prev_session_cost = max(self._prev_session_cost, session_cost_usd)
+        return delta
+
+    def phase_turns_delta(self, session_turns: int) -> int:
+        """This phase's turn count from the session-cumulative figure."""
+        delta = max(0, session_turns - self._prev_session_turns)
+        self._prev_session_turns = max(self._prev_session_turns, session_turns)
+        return delta
+
 
 def build_options(
     config: ExperimentConfig, scratch_dir: str, budget_tokens: int, oauth_token: str
@@ -77,8 +108,11 @@ def build_options(
 
     Tool policy comes from agent_settings.json (deny list) plus
     disallowed_tools; network isolation comes from the container firewall.
-    setting_sources is empty so no user/project settings leak into the run.
     oauth_token is the pool-assigned key for this attempt's session.
+
+    NOTE: user/project settings are excluded via extra_args — the SDK drops
+    a falsy setting_sources=[] instead of sending it, so the flag must be
+    passed explicitly with an empty value.
     """
     return ClaudeAgentOptions(
         model=config.model,
@@ -88,7 +122,7 @@ def build_options(
         allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
         settings=str(AGENT_SETTINGS_PATH),
-        setting_sources=[],
+        extra_args={"setting-sources": ""},
         permission_mode=PERMISSION_MODE,
         max_turns=config.max_turns_per_phase,
         task_budget={"total": budget_tokens},
@@ -154,14 +188,19 @@ def _collect_tool_calls(
 
 
 async def run_phase(
-    client: ClaudeSDKClient, prompt: str, label: str, tracker: BudgetTracker
+    client: ClaudeSDKClient,
+    prompt: str,
+    label: str,
+    tracker: BudgetTracker,
+    stop_at_tokens: int,
 ) -> PhaseResult:
     """Send one prompt on an existing session and capture the full response.
 
     Every assistant message's output tokens are added to the shared tracker;
-    the moment the attempt's budget is exceeded the session is interrupted and
-    the phase is marked budget_exhausted. Fails loud if no ResultMessage
-    arrives.
+    the moment cumulative spend reaches stop_at_tokens (the soft limit for
+    working phases, the hard budget for the wrap-up phase) the session is
+    interrupted and the phase is marked budget_exhausted. Fails loud if no
+    ResultMessage arrives or the result is an API error.
     """
     await client.query(prompt)
 
@@ -180,13 +219,14 @@ async def run_phase(
                 if isinstance(block, ToolUseBlock):
                     tool_uses[block.id] = block
             tracker.add(message.message_id, message.usage)
-            if tracker.exhausted and not interrupted:
+            if tracker.spent >= stop_at_tokens and not interrupted:
                 interrupted = True
                 log.info(
-                    "%s: budget exhausted (%d/%d output tokens); interrupting",
+                    "%s: token cutoff reached (%d/%d, stop at %d); interrupting",
                     label,
                     tracker.spent,
                     tracker.budget_tokens,
+                    stop_at_tokens,
                 )
                 await client.interrupt()
         elif isinstance(message, UserMessage) and isinstance(message.content, list):
@@ -206,6 +246,15 @@ async def run_phase(
     if result_message is None:
         raise RuntimeError(f"Agent produced no ResultMessage for phase '{label}'")
 
+    # An API-error result (auth failure, server error, max-turns error, ...)
+    # must never be written as a completed attempt: fail the task so the
+    # resumable rerun retries it. A deliberate interrupt is not an error.
+    if result_message.is_error and not interrupted:
+        raise RuntimeError(
+            f"Phase '{label}' failed: subtype={result_message.subtype} "
+            f"errors={result_message.errors} result={result_message.result!r}"
+        )
+
     text = _collect_text(assistant_messages)
     if result_message.result is not None and not interrupted:
         text = result_message.result
@@ -222,9 +271,9 @@ async def run_phase(
         text=text,
         output_tokens=tracker.spent - spent_before,
         cumulative_output_tokens=tracker.spent,
-        num_turns=result_message.num_turns,
+        num_turns=tracker.phase_turns_delta(result_message.num_turns),
         duration_ms=result_message.duration_ms,
-        total_cost_usd=cost if cost is not None else 0.0,
+        total_cost_usd=tracker.phase_cost_delta(cost if cost is not None else 0.0),
         is_error=result_message.is_error,
         stop_reason=stop_reason,
         budget_exhausted=interrupted,

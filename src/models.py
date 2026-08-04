@@ -10,9 +10,10 @@ class Problem:
     Deliberately minimal: only the statement ever reaches the model, and no
     contest-identifying metadata (country, source, url, year) is held at all.
     domain (algebra/combinatorics/number theory) is kept for CLI filtering
-    only and never enters a prompt. hint_h1 (technique tags) and hint_h2
-    (outline) are joined by problem_id; arms that need them fail fast if
-    missing for a selected problem.
+    only and never enters a prompt. Hint ladder, joined by problem_id:
+    hint_h1 = placebo (None until authored), hint_h2 = technique tags,
+    hint_h3 = solution outline. Arms fail fast if their tier is missing for a
+    selected problem.
     """
 
     problem_id: str
@@ -20,6 +21,7 @@ class Problem:
     domain: str
     hint_h1: str | None
     hint_h2: str | None
+    hint_h3: str | None
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class ExperimentConfig:
     audit_model: str
     effort: str
     unit_output_tokens: int
+    wrap_up_reserve_tokens: int
     max_turns_per_phase: int
     max_concurrency: int
     arms: dict[str, ArmConfig]

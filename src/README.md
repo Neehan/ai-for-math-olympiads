@@ -17,18 +17,19 @@ Single source of experiment knobs: `model` (solver), `audit_model` (judge; must 
 
 ## Compute budget enforcement
 
-Compute = the attempt's total output-token budget. Two layers:
+Compute = the attempt's total output-token budget. Three layers:
 
 1. `task_budget` (API-side): the model is told its remaining token budget so it paces itself.
-2. Harness cutoff: every assistant message's `usage.output_tokens` is accumulated (deduped by message id) in a per-attempt `BudgetTracker`; the moment the budget is exceeded the session is interrupted and the phase is marked `budget_exhausted`.
+2. Harness cutoff: every assistant message's `usage.output_tokens` is accumulated (deduped by message id) in a per-attempt `BudgetTracker`; the moment a cutoff is crossed the session is interrupted and the phase is marked `budget_exhausted`.
+3. Wrap-up protocol: working phases run against the soft limit (budget − `wrap_up_reserve_tokens`, config). When it is reached, the harness injects a wrap-up prompt — "you have ~N tokens left, stop working, write down what you have" — and only that final phase may spend the reserve, up to the hard budget. Every graded artifact is therefore a deliberate write-up, not a mid-sentence truncation; the reserve is inside the budget and identical across all arms and cells (same protocol as an exam room's time call). API-error phases are never written as results (the attempt fails and is retried on resume), and sequential rounds carry a runaway cap on top of the budget.
 
 ## Problem data (never committed)
 
 Problems and hints are NOT in this repo — committing them would leak contest identity. They are fetched at runtime from the `notadib/math-contests-2026` dataset with stdlib `urllib`, straight into memory (no `hf_hub`, no disk cache):
 
 - `hard_problems.jsonl` — statements. Only `problem_id`, `statement`, and `domain` (for `--domain` filtering) are kept; contest-identifying metadata is dropped at load and the prompt carries the statement alone.
-- `hard_hints.jsonl` — technique tags per problem → the **H1** hint (comma-joined).
-- `hard_outlines.jsonl` — audited solution outlines → the **H2** hint (numbered steps).
+- `hard_hints.jsonl` — hint ladder source: `placebo` field → **h1** (not authored yet — placebo arms fail fast before spending a token), `tags` field → **h2** (technique tags, comma-joined; the real hint arm).
+- `hard_outlines.jsonl` — audited solution outlines → **h3** (numbered steps; a bigger tier, no arm uses it yet).
 
 In Docker, the entrypoint prefetches all three BEFORE the egress firewall closes (HuggingFace stays blocked while agents run — an agent that could fetch the hints file would be contaminated); the loader consumes and deletes the temp copies before any agent spawns, so no trace remains.
 
@@ -46,24 +47,23 @@ All prompts are editable markdown files: `system.md`, `task.md`, `hint.md`, `cri
 ## Outputs — `results/<model>/<arm>/<problem_id>/seed_<k>/`
 
 - `logs.jsonl.zst` — one JSON line per phase: prompt, full response text, every tool call (full input/result), per-phase and cumulative output tokens, turns, duration, cost, stop reason.
-- `solution.md` — the graded write-up (last non-critique phase), standalone.
-- `scratch/` — copy of the agent's scratch directory (the scripts and files it created; the prompt requires all file work to live there).
+- `solution.md` — the graded write-up: the last COMPLETE non-critique phase (normally the wrap-up), same convention as the budget cuts so the full-budget point can never score below a lower cut by truncation artifact.
+- `scratch/` — copy of the agent's scratch directory. The live scratch path shown to the model is an opaque uuid (`.scratch/<uuid>`) so the prompt carries no arm, contest, or seed identity; the mapping back to the canonical attempt is this archived location plus `scratch_dir_name` in meta.json.
 - `meta.json` — attempt metadata and totals; written last, so its presence is the completion marker for resumable runs.
-- `audit.json` — the judge's verdict for this attempt (written by the audit stage).
+- `audit.json` — the judge's verdict (full solution + per-cut scores/notes); `audit_scratch/` — any computations the judge ran while grading.
 
 ## Audit (grading)
 
-After generation, `python -m src.audit --arm <slug>` grades every completed attempt. Per the paper's protocol the judge (`audit_model`, config-enforced to differ from the solver) sees only the problem statement and the standalone `solution.md` — hint stripped, blind to arm — and returns a structured near-binary verdict (`audit_score` 7 or 0) plus a `note` saying why the solution is valid or exactly what is missing/wrong. The judge session has no tools and its verdict shape is enforced by a JSON schema, so it always parses. The judge prompt is `prompts/audit.md`, editable like the rest. Verdicts land as `audit.json` per seed (resumable marker) and are compiled into one file per arm: `results/<model>/<arm>/audit.jsonl`, one line per (problem, seed). Audits share the token pool and rate-limit rotation.
+After generation, `./run.sh audit --arm <slug>` grades every completed attempt — in the same firewalled container as generation, because a judge with tools and internet could fetch official solutions from public archives and its archived scratch would contaminate future runs. The judge (`audit_model`, config-enforced to differ from the solver) sees only the problem statement and the standalone `solution.md` — hint stripped, blind to arm — and returns a structured near-binary verdict (`audit_score` 7 or 0) plus a `note` saying why the solution is valid or exactly what is missing/wrong (schema-enforced, always parses). The judge HAS scratch tools, to audit rather than solve: it may recompute a bound or test a small case in its own opaque scratch dir (archived as `audit_scratch/` beside the attempt), but the prompt forbids filling gaps — a failing check is evidence of error, a passing check never substitutes for written proof. Sequential attempts' budget-cut snapshots are each judged as standalone proofs. The judge prompt is `prompts/audit.md`, editable like the rest. Verdicts land as `audit.json` per seed (resumable marker) and are compiled by scanning the arm's whole results tree into `results/<model>/<arm>/audit.jsonl` (a `--problems`-filtered re-audit can never truncate it). Audits share the token pool and rate-limit rotation.
 
 ## Running
 
 ```bash
-cp .env.example .env                     # set CLAUDE_CODE_OAUTH_TOKEN (one or more)
-./run.sh --arm baseline                  # all problems, baseline arm, in Docker
-./run.sh --arm hint --problems id1,id2
-./run.sh --arm baseline --domain algebra # one whole domain
-python -m src.run --arm baseline         # dev run outside Docker (no firewall)
-python -m src.audit --arm baseline       # grade completed attempts (no sandbox needed)
+cp .env.example .env                         # set CLAUDE_CODE_OAUTH_TOKEN (one or more)
+./run.sh run --arm baseline                  # generation, in Docker
+./run.sh run --arm baseline --domain algebra # one whole domain
+./run.sh audit --arm baseline                # grading, same firewalled container
+python -m src.run --arm baseline             # dev-only host run (NO firewall — never for canonical data)
 ```
 
 Concurrency is async (anyio) under a capacity limiter: at most `max_concurrency` (config.json) agent sessions in flight at once.

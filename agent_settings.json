@@ -5,6 +5,7 @@
       "WebFetch",
       "Bash(curl:*)",
       "Bash(wget:*)",
+      "Bash(claude:*)",
       "Bash(git:*)",
       "Bash(ssh:*)",
       "Bash(scp:*)",

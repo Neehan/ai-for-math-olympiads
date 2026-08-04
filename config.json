@@ -3,6 +3,7 @@
   "audit_model": "claude-fable-5",
   "effort": "high",
   "unit_output_tokens": 200000,
+  "wrap_up_reserve_tokens": 20000,
   "max_turns_per_phase": 128,
   "max_concurrency": 8,
   "arms": {

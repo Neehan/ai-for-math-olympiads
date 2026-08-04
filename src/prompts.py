@@ -5,6 +5,8 @@ is literal string replacement (no str.format), so LaTeX braces in problem
 statements or templates can never break substitution.
 """
 
+import re
+
 from src.constants import (
     AUDIT_PROMPT_FILE,
     CRITIQUE_PROMPT_FILE,
@@ -13,6 +15,7 @@ from src.constants import (
     REVISE_PROMPT_FILE,
     SYSTEM_PROMPT_FILE,
     TASK_PROMPT_FILE,
+    WRAP_UP_PROMPT_FILE,
 )
 from src.models import Problem
 
@@ -22,14 +25,23 @@ def _load(filename: str) -> str:
     return (PROMPTS_DIR / filename).read_text(encoding="utf-8")
 
 
+_PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
+
+
 def _render(template: str, values: dict[str, str]) -> str:
-    """Replace each {{key}} with its value; fail loud on leftover placeholders."""
+    """Replace each {{key}} with its value; fail loud on unfilled placeholders.
+
+    Placeholders are checked on the TEMPLATE, never on the rendered output —
+    substituted content (LaTeX, model solutions) may legitimately contain
+    '{{' and must not trip the check.
+    """
+    names = set(_PLACEHOLDER.findall(template))
+    missing = names - set(values)
+    if missing:
+        raise ValueError(f"Unfilled placeholders in prompt template: {sorted(missing)}")
     rendered = template
     for key, value in values.items():
         rendered = rendered.replace("{{" + key + "}}", value)
-    if "{{" in rendered:
-        leftover = rendered[rendered.index("{{") : rendered.index("{{") + 40]
-        raise ValueError(f"Unfilled placeholder in prompt template: '{leftover}'")
     return rendered
 
 
@@ -67,6 +79,11 @@ def critique_prompt() -> str:
 def revise_prompt() -> str:
     """Sequential-channel revise prompt (act on the critique, re-emit proof)."""
     return _load(REVISE_PROMPT_FILE)
+
+
+def wrap_up_prompt(tokens_left: int) -> str:
+    """Final wrap-up prompt: stop working, write down the solution now."""
+    return _render(_load(WRAP_UP_PROMPT_FILE), {"tokens_left": f"{tokens_left:,}"})
 
 
 def audit_prompt(problem: Problem, solution_text: str) -> str:

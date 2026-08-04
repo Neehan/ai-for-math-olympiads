@@ -35,10 +35,13 @@ ZSTD_LEVEL: int = 9
 # per-arm compiled file: one JSON line per (problem, seed) with score + note.
 SEED_AUDIT_FILENAME: str = "audit.json"
 ARM_AUDIT_FILENAME: str = "audit.jsonl"
-# The judge has no tools, so a single response suffices; small safety margin.
-AUDIT_MAX_TURNS: int = 4
+# The judge has scratch tools to CHECK computations (audit, not solve), so it
+# gets a real turn budget; it still cannot fill gaps, only reveal errors.
+AUDIT_MAX_TURNS: int = 64
 AUDIT_SCORE_VALID: int = 7
 AUDIT_SCORE_INVALID: int = 0
+# Judge scratch copies are archived beside the attempt they graded.
+AUDIT_SCRATCH_SUBDIR: str = "audit_scratch"
 
 # --- Prompt template filenames (in PROMPTS_DIR) --------------------------
 SYSTEM_PROMPT_FILE: str = "system.md"
@@ -46,6 +49,7 @@ TASK_PROMPT_FILE: str = "task.md"
 HINT_PROMPT_FILE: str = "hint.md"
 CRITIQUE_PROMPT_FILE: str = "critique.md"
 REVISE_PROMPT_FILE: str = "revise.md"
+WRAP_UP_PROMPT_FILE: str = "wrap_up.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
 
 # --- Problem/hint data sources -------------------------------------------
@@ -67,10 +71,14 @@ OUTLINES_FILE_ENV: str = "OUTLINES_FILE"
 FETCH_TIMEOUT_SECONDS: int = 60
 
 # --- Arm vocabulary -------------------------------------------------------
+# Hint ladder: h1 = placebo (not yet authored — arms fail fast until the
+# dataset provides it), h2 = technique tags (the real hint arm), h3 = full
+# solution outline (a bigger tier; no arm uses it yet).
 HINT_NONE: str = "none"
 HINT_H1: str = "h1"
 HINT_H2: str = "h2"
-HINT_KINDS: frozenset[str] = frozenset({HINT_NONE, HINT_H1, HINT_H2})
+HINT_H3: str = "h3"
+HINT_KINDS: frozenset[str] = frozenset({HINT_NONE, HINT_H1, HINT_H2, HINT_H3})
 MODE_SINGLE: str = "single"
 MODE_SEQUENTIAL: str = "sequential"
 MODES: frozenset[str] = frozenset({MODE_SINGLE, MODE_SEQUENTIAL})
@@ -79,6 +87,11 @@ MODES: frozenset[str] = frozenset({MODE_SINGLE, MODE_SEQUENTIAL})
 PHASE_SOLVE: str = "solve"
 PHASE_CRITIQUE: str = "critique"
 PHASE_REVISE: str = "revise"
+PHASE_WRAP_UP: str = "wrap_up"
+
+# Runaway guard on critique->revise rounds; the output-token budget is the
+# real stop, this only caps a session whose usage reporting has broken.
+SEQUENTIAL_MAX_ROUNDS: int = 64
 
 # --- Tool policy ----------------------------------------------------------
 # Pre-approved tools (run headless without prompting). Network access is
@@ -116,6 +129,9 @@ PERMISSION_MODE: PermissionMode = "bypassPermissions"
 OAUTH_TOKEN_ENV: str = "CLAUDE_CODE_OAUTH_TOKEN"
 # Extra seconds to wait past a reported rate-limit reset time (clock skew).
 RESET_WAIT_BUFFER_SECONDS: int = 60
+# Cooldown applied when a rejection reports no usable reset time; without it a
+# resets_at of 0/None would put the token straight back into rotation.
+RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS: int = 300
 
 # --- Logging --------------------------------------------------------------
 LOG_LEVEL: str = "INFO"

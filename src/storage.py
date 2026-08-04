@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ import zstandard
 
 from src.constants import (
     ARM_AUDIT_FILENAME,
+    AUDIT_SCRATCH_SUBDIR,
     FETCH_TIMEOUT_SECONDS,
     HINTS_FILE_ENV,
     HINTS_URL,
@@ -68,12 +70,14 @@ def _outline_text(steps: list[dict[str, Any]]) -> str:
 def load_problems() -> list[Problem]:
     """Fetch problems + hints + outlines and join them by problem_id.
 
-    Only problem_id and statement are kept from the problems file — contest-
-    identifying metadata is dropped at the door. H1 = technique tags
-    (comma-joined), H2 = solution outline (numbered steps).
+    Only problem_id, statement, and domain are kept from the problems file —
+    contest-identifying metadata is dropped at the door. Hint ladder:
+    h1 = placebo (the hints file's 'placebo' field; None until authored, so
+    placebo arms fail fast), h2 = technique tags (comma-joined), h3 = full
+    solution outline (numbered steps; no arm uses it yet).
     """
-    tags_by_id = {
-        r["problem_id"]: r["tags"] for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)
+    hints_by_id = {
+        r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)
     }
     steps_by_id = {
         r["problem_id"]: r["steps"]
@@ -82,15 +86,18 @@ def load_problems() -> list[Problem]:
     problems: list[Problem] = []
     for record in _fetch_jsonl(PROBLEMS_FILE_ENV, PROBLEMS_URL):
         problem_id = record["problem_id"]
-        tags = tags_by_id.get(problem_id)
+        hints = hints_by_id.get(problem_id, {})
+        placebo = hints.get("placebo")
+        tags = hints.get("tags")
         steps = steps_by_id.get(problem_id)
         problems.append(
             Problem(
                 problem_id=problem_id,
                 statement=record["statement"],
                 domain=record["domain"],
-                hint_h1=", ".join(tags) if tags else None,
-                hint_h2=_outline_text(steps) if steps else None,
+                hint_h1=str(placebo) if placebo else None,
+                hint_h2=", ".join(tags) if tags else None,
+                hint_h3=_outline_text(steps) if steps else None,
             )
         )
     return problems
@@ -108,18 +115,28 @@ def seed_done(output_dir: Path) -> bool:
     return (output_dir / META_FILENAME).exists()
 
 
-def fresh_scratch_dir(arm: ArmConfig, problem_id: str, seed: int) -> Path:
-    """Create an EMPTY per-attempt scratch dir for the agent's file work.
+def fresh_scratch_dir() -> Path:
+    """Create an EMPTY per-attempt scratch dir with an OPAQUE (uuid) name.
 
-    Any pre-existing contents are stale leftovers of a killed run of this same
-    attempt (completed attempts are skipped on resume and never reach here);
-    clearing on entry guarantees every attempt provably starts cold.
+    The path appears in the model's prompt, so it must carry no arm, contest,
+    problem, or seed identity — a named path like '.scratch/placebo-hint/
+    china-2026-3' would tell the model which arm it is in and which contest
+    the problem came from. The mapping back to the canonical attempt is the
+    location of the archived scratch copy in results/ (plus meta.json).
     """
-    path = SCRATCH_ROOT / arm.name / problem_id / f"seed_{seed}"
-    if path.exists():
-        shutil.rmtree(path)
-    path.mkdir(parents=True, exist_ok=True)
+    path = SCRATCH_ROOT / uuid.uuid4().hex
+    path.mkdir(parents=True, exist_ok=False)
     return path
+
+
+def clear_scratch_root() -> None:
+    """Delete all leftover scratch dirs from killed runs (call at run start).
+
+    Attempts create fresh uuid dirs, so stale ones are never reused — this
+    only reclaims disk and keeps aborted work out of the container image.
+    """
+    if SCRATCH_ROOT.exists():
+        shutil.rmtree(SCRATCH_ROOT)
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -156,7 +173,16 @@ def _phase_record(phase: PhaseResult) -> dict[str, object]:
 
 
 def final_solution_text(phases: list[PhaseResult]) -> str:
-    """The graded write-up: text of the last non-critique phase."""
+    """The graded write-up: last COMPLETE non-critique phase's text.
+
+    Same convention as the budget-cut snapshots — an interrupted phase's text
+    is partial commentary, not a final message, and grading it would let the
+    full-budget point score below a lower cut (artifactual non-monotonicity).
+    Falls back to the last non-critique phase only when nothing completed.
+    """
+    for phase in reversed(phases):
+        if phase.label != PHASE_CRITIQUE and not phase.budget_exhausted:
+            return phase.text
     for phase in reversed(phases):
         if phase.label != PHASE_CRITIQUE:
             return phase.text
@@ -242,6 +268,9 @@ def write_seed_outputs(
             key = f"{multiplier}x"
             if found is None:
                 budget_cuts[key] = None
+                # A stale snapshot from an earlier aborted write must not
+                # survive to be graded as this attempt's cut.
+                cut_solution_path(output_dir, multiplier).unlink(missing_ok=True)
                 continue
             index, phase = found
             _atomic_write_bytes(
@@ -267,6 +296,7 @@ def write_seed_outputs(
         "model": config.model,
         "effort": config.effort,
         "seed": seed,
+        "scratch_dir_name": scratch_path.name,
         "budget_output_tokens": budget_tokens,
         "output_tokens_spent": phases[-1].cumulative_output_tokens if phases else 0,
         "budget_exhausted": any(p.budget_exhausted for p in phases),
@@ -300,25 +330,33 @@ def write_seed_audit(output_dir: Path, record: dict[str, object]) -> None:
     )
 
 
-def compile_arm_audit(
-    config: ExperimentConfig, arm: ArmConfig, problems: list[Problem]
-) -> tuple[Path, int]:
-    """Compile every seed verdict into results/<model>/<arm>/audit.jsonl.
+def archive_audit_scratch(output_dir: Path, scratch_path: Path) -> None:
+    """Archive the judge's scratch (if it checked anything) beside the attempt.
 
-    One JSON line per audited (problem, seed), in problem order then seed
-    order. Returns the file path and the number of records written.
+    Keeps the audit auditable: any computation the judge ran while grading is
+    preserved under audit_scratch/. The live scratch dir is always removed.
     """
+    destination = output_dir / AUDIT_SCRATCH_SUBDIR
+    if destination.exists():
+        shutil.rmtree(destination)
+    if any(scratch_path.iterdir()):
+        shutil.copytree(scratch_path, destination)
+    shutil.rmtree(scratch_path)
+
+
+def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, int]:
+    """Compile EVERY seed verdict on disk into results/<model>/<arm>/audit.jsonl.
+
+    Scans the arm's whole results tree rather than any CLI problem filter, so
+    a re-audit of one problem can never truncate the compiled file down to
+    that subset. One JSON line per audited (problem, seed), sorted. Returns
+    the file path and the number of records written.
+    """
+    arm_root = RESULTS_ROOT / config.model / arm.name
     records: list[dict[str, object]] = []
-    for problem in problems:
-        for seed in arm.seeds:
-            output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
-            if seed_audited(output_dir):
-                records.append(
-                    json.loads(
-                        (output_dir / SEED_AUDIT_FILENAME).read_text(encoding="utf-8")
-                    )
-                )
-    path = RESULTS_ROOT / config.model / arm.name / ARM_AUDIT_FILENAME
+    for audit_file in sorted(arm_root.glob(f"*/seed_*/{SEED_AUDIT_FILENAME}")):
+        records.append(json.loads(audit_file.read_text(encoding="utf-8")))
+    path = arm_root / ARM_AUDIT_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
     _atomic_write_bytes(path, (lines + "\n").encode("utf-8"))

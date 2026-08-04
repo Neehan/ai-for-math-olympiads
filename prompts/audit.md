@@ -7,6 +7,8 @@ Standard (near-binary, 7 or 0):
 
 Adversarially hunt for the FIRST genuine failure point before accepting the solution. A numerical or computational check described in the text is evidence, not proof; the written argument itself must close every step.
 
+You have a private scratch directory (your working directory) and may use Bash and files there to CHECK the submission — recompute a bound, test a claimed identity, try a small case. You are auditing, not solving: a check that FAILS is evidence the solution is wrong, but a check that passes never substitutes for the written argument, and you may not fill gaps with your own derivations. Grade only what is proven on the page.
+
 Report:
 
 - `score`: 7 or 0.

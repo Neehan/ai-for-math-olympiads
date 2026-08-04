@@ -22,6 +22,8 @@ from src.config import load_config
 from src.constants import (
     CONFIG_PATH,
     HINT_H1,
+    HINT_H2,
+    HINT_H3,
     HINT_NONE,
     LOG_FORMAT,
     LOG_LEVEL,
@@ -29,11 +31,14 @@ from src.constants import (
     PHASE_CRITIQUE,
     PHASE_REVISE,
     PHASE_SOLVE,
+    PHASE_WRAP_UP,
+    SEQUENTIAL_MAX_ROUNDS,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
-from src.prompts import critique_prompt, revise_prompt, task_prompt
+from src.prompts import critique_prompt, revise_prompt, task_prompt, wrap_up_prompt
 from src.solver import BudgetTracker, build_options, run_phase, run_resumable
 from src.storage import (
+    clear_scratch_root,
     fresh_scratch_dir,
     load_problems,
     seed_done,
@@ -46,14 +51,24 @@ log = logging.getLogger("run")
 
 
 def hint_for(problem: Problem, arm: ArmConfig) -> str | None:
-    """The hint text this arm injects for this problem (None for no-hint)."""
+    """The hint text this arm injects for this problem (None for no-hint).
+
+    Fails fast for a missing tier — in particular h1 (placebo), which has not
+    been authored into the dataset yet.
+    """
     if arm.hint == HINT_NONE:
         return None
-    hint = problem.hint_h1 if arm.hint == HINT_H1 else problem.hint_h2
+    by_tier = {
+        HINT_H1: problem.hint_h1,
+        HINT_H2: problem.hint_h2,
+        HINT_H3: problem.hint_h3,
+    }
+    hint = by_tier[arm.hint]
     if hint is None:
         raise ValueError(
-            f"Arm '{arm.name}' needs hint '{arm.hint}' but problem "
-            f"'{problem.problem_id}' has none in problems.jsonl"
+            f"Arm '{arm.name}' needs hint tier '{arm.hint}' but problem "
+            f"'{problem.problem_id}' has no such hint in the dataset "
+            f"(h1/placebo is not authored yet)"
         )
     return hint
 
@@ -65,10 +80,16 @@ async def solve_seed(
     seed: int,
     oauth_token: str,
 ) -> None:
-    """Run one attempt (one seed) of one problem under one arm; write outputs."""
-    scratch_path = fresh_scratch_dir(arm, problem.problem_id, seed)
+    """Run one attempt (one seed) of one problem under one arm; write outputs.
+
+    Working phases (solve, critique, revise) run against the soft limit
+    (budget minus the wrap-up reserve). If the soft limit is reached, a final
+    wrap-up phase tells the model how many tokens remain and to write down
+    what it has; only that phase may spend into the hard budget.
+    """
+    scratch_path = fresh_scratch_dir()
     budget_tokens = config.budget_tokens(arm)
-    tracker = BudgetTracker(budget_tokens)
+    tracker = BudgetTracker(budget_tokens, config.wrap_up_reserve_tokens)
     options = build_options(config, str(scratch_path), budget_tokens, oauth_token)
     phases: list[PhaseResult] = []
 
@@ -78,6 +99,7 @@ async def solve_seed(
             task_prompt(problem, hint_for(problem, arm), str(scratch_path), budget_tokens),
             PHASE_SOLVE,
             tracker,
+            tracker.soft_limit_tokens,
         )
         phases.append(solve)
         log.info(
@@ -91,15 +113,25 @@ async def solve_seed(
 
         if arm.mode == MODE_SEQUENTIAL:
             round_num = 0
-            while not tracker.exhausted:
+            while not tracker.soft_exhausted and round_num < SEQUENTIAL_MAX_ROUNDS:
                 round_num += 1
                 critique = await run_phase(
-                    client, critique_prompt(), PHASE_CRITIQUE, tracker
+                    client,
+                    critique_prompt(),
+                    PHASE_CRITIQUE,
+                    tracker,
+                    tracker.soft_limit_tokens,
                 )
                 phases.append(critique)
-                if tracker.exhausted:
+                if tracker.soft_exhausted:
                     break
-                revise = await run_phase(client, revise_prompt(), PHASE_REVISE, tracker)
+                revise = await run_phase(
+                    client,
+                    revise_prompt(),
+                    PHASE_REVISE,
+                    tracker,
+                    tracker.soft_limit_tokens,
+                )
                 phases.append(revise)
                 log.info(
                     "%s/%s seed %d: round %d done (%d/%d tokens)",
@@ -110,6 +142,16 @@ async def solve_seed(
                     tracker.spent,
                     budget_tokens,
                 )
+
+        if tracker.soft_exhausted:
+            wrap_up = await run_phase(
+                client,
+                wrap_up_prompt(tracker.remaining),
+                PHASE_WRAP_UP,
+                tracker,
+                tracker.budget_tokens,
+            )
+            phases.append(wrap_up)
 
     output_dir = write_seed_outputs(
         config, arm, problem, seed, budget_tokens, phases, scratch_path
@@ -155,6 +197,7 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
+    clear_scratch_root()
     problems = select_problems(load_problems(), args.problems, args.domain)
     # Fail fast BEFORE spending tokens if any selected problem lacks the hint.
     for problem in problems:
