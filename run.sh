@@ -8,9 +8,10 @@
 # entrypoint (never stored in the image); prompts/, config.json, and
 # agent_settings.json are mounted read-only so editing them needs no rebuild.
 #
-# The run stage mounts a staging dir holding only meta.json resume markers
-# (never prior solutions/logs), merged back into results/ after the container
-# exits; the audit stage mounts the full tree (the judge reads solutions).
+# The run stage mounts a staging dir holding only the selected model/arm's
+# meta.json resume markers (never prior solutions/logs). On exit, only newly
+# completed attempts from that same model/arm are merged into results/; the
+# audit stage mounts the full tree (the judge reads solutions).
 #
 # Usage:
 #   cp .env.example .env             # set CLAUDE_CODE_OAUTH_TOKEN in it
@@ -49,18 +50,80 @@ done < <(compgen -v | grep -E '^(CLAUDE_CODE_OAUTH_TOKEN|OPENROUTER_API_KEY)')
 
 RESULTS_MOUNT="$PWD/results"
 STAGING=""
+STAGING_ARM_ROOT=""
+RESULTS_ARM_ROOT=""
 merge_staging() {
     if [ -n "$STAGING" ] && [ -d "$STAGING" ]; then
-        rsync -a "$STAGING"/ "$PWD/results"/
+        if [ -n "$STAGING_ARM_ROOT" ] && [ -d "$STAGING_ARM_ROOT" ]; then
+            # Pre-seeded meta.json files are resume inputs, not outputs. Never
+            # copy a marker-only directory back: a concurrent older arm may
+            # otherwise resurrect results that were archived or cleared while
+            # it was running. A real completed attempt also has solution.md.
+            while IFS= read -r -d '' meta_file; do
+                seed_dir="${meta_file%/meta.json}"
+                if [ ! -f "$seed_dir/solution.md" ]; then
+                    rm -- "$meta_file"
+                fi
+            done < <(find "$STAGING_ARM_ROOT" -type f -name meta.json -print0)
+            find "$STAGING_ARM_ROOT" -depth -type d -empty -exec rmdir {} \;
+
+            if [ -d "$STAGING_ARM_ROOT" ]; then
+                mkdir -p "$RESULTS_ARM_ROOT"
+                rsync -a "$STAGING_ARM_ROOT"/ "$RESULTS_ARM_ROOT"/
+            fi
+        fi
         rm -rf "$STAGING"
     fi
 }
 trap merge_staging EXIT
 
 if [ "$1" = "run" ]; then
+    run_arm=""
+    run_model=""
+    cli_args=("$@")
+    for ((i = 0; i < ${#cli_args[@]}; i++)); do
+        case "${cli_args[i]}" in
+            --arm)
+                if ((i + 1 >= ${#cli_args[@]})); then
+                    echo "ERROR: --arm requires a value" >&2
+                    exit 2
+                fi
+                run_arm="${cli_args[i + 1]}"
+                i=$((i + 1))
+                ;;
+            --arm=*) run_arm="${cli_args[i]#--arm=}" ;;
+            --model)
+                if ((i + 1 >= ${#cli_args[@]})); then
+                    echo "ERROR: --model requires a value" >&2
+                    exit 2
+                fi
+                run_model="${cli_args[i + 1]}"
+                i=$((i + 1))
+                ;;
+            --model=*) run_model="${cli_args[i]#--model=}" ;;
+        esac
+    done
+    if [ -z "$run_arm" ] || [[ "$run_arm" == */* ]] || [ "$run_arm" = "." ] || [ "$run_arm" = ".." ]; then
+        echo "ERROR: run requires a filesystem-safe --arm value" >&2
+        exit 2
+    fi
+    if [ -z "$run_model" ]; then
+        run_model="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["model"])' config.json)"
+    fi
+    run_model_dir="${run_model//\//-}"
+    if [ -z "$run_model_dir" ] || [ "$run_model_dir" = "." ] || [ "$run_model_dir" = ".." ]; then
+        echo "ERROR: effective model does not map to a safe results directory" >&2
+        exit 2
+    fi
+
     STAGING=$(mktemp -d "$PWD/.results-staging.XXXXXX")
-    rsync -a --include='*/' --include='meta.json' --exclude='*' \
-        "$PWD/results"/ "$STAGING"/
+    RESULTS_ARM_ROOT="$PWD/results/$run_model_dir/$run_arm"
+    STAGING_ARM_ROOT="$STAGING/$run_model_dir/$run_arm"
+    mkdir -p "$STAGING_ARM_ROOT"
+    if [ -d "$RESULTS_ARM_ROOT" ]; then
+        rsync -a --include='*/' --include='meta.json' --exclude='*' \
+            "$RESULTS_ARM_ROOT"/ "$STAGING_ARM_ROOT"/
+    fi
     RESULTS_MOUNT="$STAGING"
 fi
 
