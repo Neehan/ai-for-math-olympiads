@@ -8,7 +8,8 @@ interrupting the session the moment cumulative output tokens exceed the budget.
 
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import TypeVar
 
 from claude_agent_sdk import (
@@ -38,11 +39,13 @@ from src.constants import (
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
     PERMISSION_MODE,
+    SPEND_LIMIT_MARKERS,
 )
 from src.models import (
     ExperimentConfig,
     PhaseResult,
     RateLimitExhausted,
+    TokenSpendLimit,
     ToolCall,
 )
 from src.prompts import system_prompt
@@ -53,6 +56,45 @@ log = logging.getLogger("solver")
 T = TypeVar("T")
 
 STOP_BUDGET_EXHAUSTED: str = "budget_exhausted"
+
+
+class StderrTail:
+    """Collects the CLI's stderr lines for one session.
+
+    The SDK surfaces a fatal CLI exit as a generic exception; the real cause
+    (e.g. an org spend limit) only appears on stderr, so every session records
+    it via the options' stderr callback.
+    """
+
+    def __init__(self) -> None:
+        """Start with no captured lines."""
+        self.lines: list[str] = []
+
+    def __call__(self, line: str) -> None:
+        """SDK stderr callback: record one line."""
+        self.lines.append(line)
+
+    def raise_if_spend_limit(self) -> None:
+        """Re-raise a generic SDK failure as TokenSpendLimit when stderr shows it."""
+        text = "\n".join(self.lines).lower()
+        if any(marker in text for marker in SPEND_LIMIT_MARKERS):
+            raise TokenSpendLimit("\n".join(self.lines[-2:]))
+
+
+@asynccontextmanager
+async def spend_limit_guard(stderr_tail: StderrTail) -> AsyncIterator[None]:
+    """Wrap one SDK session: turn its generic fatal exit into TokenSpendLimit.
+
+    The CLI dies with a bare 'exit code 1' when the org is out of budget; only
+    the captured stderr distinguishes that from a real failure.
+    """
+    try:
+        yield
+    except (RateLimitExhausted, TokenSpendLimit):
+        raise
+    except Exception:
+        stderr_tail.raise_if_spend_limit()
+        raise
 
 
 class BudgetTracker:
@@ -160,7 +202,11 @@ def provider_env(model: str, api_key: str) -> dict[str, str]:
 
 
 def build_options(
-    config: ExperimentConfig, scratch_dir: str, budget_tokens: int, oauth_token: str
+    config: ExperimentConfig,
+    scratch_dir: str,
+    budget_tokens: int,
+    oauth_token: str,
+    stderr_tail: StderrTail,
 ) -> ClaudeAgentOptions:
     """Construct agent options for one attempt.
 
@@ -177,6 +223,7 @@ def build_options(
         cli_path=os.environ.get(CLI_PATH_ENV),
         env=provider_env(config.model, oauth_token),
         effort=config.effort,  # type: ignore[arg-type]
+        stderr=stderr_tail,
         system_prompt=system_prompt(),
         allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
@@ -367,7 +414,8 @@ async def run_resumable(pool: TokenPool, factory: Callable[[str], Awaitable[T]])
     The factory receives the OAuth token for its session. On RateLimitExhausted
     the token is put on cooldown and the attempt restarts from scratch with the
     next available token; the pool only sleeps when every token is cooling, so
-    a rate limit never kills the run.
+    a rate limit never kills the run. On TokenSpendLimit (org out of budget,
+    no reset to wait for) the token is removed from rotation entirely.
     """
     while True:
         token = await pool.acquire()
@@ -375,3 +423,5 @@ async def run_resumable(pool: TokenPool, factory: Callable[[str], Awaitable[T]])
             return await factory(token)
         except RateLimitExhausted as exhausted:
             await pool.mark_rate_limited(token, exhausted.resets_at)
+        except TokenSpendLimit:
+            await pool.mark_dead(token)

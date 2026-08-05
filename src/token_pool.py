@@ -52,10 +52,31 @@ class TokenPool:
         log.info("Token pool: %d key(s) loaded (%s)", len(tokens), ", ".join(names))
         return cls(tokens, env_name)
 
+    async def mark_dead(self, token: str) -> None:
+        """Permanently remove a token (e.g. org monthly spend limit reached)."""
+        async with self._lock:
+            if token in self._tokens:
+                self._tokens.remove(token)
+                del self._cool_until[token]
+                self._next_index = self._next_index % len(self._tokens) if self._tokens else 0
+        log.warning(
+            "Token ...%s DISABLED (spend limit reached); %d token(s) remain",
+            token[-6:],
+            len(self._tokens),
+        )
+
     async def acquire(self) -> str:
-        """Return the next available token, sleeping only if all are cooling."""
+        """Return the next available token, sleeping only if all are cooling.
+
+        Fails loud when every token has been disabled — nothing can proceed.
+        """
         while True:
             async with self._lock:
+                if not self._tokens:
+                    raise RuntimeError(
+                        "All API tokens are disabled (spend limits reached); "
+                        "raise the org limit or add fresh keys to .env"
+                    )
                 now = time.time()
                 for offset in range(len(self._tokens)):
                     index = (self._next_index + offset) % len(self._tokens)
@@ -86,5 +107,7 @@ class TokenPool:
         async with self._lock:
             self._cool_until[token] = max(self._cool_until[token], cool_until)
         log.warning(
-            "Token ...%s rate-limited; cooling until unix %.0f", token[-6:], cool_until
+            "Token ...%s rate-limited; cooling for %.0f min",
+            token[-6:],
+            (cool_until - now) / 60,
         )

@@ -46,7 +46,13 @@ from src.constants import (
 from src.models import ArmConfig, ExperimentConfig, Problem, RateLimitExhausted
 from src.prompts import audit_prompt
 from src.run import select_problems, select_seeds
-from src.solver import provider_env, run_resumable, token_env_name
+from src.solver import (
+    StderrTail,
+    provider_env,
+    run_resumable,
+    spend_limit_guard,
+    token_env_name,
+)
 from src.storage import (
     archive_audit_scratch,
     budget_cut_multipliers,
@@ -79,7 +85,10 @@ AUDIT_OUTPUT_SCHEMA: dict[str, object] = {
 
 
 def _audit_options(
-    config: ExperimentConfig, oauth_token: str, scratch_dir: str
+    config: ExperimentConfig,
+    oauth_token: str,
+    scratch_dir: str,
+    stderr_tail: StderrTail,
 ) -> ClaudeAgentOptions:
     """Judge session options: scratch tools to CHECK (audit, not solve),
     structured 0/5/6/7 output, opaque scratch cwd (never the repo root).
@@ -92,6 +101,7 @@ def _audit_options(
         model=config.audit_model,
         cli_path=os.environ.get(CLI_PATH_ENV),
         effort=config.effort,  # type: ignore[arg-type]
+        stderr=stderr_tail,
         env=provider_env(config.audit_model, oauth_token),
         allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
@@ -110,14 +120,16 @@ async def _judge(
     """Run one judge call and return its validated structured verdict."""
     result: ResultMessage | None = None
     rate_limit_reset: int | None = None
-    options = _audit_options(config, oauth_token, scratch_dir)
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
-            result = message
-        elif isinstance(message, RateLimitEvent):
-            info = message.rate_limit_info
-            if info.status == "rejected":
-                rate_limit_reset = info.resets_at if info.resets_at is not None else 0
+    stderr_tail = StderrTail()
+    options = _audit_options(config, oauth_token, scratch_dir, stderr_tail)
+    async with spend_limit_guard(stderr_tail):
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, ResultMessage):
+                result = message
+            elif isinstance(message, RateLimitEvent):
+                info = message.rate_limit_info
+                if info.status == "rejected":
+                    rate_limit_reset = info.resets_at if info.resets_at is not None else 0
     if rate_limit_reset is not None:
         raise RateLimitExhausted(rate_limit_reset)
     if result is None or result.is_error:

@@ -160,6 +160,9 @@ RESET_WAIT_BUFFER_SECONDS: int = 60
 # Cooldown applied when a rejection reports no usable reset time; without it a
 # resets_at of 0/None would put the token straight back into rotation.
 RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS: int = 300
+# CLI stderr markers meaning the token's org is out of budget (no reset to
+# wait for): the token is removed from rotation and the attempt retries.
+SPEND_LIMIT_MARKERS: tuple[str, ...] = ("spend limit", "usage limit reached")
 
 # --- Logging --------------------------------------------------------------
 LOG_LEVEL: str = "INFO"

@@ -73,6 +73,14 @@ class RateLimitExhausted(Exception):
         super().__init__(f"Rate limit exhausted; resets at unix {resets_at}")
 
 
+class TokenSpendLimit(Exception):
+    """Raised when a token's org spend limit is hit (CLI dies at startup).
+
+    Unlike a rate limit there is no reset to wait for — the token is removed
+    from rotation and the attempt retries on the next token.
+    """
+
+
 @dataclass
 class ToolCall:
     """One tool invocation by the agent, with its full untruncated result.

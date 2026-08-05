@@ -37,9 +37,11 @@ from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
 from src.prompts import critique_prompt, revise_prompt, task_prompt, wrap_up_prompt
 from src.solver import (
     BudgetTracker,
+    StderrTail,
     build_options,
     run_phase,
     run_resumable,
+    spend_limit_guard,
     token_env_name,
 )
 from src.storage import (
@@ -95,10 +97,13 @@ async def solve_seed(
     scratch_path = fresh_scratch_dir()
     budget_tokens = config.budget_tokens(arm)
     tracker = BudgetTracker(budget_tokens, config.wrap_up_reserve_tokens)
-    options = build_options(config, str(scratch_path), budget_tokens, oauth_token)
+    stderr_tail = StderrTail()
+    options = build_options(
+        config, str(scratch_path), budget_tokens, oauth_token, stderr_tail
+    )
     phases: list[PhaseResult] = []
 
-    async with ClaudeSDKClient(options=options) as client:
+    async with spend_limit_guard(stderr_tail), ClaudeSDKClient(options=options) as client:
         solve = await run_phase(
             client,
             task_prompt(problem, hint_for(problem, arm), str(scratch_path), budget_tokens),
