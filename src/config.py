@@ -1,5 +1,6 @@
 """Load and validate config.json into typed experiment configuration."""
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -87,9 +88,31 @@ def load_config(path: Path) -> ExperimentConfig:
         )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")
-    if config.audit_model == config.model:
-        raise ValueError(
-            f"{path}: audit_model must differ from model (a solution may never "
-            f"be graded by its author)"
-        )
+    _check_judge_differs(config, str(path))
     return config
+
+
+def _check_judge_differs(config: ExperimentConfig, where: str) -> None:
+    """A solution may never be graded by its author."""
+    if config.audit_model == config.model:
+        raise ValueError(f"{where}: audit_model must differ from model")
+
+
+def override_models(
+    config: ExperimentConfig, model: str | None, audit_model: str | None
+) -> ExperimentConfig:
+    """Apply CLI --model/--audit-model overrides on top of config.json.
+
+    Re-validates the judge-differs invariant on the effective pair, so an
+    override that collides with the config default fails loud with the fix
+    (pass the other flag too).
+    """
+    if model is None and audit_model is None:
+        return config
+    effective = dataclasses.replace(
+        config,
+        model=model if model is not None else config.model,
+        audit_model=audit_model if audit_model is not None else config.audit_model,
+    )
+    _check_judge_differs(effective, "--model/--audit-model")
+    return effective

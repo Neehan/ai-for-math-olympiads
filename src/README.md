@@ -7,7 +7,7 @@ One harness implementing the paper's arms (top-level README): every attempt is o
 
 ## Configuration — `config.json`
 
-Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), `max_turns_per_phase` / `sequential_max_rounds` / `audit_max_turns` (runaway guards; the token budget is the real stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`) or OpenRouter `vendor/model` ids (`openai/gpt-5.5`), which route through OpenRouter's Anthropic-compatible endpoint using `OPENROUTER_API_KEY*` keys from `.env` (same round-robin pool scheme); results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
+Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), `max_turns_per_phase` / `sequential_max_rounds` / `audit_max_turns` (runaway guards; the token budget is the real stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`) or OpenRouter `vendor/model` ids (`openai/gpt-5.5`), which route through OpenRouter's Anthropic-compatible endpoint using `OPENROUTER_API_KEY*` keys from `.env` (same round-robin pool scheme); results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
 
 ## Compute ladder (1×/2×/4×/8×)
 
@@ -74,6 +74,10 @@ cp .env.example .env   # set CLAUDE_CODE_OAUTH_TOKEN (or OPENROUTER_API_KEY* for
 ./run.sh run --arm baseline --domain combinatorics   # one domain
 ./run.sh run --arm baseline --problems id1,id2       # explicit subset
 ./run.sh run --arm baseline --seeds 1                # pilot: seed subset (run stage only)
+
+# model overrides (default: config.json; solver and judge must differ)
+./run.sh run --arm baseline --model claude-fable-5 --audit-model claude-opus-4-8
+./run.sh audit --arm baseline --model claude-fable-5 --audit-model openai/gpt-5.6-sol
 
 # audit (same container, same filters); compiles audit.jsonl
 ./run.sh audit --arm baseline

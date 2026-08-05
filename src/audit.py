@@ -29,7 +29,7 @@ from claude_agent_sdk import (
 )
 
 from src.concurrency import run_all
-from src.config import load_config
+from src.config import load_config, override_models
 from src.constants import (
     AGENT_SETTINGS_PATH,
     ALLOWED_TOOLS,
@@ -205,10 +205,21 @@ async def main() -> None:
         default=None,
         help="Comma-separated seed subset to audit (default: the arm's seeds)",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Solver model override — whose results tree to grade (default: config.json)",
+    )
+    parser.add_argument(
+        "--audit-model",
+        default=None,
+        help="Judge model override (default: config.json); must differ from the solver",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
-    config = load_config(CONFIG_PATH)
+    config = override_models(load_config(CONFIG_PATH), args.model, args.audit_model)
+    log.info("Solver model: %s; judge model: %s", config.model, config.audit_model)
     if args.arm not in config.arms:
         raise SystemExit(
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
