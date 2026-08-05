@@ -7,6 +7,7 @@ interrupting the session the moment cumulative output tokens exceed the budget.
 """
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -16,6 +17,7 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     RateLimitEvent,
     ResultMessage,
+    StreamEvent,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
@@ -25,6 +27,7 @@ from claude_agent_sdk import (
 from src.constants import (
     AGENT_SETTINGS_PATH,
     ALLOWED_TOOLS,
+    CLI_PATH_ENV,
     DISALLOWED_TOOLS,
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_AUTH_TOKEN_ENV,
@@ -66,17 +69,17 @@ class BudgetTracker:
         self.budget_tokens = budget_tokens
         self.soft_limit_tokens = budget_tokens - wrap_up_reserve_tokens
         self.spent = 0
+        self._completed_phases_tokens = 0
         self._message_tokens: dict[str, int] = {}
         self._prev_session_cost = 0.0
         self._prev_session_turns = 0
 
     def add(self, message_id: str | None, usage: dict[str, object] | None) -> None:
-        """Accumulate one assistant message's output tokens.
+        """Accumulate the current phase's streamed usage (max snapshot per id).
 
-        The CLI streams several events per API message (one per content
-        block), all sharing one id, each carrying that message's cumulative
-        usage snapshot — so track the MAX snapshot per id, never the first
-        (undercounts) nor the sum (double counts).
+        Usage snapshots for one API message (message_start, then the real
+        count in message_delta) share one id and grow — track the max, never
+        the first (undercounts) nor the sum (double counts).
         """
         if usage is None:
             return
@@ -88,6 +91,20 @@ class BudgetTracker:
         if tokens > previous:
             self.spent += tokens - previous
             self._message_tokens[message_id] = tokens
+
+    def finish_phase(self, result_output_tokens: int | None) -> int:
+        """Close a phase with the authoritative per-query result usage.
+
+        Streamed deltas enforce the cutoff mid-phase; the ResultMessage's
+        per-query output_tokens is exact, so it replaces them in the total.
+        Returns the phase's token count.
+        """
+        streamed = sum(self._message_tokens.values())
+        phase_tokens = result_output_tokens if result_output_tokens is not None else streamed
+        self._completed_phases_tokens += phase_tokens
+        self._message_tokens.clear()
+        self.spent = self._completed_phases_tokens
+        return phase_tokens
 
     @property
     def exhausted(self) -> bool:
@@ -155,6 +172,7 @@ def build_options(
     """
     return ClaudeAgentOptions(
         model=config.model,
+        cli_path=os.environ.get(CLI_PATH_ENV),
         env=provider_env(config.model, oauth_token),
         effort=config.effort,  # type: ignore[arg-type]
         system_prompt=system_prompt(),
@@ -165,6 +183,7 @@ def build_options(
         permission_mode=PERMISSION_MODE,
         max_turns=config.max_turns_per_phase,
         task_budget={"total": budget_tokens},
+        include_partial_messages=True,
         cwd=scratch_dir,
     )
 
@@ -248,8 +267,22 @@ async def run_phase(
     tool_results: dict[str, ToolResultBlock] = {}
     result_message: ResultMessage | None = None
     rate_limit_reset: int | None = None
-    spent_before = tracker.spent
     interrupted = False
+
+    current_stream_id: str | None = None
+
+    async def interrupt_if_over_budget() -> None:
+        nonlocal interrupted
+        if tracker.spent >= stop_at_tokens and not interrupted:
+            interrupted = True
+            log.info(
+                "%s: token cutoff reached (%d/%d, stop at %d); interrupting",
+                label,
+                tracker.spent,
+                tracker.budget_tokens,
+                stop_at_tokens,
+            )
+            await client.interrupt()
 
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
@@ -258,16 +291,16 @@ async def run_phase(
                 if isinstance(block, ToolUseBlock):
                     tool_uses[block.id] = block
             tracker.add(message.message_id, message.usage)
-            if tracker.spent >= stop_at_tokens and not interrupted:
-                interrupted = True
-                log.info(
-                    "%s: token cutoff reached (%d/%d, stop at %d); interrupting",
-                    label,
-                    tracker.spent,
-                    tracker.budget_tokens,
-                    stop_at_tokens,
-                )
-                await client.interrupt()
+            await interrupt_if_over_budget()
+        elif isinstance(message, StreamEvent):
+            # The real per-message output count arrives in message_delta;
+            # AssistantMessage.usage only carries the initial tiny snapshot.
+            event_type = message.event.get("type")
+            if event_type == "message_start":
+                current_stream_id = message.event.get("message", {}).get("id")
+            elif event_type == "message_delta":
+                tracker.add(current_stream_id, message.event.get("usage"))
+                await interrupt_if_over_budget()
         elif isinstance(message, UserMessage) and isinstance(message.content, list):
             for block in message.content:
                 if isinstance(block, ToolResultBlock):
@@ -298,6 +331,12 @@ async def run_phase(
     if result_message.result is not None and not interrupted:
         text = result_message.result
 
+    result_usage = result_message.usage or {}
+    result_tokens = result_usage.get("output_tokens")
+    phase_tokens = tracker.finish_phase(
+        int(str(result_tokens)) if result_tokens is not None else None
+    )
+
     cost = result_message.total_cost_usd
     stop_reason = (
         STOP_BUDGET_EXHAUSTED
@@ -308,7 +347,7 @@ async def run_phase(
         label=label,
         prompt=prompt,
         text=text,
-        output_tokens=tracker.spent - spent_before,
+        output_tokens=phase_tokens,
         cumulative_output_tokens=tracker.spent,
         num_turns=tracker.phase_turns_delta(result_message.num_turns),
         duration_ms=result_message.duration_ms,

@@ -17,6 +17,7 @@ results/<model>/<arm>/audit.jsonl, one line per (problem, seed).
 
 import argparse
 import logging
+import os
 
 import anyio
 
@@ -35,6 +36,7 @@ from src.constants import (
     AUDIT_SCORE_INVALID,
     AUDIT_SCORES,
     AUDIT_SCRATCH_SUBDIR,
+    CLI_PATH_ENV,
     CONFIG_PATH,
     DISALLOWED_TOOLS,
     LOG_FORMAT,
@@ -88,6 +90,7 @@ def _audit_options(
     """
     return ClaudeAgentOptions(
         model=config.audit_model,
+        cli_path=os.environ.get(CLI_PATH_ENV),
         effort=config.effort,  # type: ignore[arg-type]
         env=provider_env(config.audit_model, oauth_token),
         allowed_tools=list(ALLOWED_TOOLS),

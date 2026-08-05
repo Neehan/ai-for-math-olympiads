@@ -140,6 +140,9 @@ PERMISSION_MODE: PermissionMode = "bypassPermissions"
 # thinking turns); the attempt budget is enforced by BudgetTracker, not this.
 MAX_OUTPUT_TOKENS_ENV: str = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 MAX_OUTPUT_TOKENS_PER_RESPONSE: int = 64000
+# Docker sets this to the pinned npm CLI (the SDK-bundled CLI ignores the
+# output cap on Opus); unset = the SDK's bundled CLI (dev host runs).
+CLI_PATH_ENV: str = "HARNESS_CLI_PATH"
 
 # --- Providers ------------------------------------------------------------
 # 'vendor/model' ids (e.g. openai/gpt-5.5) route through OpenRouter's
