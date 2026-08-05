@@ -50,7 +50,6 @@ from src.solver import (
     StderrTail,
     provider_env,
     run_resumable,
-    spend_limit_guard,
     token_env_name,
 )
 from src.storage import (
@@ -122,7 +121,10 @@ async def _judge(
     rate_limit_reset: int | None = None
     stderr_tail = StderrTail()
     options = _audit_options(config, oauth_token, scratch_dir, stderr_tail)
-    async with spend_limit_guard(stderr_tail):
+    # A rejected session can still crash the CLI at shutdown (exit 1 after all
+    # messages arrived) — the rejection we already saw must win over that
+    # generic reader error, or the token would never rotate.
+    try:
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, ResultMessage):
                 result = message
@@ -130,6 +132,11 @@ async def _judge(
                 info = message.rate_limit_info
                 if info.status == "rejected":
                     rate_limit_reset = info.resets_at if info.resets_at is not None else 0
+    except Exception:
+        if rate_limit_reset is not None:
+            raise RateLimitExhausted(rate_limit_reset) from None
+        stderr_tail.raise_if_spend_limit()
+        raise
     if rate_limit_reset is not None:
         raise RateLimitExhausted(rate_limit_reset)
     if result is None or result.is_error:

@@ -333,33 +333,41 @@ async def run_phase(
             )
             await client.interrupt()
 
-    async for message in client.receive_response():
-        if isinstance(message, AssistantMessage):
-            assistant_messages.append(message)
-            for block in message.content:
-                if isinstance(block, ToolUseBlock):
-                    tool_uses[block.id] = block
-            tracker.add(message.message_id, message.usage)
-            await interrupt_if_over_budget()
-        elif isinstance(message, StreamEvent):
-            # The real per-message output count arrives in message_delta;
-            # AssistantMessage.usage only carries the initial tiny snapshot.
-            event_type = message.event.get("type")
-            if event_type == "message_start":
-                current_stream_id = message.event.get("message", {}).get("id")
-            elif event_type == "message_delta":
-                tracker.add(current_stream_id, message.event.get("usage"))
+    # A rejected session can still crash the CLI at shutdown (exit 1 after all
+    # messages arrived) — the rejection we already saw must win over that
+    # generic reader error, or the token would never rotate.
+    try:
+        async for message in client.receive_response():
+            if isinstance(message, AssistantMessage):
+                assistant_messages.append(message)
+                for block in message.content:
+                    if isinstance(block, ToolUseBlock):
+                        tool_uses[block.id] = block
+                tracker.add(message.message_id, message.usage)
                 await interrupt_if_over_budget()
-        elif isinstance(message, UserMessage) and isinstance(message.content, list):
-            for block in message.content:
-                if isinstance(block, ToolResultBlock):
-                    tool_results[block.tool_use_id] = block
-        elif isinstance(message, ResultMessage):
-            result_message = message
-        elif isinstance(message, RateLimitEvent):
-            info = message.rate_limit_info
-            if info.status == "rejected":
-                rate_limit_reset = info.resets_at if info.resets_at is not None else 0
+            elif isinstance(message, StreamEvent):
+                # The real per-message output count arrives in message_delta;
+                # AssistantMessage.usage only carries the initial tiny snapshot.
+                event_type = message.event.get("type")
+                if event_type == "message_start":
+                    current_stream_id = message.event.get("message", {}).get("id")
+                elif event_type == "message_delta":
+                    tracker.add(current_stream_id, message.event.get("usage"))
+                    await interrupt_if_over_budget()
+            elif isinstance(message, UserMessage) and isinstance(message.content, list):
+                for block in message.content:
+                    if isinstance(block, ToolResultBlock):
+                        tool_results[block.tool_use_id] = block
+            elif isinstance(message, ResultMessage):
+                result_message = message
+            elif isinstance(message, RateLimitEvent):
+                info = message.rate_limit_info
+                if info.status == "rejected":
+                    rate_limit_reset = info.resets_at if info.resets_at is not None else 0
+    except Exception:
+        if rate_limit_reset is not None:
+            raise RateLimitExhausted(rate_limit_reset) from None
+        raise
 
     if rate_limit_reset is not None:
         raise RateLimitExhausted(rate_limit_reset)
