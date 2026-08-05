@@ -60,12 +60,28 @@ After generation, `./run.sh audit --arm <slug>` grades every completed attempt �
 ## Running
 
 ```bash
-cp .env.example .env                         # set CLAUDE_CODE_OAUTH_TOKEN (one or more)
-./run.sh run --arm baseline                  # generation, in Docker
-./run.sh run --arm baseline --domain algebra # one whole domain
-./run.sh run --arm baseline --seeds 1        # pilot: one run instead of k = 3
-./run.sh audit --arm baseline                # grading, same firewalled container
-python -m src.run --arm baseline             # dev-only host run (NO firewall — never for canonical data)
+cp .env.example .env   # set CLAUDE_CODE_OAUTH_TOKEN (or OPENROUTER_API_KEY* for vendor/model ids)
+
+# generation (Docker), one arm per invocation
+./run.sh run --arm baseline
+./run.sh run --arm baseline-parallel
+./run.sh run --arm hint
+./run.sh run --arm placebo-hint
+./run.sh run --arm baseline-sequential --problems <failed-ids>
+./run.sh run --arm hint-sequential --problems <failed-ids>
+
+# optional filters (combine freely)
+./run.sh run --arm baseline --domain combinatorics   # one domain
+./run.sh run --arm baseline --problems id1,id2       # explicit subset
+./run.sh run --arm baseline --seeds 1                # pilot: seed subset (run stage only)
+
+# audit (same container/filters, no --seeds); compiles audit.jsonl
+./run.sh audit --arm baseline
+./run.sh audit --arm hint --domain combinatorics
+
+# dev only — NO firewall, never for canonical data
+python -m src.run --arm baseline
+python -m src.audit --arm baseline
 ```
 
 Concurrency is async (anyio) under a capacity limiter: at most `max_concurrency` (config.json) agent sessions in flight at once.

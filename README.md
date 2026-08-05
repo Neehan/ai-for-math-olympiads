@@ -29,6 +29,7 @@ Compute is operationalized as the **total output-token budget of an attempt** (t
   - **Parallel (diversity):** 8 independent 1× attempts; solved = any attempt passes ground-truth grading. No model-based selector — pass@8 with oracle grading upper-bounds every best-of-n-with-verifier policy, since a verifier can only choose from what sampling produced. The 8 samples also yield the full parallel curve (pass@1/2/4/8, unbiased estimator) at no extra cost.
   - **Sequential (depth):** one work → self-review → revise trajectory per seed, budget cut at 2×/4×/8× for the curve; the model sees its own previous attempt and critique, never an external grade or ground truth.
 - A capability gap that survives both — 8 independent tries never find the idea, 8× of self-critique never converges to it — is unclosable by test-time compute in either currency.
+- These two channels plus fixed-high effort cover the standard test-time-scaling taxonomy: parallel sampling vs. sequential revision remains the canonical split in the current literature (Agarwal et al. 2025, arXiv:2512.02008; Gu et al. 2026, arXiv:2604.05868), with each channel implemented per its origin method (repeated sampling — Brown et al. 2024; self-refine — Madaan et al. 2023). The remaining family, verifier-guided search, is deliberately absent: no off-the-shelf process verifier exists for proof-level math, its selection component is upper-bounded by oracle-graded pass@8, and building a proof PRM is a method contribution (paper 2), not a compute currency.
 - All token spend is logged per attempt and reported per cell; every headline comparison is token-matched (hint + 1× vs. no-hint at equal total tokens; 8 parallel seeds = one sequential 8× trajectory = 1.6M).
 
 ## Problems
@@ -64,7 +65,7 @@ Arm slugs below are the exact names used in `config.json`, the harness CLI, and 
 | `hint` | H2 1× | non-ceiling | 3 |
 | `hint-sequential` | H2 8×, sequential channel | `hint` failures only | 3 |
 
-Worst case 26 runs per problem × model; gating makes the realistic average far lower. No best-of-N-with-verifier arm, no multi-agent arm — paper 2. The no-hint 8× cell of the 2×2 counts as failed only if **both** channels fail.
+Worst case 26 runs per problem × model; gating makes the realistic average far lower. No best-of-N-with-verifier arm, no multi-agent arm — paper 2. The no-hint 8× cell of the 2×2 counts as failed only if **both** channels fail. The hint 8× cell is deliberately sequential-only (no hint-parallel arm): it feeds no primary statistic, and the asymmetry is conservative both ways — both channels on no-hint 8× make its predicted **failed** harder to sustain, while sequential-only hint 8× can only undercount hint + 8× solves. Channel-symmetric hint-parallel on surviving failures is October rebuttal ammo, not core protocol.
 
 ## Analysis (pre-registered before any 8× run)
 
