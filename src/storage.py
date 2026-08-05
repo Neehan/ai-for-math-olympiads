@@ -73,8 +73,8 @@ def load_problems() -> list[Problem]:
     Only problem_id, statement, and domain are kept from the problems file —
     contest-identifying metadata is dropped at the door. Hint ladder:
     h1 = placebo (the hints file's 'placebo' field; None until authored, so
-    placebo arms fail fast), h2 = technique tags (comma-joined), h3 = full
-    solution outline (numbered steps; no arm uses it yet).
+    placebo arms fail fast), h2 = technique tags (comma-joined), h3 = strategy
+    outline (numbered steps; used by the outline arms).
     """
     hints_by_id = {
         r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)

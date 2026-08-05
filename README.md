@@ -49,8 +49,9 @@ Compute is operationalized as the **total output-token budget of an attempt** (t
 - **Authors:** the IMO medalist panel, from problems + official human solutions ONLY, before any model run exists. Hints frozen, committed, hashed, published verbatim in the appendix. A panelist who did not author a problem's hints audits them for strategic leakage and template compliance.
 - **H1 — placebo:** restates the problem's objects plus true-but-useless context, zero strategy; length-matched to H2 so a short real hint beating longer padding is a stronger result, not a length confound.
 - **H2 — the one-line hint (the "hint" arm of the 2×2):** the key idea as up to 5 tag keywords, each a well-known named technique from a standard source, no steps; tagged at authoring as **analog** (known past technique) vs **novel** (original insight).
+- **H3 — oracle strategy outline:** an audited three-step outline rendered as a numbered list. The `outline` arms measure the practical upper bound from concise strategic guidance while leaving all derivations and proof obligations to the solver.
 - Hint effects are measured against H1, and H1 against no-hint globally (padding may distract; every H2 − H1 effect is partly "useful hint vs. harmful padding").
-- No outline tier: two tiers are the minimal set — H2 is the arm, H1 kills the length/attention confound. A deeper outline probe on unrescued problems is rebuttal ammo (October), not core protocol.
+- The 13-problem combinatorics outline run is exploratory. If it is used to select or compress the confirmatory guidance intervention, those problems remain outside the held-out confirmatory analysis.
 
 ## Arms & runs (per problem × model)
 
@@ -64,8 +65,10 @@ Arm slugs below are the exact names used in `config.json`, the harness CLI, and 
 | `placebo-hint` | H1 (placebo) 1× | non-ceiling | 3 |
 | `hint` | H2 1× | non-ceiling | 3 |
 | `hint-sequential` | H2 8×, sequential channel | `hint` failures only | 3 |
+| `outline` | H3 outline 1× | non-ceiling | 3 |
+| `outline-sequential` | H3 outline 8×, sequential channel | `outline` failures only | 3 |
 
-Worst case 26 runs per problem × model; gating makes the realistic average far lower. No best-of-N-with-verifier arm, no multi-agent arm — paper 2. The no-hint 8× cell of the 2×2 counts as failed only if **both** channels fail. The hint 8× cell is deliberately sequential-only (no hint-parallel arm): it feeds no primary statistic, and the asymmetry is conservative both ways — both channels on no-hint 8× make its predicted **failed** harder to sustain, while sequential-only hint 8× can only undercount hint + 8× solves. Channel-symmetric hint-parallel on surviving failures is October rebuttal ammo, not core protocol.
+Worst case 32 runs per problem × model with both outline arms included; gating makes the realistic average far lower. No best-of-N-with-verifier arm, no multi-agent arm — paper 2. The no-hint 8× cell of the 2×2 counts as failed only if **both** channels fail. The guided 8× cells are deliberately sequential-only (no hint- or outline-parallel arm): they feed no primary statistic, and the asymmetry is conservative both ways — both channels on no-hint 8× make its predicted **failed** harder to sustain, while sequential-only guided 8× can only undercount guidance + 8× solves. Channel-symmetric guided parallel runs on surviving failures are October rebuttal ammo, not core protocol.
 
 ## Analysis (pre-registered before any 8× run)
 
@@ -86,6 +89,6 @@ One problem per bucket gets a full trajectory read: what the model did with and 
 
 ## Budget
 
-Worst case ≈ 80× token-units per problem × model (3 baseline + 5 parallel + 42 sequential + 30 hint arms) ≈ 16M output tokens; across 35 problems × 2 sub-frontier models ≈ 1.1B output tokens worst case, realistically ~half after the ceiling screen and gating. Fable adds ≈ 21M (105 × 1× baseline) plus hint cells on its failures only — ~2–3% of total spend at frontier pricing. Auditor grades everything; humans grade 45–60.
+With both outline arms, the configured worst case is 89 token-units per problem × model (3 baseline + 5 parallel + 24 baseline-sequential + 3 placebo + 3 hint + 24 hint-sequential + 3 outline + 24 outline-sequential) ≈ 17.8M output tokens; across 35 problems × 2 sub-frontier models ≈ 1.25B output tokens worst case, realistically far lower after the ceiling screen and gating. Fable adds ≈ 21M (105 × 1× baseline) plus guided cells on its failures only. Auditor grades everything; humans grade 45–60.
 
 **Discipline rule:** nothing runs that doesn't feed the primary test, a figure, or a pre-registered prediction. Rebuttal ammo (extra model, extra seeds, analog-pointer tier) happens in October, not now.

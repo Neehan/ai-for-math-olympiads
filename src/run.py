@@ -60,8 +60,7 @@ log = logging.getLogger("run")
 def hint_for(problem: Problem, arm: ArmConfig) -> str | None:
     """The hint text this arm injects for this problem (None for no-hint).
 
-    Fails fast for a missing tier — in particular h1 (placebo), which has not
-    been authored into the dataset yet.
+    Fails fast for a missing tier before an attempt can spend any tokens.
     """
     if arm.hint == HINT_NONE:
         return None
@@ -72,10 +71,12 @@ def hint_for(problem: Problem, arm: ArmConfig) -> str | None:
     }
     hint = by_tier[arm.hint]
     if hint is None:
+        detail = (
+            " (h1/placebo is not authored yet)" if arm.hint == HINT_H1 else ""
+        )
         raise ValueError(
             f"Arm '{arm.name}' needs hint tier '{arm.hint}' but problem "
-            f"'{problem.problem_id}' has no such hint in the dataset "
-            f"(h1/placebo is not authored yet)"
+            f"'{problem.problem_id}' has no such hint in the dataset{detail}"
         )
     return hint
 

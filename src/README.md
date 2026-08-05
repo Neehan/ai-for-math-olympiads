@@ -2,12 +2,12 @@
 
 One harness implementing the paper's arms (top-level README): every attempt is one (arm, problem, seed) run of the Claude Agent SDK, in one of two modes.
 
-- **single** — one solve phase (arms `baseline`, `baseline-parallel`, `placebo-hint`, `hint`).
-- **sequential** — solve → (critique → revise)× under one shared output-token budget, cut off mid-phase when the budget is spent (arms `baseline-sequential`, `hint-sequential`). This is budget-bounded Self-Refine (Madaan et al. 2023); the per-phase cumulative token counts in the logs let the analysis cut the trajectory at 2×/4× for the saturation curve.
+- **single** — one solve phase (arms `baseline`, `baseline-parallel`, `placebo-hint`, `hint`, `outline`).
+- **sequential** — solve → (critique → revise)× under one shared output-token budget, cut off mid-phase when the budget is spent (arms `baseline-sequential`, `hint-sequential`, `outline-sequential`). This is budget-bounded Self-Refine (Madaan et al. 2023); the per-phase cumulative token counts in the logs let the analysis cut the trajectory at 2×/4× for the saturation curve.
 
 ## Configuration — `config.json`
 
-Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), `max_turns_per_phase` / `sequential_max_rounds` / `audit_max_turns` (runaway guards; the token budget is the real stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`) or OpenRouter `vendor/model` ids (`openai/gpt-5.5`), which route through OpenRouter's Anthropic-compatible endpoint using `OPENROUTER_API_KEY*` keys from `.env` (same round-robin pool scheme); results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
+Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), `max_turns_per_phase` / `sequential_max_rounds` / `audit_max_turns` (runaway guards; the token budget is the real stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`) or OpenRouter `vendor/model` ids (`openai/gpt-5.5`), which route through OpenRouter's Anthropic-compatible endpoint using `OPENROUTER_API_KEY*` keys from `.env` (same round-robin pool scheme); results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
 
 ## Compute ladder (1×/2×/4×/8×)
 
@@ -29,7 +29,7 @@ Problems and hints are NOT in this repo — committing them would leak contest i
 
 - `hard_problems.jsonl` — statements. Only `problem_id`, `statement`, and `domain` (for `--domain` filtering) are kept; contest-identifying metadata is dropped at load and the prompt carries the statement alone.
 - `hard_hints.jsonl` — hint ladder source: `placebo` field → **h1** (not authored yet — placebo arms fail fast before spending a token), `tags` field → **h2** (up to 5 well-known technique-tag keywords, comma-joined ≈ one line; the real hint arm).
-- `hard_outlines.jsonl` — audited solution outlines → **h3** (numbered steps; a bigger tier, no arm uses it yet).
+- `hard_outlines.jsonl` — audited strategy outlines → **h3** (numbered steps; the `outline` and `outline-sequential` arms).
 
 In Docker, the entrypoint prefetches all three BEFORE the egress firewall closes (HuggingFace stays blocked while agents run — an agent that could fetch the hints file would be contaminated); the loader consumes and deletes the temp copies before any agent spawns, so no trace remains.
 
@@ -66,9 +66,11 @@ cp .env.example .env   # set CLAUDE_CODE_OAUTH_TOKEN (or OPENROUTER_API_KEY* for
 ./run.sh run --arm baseline
 ./run.sh run --arm baseline-parallel
 ./run.sh run --arm hint
+./run.sh run --arm outline
 ./run.sh run --arm placebo-hint
 ./run.sh run --arm baseline-sequential --problems <failed-ids>
 ./run.sh run --arm hint-sequential --problems <failed-ids>
+./run.sh run --arm outline-sequential --problems <failed-ids>
 
 # optional filters (combine freely)
 ./run.sh run --arm baseline --domain combinatorics   # one domain
@@ -91,7 +93,7 @@ python -m src.audit --arm baseline
 
 Concurrency is async (anyio) under a capacity limiter: at most `max_concurrency` (config.json) agent sessions in flight at once.
 
-Resumable: attempts whose `meta.json` exists are skipped; a rate-limited token cools down and work rotates to the next token, sleeping only when all are cooling. Run one arm per invocation; gated arms (`baseline-parallel`/`baseline-sequential` on `baseline` failures, `hint-sequential` on `hint` failures) take the failure list via `--problems`.
+Resumable: attempts whose `meta.json` exists are skipped; a rate-limited token cools down and work rotates to the next token, sleeping only when all are cooling. Run one arm per invocation; gated arms (`baseline-parallel`/`baseline-sequential` on `baseline` failures, `hint-sequential` on `hint` failures, `outline-sequential` on `outline` failures) take the failure list via `--problems`.
 
 ## Type checking
 
