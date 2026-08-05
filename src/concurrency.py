@@ -24,15 +24,22 @@ async def run_all(tasks: Sequence[Callable[[], Awaitable[T]]], limit: int) -> No
     """Run zero-arg async task factories, at most `limit` in flight.
 
     A task that raises is logged and skipped; siblings are unaffected.
+    After each task finishes (either way), a [done/total] progress line is
+    logged so long runs show how much work remains.
     """
     limiter = anyio.CapacityLimiter(limit)
+    total = len(tasks)
+    finished = 0
 
     async def _guarded(factory: Callable[[], Awaitable[T]]) -> None:
+        nonlocal finished
         async with limiter:
             try:
                 await factory()
             except Exception:
                 log.exception("Task failed; continuing with remaining tasks")
+            finished += 1
+            log.info("[%d/%d] tasks finished", finished, total)
 
     async with anyio.create_task_group() as group:
         for factory in tasks:
