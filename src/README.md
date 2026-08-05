@@ -75,9 +75,10 @@ cp .env.example .env   # set CLAUDE_CODE_OAUTH_TOKEN (or OPENROUTER_API_KEY* for
 ./run.sh run --arm baseline --problems id1,id2       # explicit subset
 ./run.sh run --arm baseline --seeds 1                # pilot: seed subset (run stage only)
 
-# audit (same container/filters, no --seeds); compiles audit.jsonl
+# audit (same container, same filters); compiles audit.jsonl
 ./run.sh audit --arm baseline
 ./run.sh audit --arm hint --domain combinatorics
+./run.sh audit --arm baseline --seeds 1
 
 # dev only — NO firewall, never for canonical data
 python -m src.run --arm baseline

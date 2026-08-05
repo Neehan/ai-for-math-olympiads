@@ -45,7 +45,7 @@ from src.constants import (
 )
 from src.models import ArmConfig, ExperimentConfig, Problem, RateLimitExhausted
 from src.prompts import audit_prompt
-from src.run import select_problems
+from src.run import select_problems, select_seeds
 from src.solver import provider_env, run_resumable, token_env_name
 from src.storage import (
     archive_audit_scratch,
@@ -200,6 +200,11 @@ async def main() -> None:
     parser.add_argument(
         "--domain", default=None, help="Only problems in this domain (default: all)"
     )
+    parser.add_argument(
+        "--seeds",
+        default=None,
+        help="Comma-separated seed subset to audit (default: the arm's seeds)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
@@ -211,14 +216,15 @@ async def main() -> None:
     arm = config.arms[args.arm]
     clear_scratch_root()
     problems = select_problems(load_problems(), args.problems, args.domain)
+    seeds = select_seeds(arm, args.seeds)
 
     generated = [
         (problem, seed)
         for problem in problems
-        for seed in arm.seeds
+        for seed in seeds
         if seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
     ]
-    ungenerated = len(problems) * len(arm.seeds) - len(generated)
+    ungenerated = len(problems) * len(seeds) - len(generated)
     if ungenerated:
         log.warning(
             "%d attempts have no generation output yet and are skipped", ungenerated
