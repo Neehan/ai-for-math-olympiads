@@ -225,6 +225,7 @@ __marimo__/
 # Contest problems are never committed (leaks contest identity); fetched
 # from the dataset URLs at runtime, in memory only.
 problems.jsonl
+local_data/
 
 # Transient run-stage results staging (merged into results/ on exit).
 .results-staging.*/

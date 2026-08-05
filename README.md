@@ -1,6 +1,8 @@
-# Paper 1: One-Line Hints Beat 8× Compute (ICLR 2027, ~7 weeks)
+# Paper 1: One-Line Strategy Probes Predict Test-Time Scaling Saturation (ICLR 2027, ~7 weeks)
 
-**Claim.** On hard, novel olympiad problems, baseline failures split operationally into two kinds: problems a one-line hint rescues at 1× compute stay unsolved at 8× compute without the hint, while problems no hint rescues are mostly closed by compute alone. Labels are assigned from the hint axis at 1× only; the prediction is tested on the independent compute axis at 8× — a double dissociation, not a re-labeling. Cognitive terms (capability/rigor, recognition/execution) appear only as interpretation in the discussion. Hints are oracle probes, not a proposed method.
+**Goal.** Test whether response to a frozen, one-sentence oracle strategy hint predicts the outcome and saturation of unaided test-time scaling on hard, novel olympiad proofs. We predict that hint-responsive failures remain largely unsolved through 8× unaided compute, while compute-responsive failures are recovered early, with negligible additional yield beyond 4×. Labels come only from the hint axis at 1×; the independent compute axis tests the prediction. Cognitive terms (capability/rigor, recognition/execution) appear only as interpretation in the discussion. Hints are diagnostic probes, not a proposed solving method.
+
+**Current development stage.** The 13-problem combinatorics runs are the intervention-development roadmap: five technique tags test a lower-information probe and the three-step outline tests an oracle-guidance ceiling. If the outline materially rescues Opus, compress it to a single ≤25-word hint, freeze the authoring rule and all held-out hints, and use that as the sole confirmatory guidance intervention. Development problems stay outside the held-out confirmatory headline analysis.
 
 ## Design: 2×2 factorial, {no-hint, hint} × {1×, 8×}
 
@@ -9,12 +11,12 @@ Every non-ceiling problem runs in all four cells, k = 3 independent runs per cel
 | Label | no-hint 1× | hint 1× | no-hint 8× (predicted) | hint 8× (predicted) |
 |---|---|---|---|---|
 | ceiling | solved | — | — | — |
-| **capability gap** | failed | solved | **failed** | solved |
-| **rigor gap** (provisional) | failed | failed | **solved** | solved |
-| both gaps | failed | failed | failed | solved |
+| **hint-responsive / compute-flat** | failed | solved | **failed** | solved |
+| **hint-unresponsive / compute-responsive** | failed | failed | **solved** | solved |
+| joint-responsive | failed | failed | failed | solved |
 | beyond | failed | failed | failed | failed |
 
-The headline figure is the saturation curve: no-hint solve rate at 1×/2×/4×/8×, per bucket, one curve per compute channel (parallel pass@1/2/4/8 and sequential budget cuts — see Compute below). Rigor-labeled problems rise with compute; capability-labeled problems stay flat at ~0 across all four budgets in both channels. We never claim "never solves" — we claim flat at four doublings under both ways of spending them, which is falsifiable. The companion stat: a one-line hint at 1× rescues more baseline failures than 8× compute at zero hints, and hint + 8× together clear N/35.
+The headline figure is the saturation curve: no-hint solve rate at 1×/2×/4×/8×, per bucket, one curve per compute channel (parallel pass@1/2/4/8 and sequential budget cuts — see Compute below). Compute-responsive problems rise early and are predicted to realize nearly all observed gains by 4×; hint-responsive problems stay flat at ~0 across all four budgets in both channels. We never claim "never solves" — only that additional compute does not close the failure under the tested budgets and protocols. Companion results: the one-line hint at 1× rescues more baseline failures than 8× unaided compute, and hint + 8× together clear N/35.
 
 Why this is causal and not circular: the labeling intervention (hint at 1×) and the validating intervention (compute at 8×) are independent manipulations; neither the labels nor the prediction touches the runs that test it.
 
@@ -28,7 +30,7 @@ Compute is operationalized as the **total output-token budget of an attempt** (t
 - **8× is delivered through both canonical channels**, because they fail differently and the capability claim must survive both:
   - **Parallel (diversity):** 8 independent 1× attempts; solved = any attempt passes ground-truth grading. No model-based selector — pass@8 with oracle grading upper-bounds every best-of-n-with-verifier policy, since a verifier can only choose from what sampling produced. The 8 samples also yield the full parallel curve (pass@1/2/4/8, unbiased estimator) at no extra cost.
   - **Sequential (depth):** one work → self-review → revise trajectory per seed, budget cut at 2×/4×/8× for the curve; the model sees its own previous attempt and critique, never an external grade or ground truth.
-- A capability gap that survives both — 8 independent tries never find the idea, 8× of self-critique never converges to it — is unclosable by test-time compute in either currency.
+- A hint-responsive failure that survives both — 8 independent tries never find the idea and 8× of self-critique never converges to it — is not closed by test-time compute under either tested protocol.
 - These two channels plus fixed-high effort cover the standard test-time-scaling taxonomy: parallel sampling vs. sequential revision remains the canonical split in the current literature (Agarwal et al. 2025, arXiv:2512.02008; Gu et al. 2026, arXiv:2604.05868), with each channel implemented per its origin method (repeated sampling — Brown et al. 2024; self-refine — Madaan et al. 2023). The remaining family, verifier-guided search, is deliberately absent: no off-the-shelf process verifier exists for proof-level math, its selection component is upper-bounded by oracle-graded pass@8, and building a proof PRM is a method contribution (paper 2), not a compute currency.
 - All token spend is logged per attempt and reported per cell; every headline comparison is token-matched (hint + 1× vs. no-hint at equal total tokens; 8 parallel seeds = one sequential 8× trajectory = 1.6M).
 
@@ -39,19 +41,18 @@ Compute is operationalized as the **total output-token budget of an attempt** (t
 **Models.** Contamination rule: every model's published training cutoff must predate the earliest contest (Feb 2026); we state each model's cutoff next to each contest date in the appendix.
 
 - **Sub-frontier mains (full 2×2 + both compute channels): Opus 4.8 (cutoff Jan 2026) + GPT-5.5.** Cross-lab replication; all primary statistics are within-model, paired across problems. GPT-5.6 is excluded as contaminated (cutoff postdates the problem set).
-- **Frontier (boundary shift): Fable 5 (cutoff Jan 2026)**, no-hint 1× on all 35 (k = 3, same 200k cap, same harness, same grading) + H1/H2 at 1× on its baseline failures only. No saturation sweep — Fable's role is the boundary-shift claim: sub-frontier capability gaps becoming frontier baseline solves shows hint-closable gaps are exactly the ones the next model tier absorbs, making hint response a cheap forecast of scaling. Fable failures that H2 rescues remain hint-closable at the frontier; failures H2 does not rescue feed the case-study section.
+- **Frontier (boundary shift): Fable 5 (cutoff Jan 2026)**, no-hint 1× on all 35 (k = 3, same 200k cap, same harness, same grading) plus the frozen confirmatory hint at 1× on its baseline failures only. No saturation sweep — Fable is a frontier baseline and positive control. The boundary-shift prediction is that Opus hint-responsive failures disproportionately become Fable baseline solves; residual Fable failures test whether the same compact strategy probe still unlocks performance at the frontier.
 - **Open-source replication: reserved for October rebuttal** (discipline rule) — one open-weights reasoning model with a verifiable pre-Feb-2026 cutoff, for permanent reproducibility.
 
-**Ceiling screen:** a problem solved 3/3 at no-hint/1× is ceiling and dropped from analysis (pre-registered). All gating below is within-arm at lower budget (monotonicity: a larger budget with the same harness can only help, since the harness may stop early), so there is no cross-arm selection coupling.
 
-## Hints
+## Hint development roadmap
 
-- **Authors:** the IMO medalist panel, from problems + official human solutions ONLY, before any model run exists. Hints frozen, committed, hashed, published verbatim in the appendix. A panelist who did not author a problem's hints audits them for strategic leakage and template compliance.
-- **H1 — placebo:** restates the problem's objects plus true-but-useless context, zero strategy; length-matched to H2 so a short real hint beating longer padding is a stronger result, not a length confound.
-- **H2 — the one-line hint (the "hint" arm of the 2×2):** the key idea as up to 5 tag keywords, each a well-known named technique from a standard source, no steps; tagged at authoring as **analog** (known past technique) vs **novel** (original insight).
-- **H3 — oracle strategy outline:** an audited three-step outline rendered as a numbered list. The `outline` arms measure the practical upper bound from concise strategic guidance while leaving all derivations and proof obligations to the solver.
-- Hint effects are measured against H1, and H1 against no-hint globally (padding may distract; every H2 − H1 effect is partly "useful hint vs. harmful padding").
-- The 13-problem combinatorics outline run is exploratory. If it is used to select or compress the confirmatory guidance intervention, those problems remain outside the held-out confirmatory analysis.
+- **Current lower-information probe (`hint` / H2):** up to 5 well-known technique-tag keywords, with no steps. The current Opus and Fable runs test whether this signal is sufficient.
+- **Current oracle ceiling (`outline` / H3):** an audited three-step strategy outline that leaves derivations and proof obligations to the solver. The 13-problem combinatorics run is exploratory.
+- **Decision gate:** if outlines materially rescue Opus, compress the useful strategic content into one sentence of at most 25 whitespace-delimited words. The sentence may name a construction, invariant, reduction, target lemma, or short sequence, but may not give the final answer or a derivation.
+- **Confirmatory intervention:** the resulting ≤25-word oracle strategy hint is the sole guidance treatment in the held-out study. Its specification and all held-out hints are frozen before any held-out run.
+- **Authorship and audit:** the IMO medalist panel writes hints from problem statements and official human solutions only. Hints are committed, hashed, and published verbatim; a different panelist audits template compliance and information leakage.
+- **Placebo (`placebo-hint` / H1):** retained as an available length/control arm while the intervention is under development; its confirmatory role is decided before held-out runs.
 
 ## Arms & runs (per problem × model)
 
@@ -73,8 +74,9 @@ Worst case 32 runs per problem × model with both outline arms included; gating 
 ## Analysis (pre-registered before any 8× run)
 
 - Solve rate per cell from k = 3: **solved = ≥ 2/3, failed = 0/3**. Problems landing at exactly 1/3 in a labeling cell are excluded from buckets (reported separately) but kept in the continuous analysis.
-- **Primary test:** among non-ceiling problems, no-hint/8× solve rate is higher for hint-unrescued (provisional rigor) than for hint-rescued (capability) problems; one-sided permutation test, resampling by problem.
-- **Secondary (continuous):** hint response R_H = p_H2 − p_H1 at 1×; compute response R_C = p_8× − p_1× no-hint. Coefficient of R_H on R_C negative after conditioning on baseline solve rate; logistic mixed model (model fixed effects, problem random effects), uncertainty bootstrapped by problem.
+- **Primary test:** among non-ceiling problems, no-hint/8× solve rate is higher for hint-unresponsive than for hint-responsive problems; one-sided permutation test, resampling by problem.
+- **Pre-registered saturation prediction:** among problems rescued anywhere by unaided compute through 8×, nearly all rescues occur by 4×; the incremental aggregate gain from 4× to 8× must remain below a practical-equivalence margin selected on the development set and frozen before held-out runs.
+- **Secondary (continuous):** hint response R_H = p_hint − p_no-hint at 1×; compute response R_C = p_8× − p_1× no-hint. Coefficient of R_H on R_C negative after conditioning on baseline solve rate; logistic mixed model (model fixed effects, problem random effects), uncertainty bootstrapped by problem.
 - **Placebo-high problems** (H1 ≥ 2/3) are reported against baseline only, no mechanism claimed.
 - Per-problem 3-seed calls are noisy; all statistics aggregate, paired across problems.
 
