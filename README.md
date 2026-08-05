@@ -2,7 +2,7 @@
 
 **Goal.** Test whether response to a frozen, one-sentence oracle strategy hint predicts the outcome and saturation of unaided test-time scaling on hard, novel olympiad proofs. We predict that hint-responsive failures remain largely unsolved through 8× unaided compute, while compute-responsive failures are recovered early, with negligible additional yield beyond 4×. Labels come only from the hint axis at 1×; the independent compute axis tests the prediction. Cognitive terms (capability/rigor, recognition/execution) appear only as interpretation in the discussion. Hints are diagnostic probes, not a proposed solving method.
 
-**Current development stage.** The 13-problem combinatorics runs are the intervention-development roadmap: five technique tags test a lower-information probe and the three-step outline tests an oracle-guidance ceiling. If the outline materially rescues Opus, compress it to a single ≤25-word hint, freeze the authoring rule and all held-out hints, and use that as the sole confirmatory guidance intervention. Development problems stay outside the held-out confirmatory headline analysis.
+**Current development stage.** The 13-problem combinatorics runs are the intervention-development roadmap: five technique tags tested a lower-information probe and the three-step outline tested an oracle-guidance ceiling. The current step is to test the compressed single-sentence ≤25-word strategy probe before freezing the authoring rule and all held-out hints. Development problems stay outside the held-out confirmatory headline analysis.
 
 ## Design: 2×2 factorial, {no-hint, hint} × {1×, 8×}
 
@@ -47,9 +47,10 @@ Compute is operationalized as the **total output-token budget of an attempt** (t
 
 ## Hint development roadmap
 
-- **Current lower-information probe (`hint` / H2):** up to 5 well-known technique-tag keywords, with no steps. The current Opus and Fable runs test whether this signal is sufficient.
+- **Legacy lower-information probe (H2-v1):** up to 5 well-known technique-tag keywords, with no steps. This development-only file is archived as `hard_hints-v1.jsonl` and is no longer used.
+- **Current compressed probe (`hint` / H2):** a single ≤25-word oracle strategy hint stored verbatim in the scalar `hint` field of `hard_hints.jsonl`.
 - **Current oracle ceiling (`outline` / H3):** an audited three-step strategy outline that leaves derivations and proof obligations to the solver. The 13-problem combinatorics run is exploratory.
-- **Decision gate:** if outlines materially rescue Opus, compress the useful strategic content into one sentence of at most 25 whitespace-delimited words. The sentence may name a construction, invariant, reduction, target lemma, or short sequence, but may not give the final answer or a derivation.
+- **Decision gate:** if outlines materially rescue Opus, compress the useful strategic content into one sentence of at most 25 whitespace-delimited words. The sentence may state the exact problem-specific strategic information—including a bespoke construction, invariant, reduction, target lemma, numerical cutoff, or short sequence—but may not state the final answer or supply a derivation. The solver remains responsible for proving every step.
 - **Confirmatory intervention:** the resulting ≤25-word oracle strategy hint is the sole guidance treatment in the held-out study. Its specification and all held-out hints are frozen before any held-out run.
 - **Authorship and audit:** the IMO medalist panel writes hints from problem statements and official human solutions only. Hints are committed, hashed, and published verbatim; a different panelist audits template compliance and information leakage.
 - **Placebo (`placebo-hint` / H1):** retained as an available length/control arm while the intervention is under development; its confirmatory role is decided before held-out runs.

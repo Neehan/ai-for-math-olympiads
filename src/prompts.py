@@ -54,9 +54,9 @@ def task_prompt(
     """Initial solve prompt: ONLY the statement (plus scratch dir, token
     budget, and optional hint) — no metadata that could identify the contest.
 
-    hint_text is the raw hint text for the arm's tier (h1 placebo, h2 tags,
-    or h3 outline) or None for the no-hint arm; when present it is wrapped by
-    prompts/hint.md.
+    hint_text is the raw hint text for the arm's tier (h1 placebo, h2 frozen
+    one-sentence strategy hint, or h3 outline) or None for the no-hint arm;
+    when present it is wrapped by prompts/hint.md.
     """
     hint_block = "" if hint_text is None else _render(_load(HINT_PROMPT_FILE), {"hint": hint_text})
     return _render(

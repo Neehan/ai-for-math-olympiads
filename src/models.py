@@ -11,9 +11,9 @@ class Problem:
     contest-identifying metadata (country, source, url, year) is held at all.
     domain (algebra/combinatorics/number theory) is kept for CLI filtering
     only and never enters a prompt. Hint ladder, joined by problem_id:
-    hint_h1 = placebo (None until authored), hint_h2 = technique tags,
-    hint_h3 = solution outline. Arms fail fast if their tier is missing for a
-    selected problem.
+    hint_h1 = placebo (None until authored), hint_h2 = frozen one-sentence
+    strategy hint, hint_h3 = solution outline. Arms fail fast if their tier is
+    missing for a selected problem.
     """
 
     problem_id: str

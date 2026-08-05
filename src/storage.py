@@ -73,8 +73,9 @@ def load_problems() -> list[Problem]:
     Only problem_id, statement, and domain are kept from the problems file —
     contest-identifying metadata is dropped at the door. Hint ladder:
     h1 = placebo (the hints file's 'placebo' field; None until authored, so
-    placebo arms fail fast), h2 = technique tags (comma-joined), h3 = strategy
-    outline (numbered steps; used by the outline arms).
+    placebo arms fail fast), h2 = the frozen one-sentence strategy hint from
+    the hints file's scalar 'hint' field, h3 = strategy outline (numbered
+    steps; used by the outline arms).
     """
     hints_by_id = {
         r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)
@@ -88,7 +89,11 @@ def load_problems() -> list[Problem]:
         problem_id = record["problem_id"]
         hints = hints_by_id.get(problem_id, {})
         placebo = hints.get("placebo")
-        tags = hints.get("tags")
+        hint = hints.get("hint")
+        if hint is not None and not isinstance(hint, str):
+            raise TypeError(
+                f"Hint record for {problem_id!r} has non-string 'hint' field"
+            )
         steps = steps_by_id.get(problem_id)
         problems.append(
             Problem(
@@ -96,7 +101,7 @@ def load_problems() -> list[Problem]:
                 statement=record["statement"],
                 domain=record["domain"],
                 hint_h1=str(placebo) if placebo else None,
-                hint_h2=", ".join(tags) if tags else None,
+                hint_h2=hint if hint else None,
                 hint_h3=_outline_text(steps) if steps else None,
             )
         )
