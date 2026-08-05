@@ -96,11 +96,13 @@ class BudgetTracker:
         """Close a phase with the authoritative per-query result usage.
 
         Streamed deltas enforce the cutoff mid-phase; the ResultMessage's
-        per-query output_tokens is exact, so it replaces them in the total.
-        Returns the phase's token count.
+        per-query output_tokens is exact for completed turns but excludes an
+        interrupt-aborted final turn, so never go BELOW the streamed count —
+        otherwise a soft-limit interrupt could un-trip soft_exhausted and
+        skip the wrap-up phase. Returns the phase's token count.
         """
         streamed = sum(self._message_tokens.values())
-        phase_tokens = result_output_tokens if result_output_tokens is not None else streamed
+        phase_tokens = max(result_output_tokens or 0, streamed)
         self._completed_phases_tokens += phase_tokens
         self._message_tokens.clear()
         self.spent = self._completed_phases_tokens
