@@ -4,7 +4,7 @@
 
 We independently intervene on strategic information and inference compute, then compare the resulting failure boundary across Sonnet 5 → Opus 4.8 → Fable 5. The predicted result is that a ≤25-word strategy unlocks failures that resist both parallel sampling and sequential revision, while stronger models disproportionately solve those failures unaided. Hints are diagnostic interventions, not a solving method.
 
-**Pilot.** On 13 development-only combinatorics problems, Opus 4.8 + hint currently succeeds on 9/13; Sonnet 5 baseline succeeds on 1/13, with its hint run underway. The ~50-word outline is only a development ceiling. All pilot problems stay outside the confirmatory headline analysis.
+**Pilot.** On 13 development-only combinatorics problems, Opus 4.8 + hint succeeds on 9/13. Sonnet 5 improves from 1/13 at baseline to 5/13 with the same frozen hints, rescuing four baseline failures. The ~50-word outline is only a development ceiling. All pilot problems stay outside the confirmatory headline analysis.
 
 ## Confirmatory design
 
