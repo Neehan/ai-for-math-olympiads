@@ -141,7 +141,10 @@ async def solve_ideasearch_seed(
         plan = await run_phase(
             planner,
             ideasearch_plan_prompt(
-                problem, str(plan_scratch_path), plan_budget
+                problem,
+                str(plan_scratch_path),
+                plan_budget,
+                config.ideasearch_plan_wrap_up_reserve_tokens,
             ),
             PHASE_PLAN,
             plan_tracker,

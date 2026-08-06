@@ -89,13 +89,19 @@ def wrap_up_prompt(tokens_left: int) -> str:
 
 
 def ideasearch_plan_prompt(
-    problem: Problem, scratch_dir: str, budget_tokens: int
+    problem: Problem,
+    scratch_dir: str,
+    budget_tokens: int,
+    wrap_up_reserve_tokens: int,
 ) -> str:
     """Ask a fresh planner for one self-contained candidate strategy."""
+    exploration_tokens = budget_tokens - wrap_up_reserve_tokens
     return _render(
         _load(IDEASEARCH_PLAN_PROMPT_FILE),
         {
             "budget_tokens": f"{budget_tokens:,}",
+            "exploration_tokens": f"{exploration_tokens:,}",
+            "wrap_up_reserve_tokens": f"{wrap_up_reserve_tokens:,}",
             "scratch_dir": scratch_dir,
             "statement": problem.statement.strip(),
         },
