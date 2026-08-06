@@ -1,0 +1,1 @@
+You have only about {{tokens_left}} output tokens remaining. Stop exploring and commit your best current approach now. End with `## Proposed Strategy` containing one concise, standalone plan for a fresh solver. Do not write the final proof.

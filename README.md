@@ -24,7 +24,7 @@ Pre-registered predictions:
 2. Hint response separately predicts lower success under sequential 8×.
 3. Nearly all unaided compute rescues observed through 8× occur by 4×.
 4. Fable disproportionately solves Opus hint-responsive / robustly compute-flat failures unaided.
-5. On surviving cases, unaided strategy-diversified 8× also fails to recover many oracle-supplied strategies.
+5. On surviving cases, unaided IdeaSearch-8 also fails to recover many oracle-supplied strategies.
 
 Supplying a strategy is a controlled intervention. Hint-response labels are frozen before held-out compute runs, so their relationship with later scaling is predictive, not a causal decomposition of the original failure. The cross-model boundary shift is supporting observational evidence.
 
@@ -52,7 +52,7 @@ Compute is total output tokens: thinking, visible text, and tool-call text. Reas
 - **2× / 4× / 8×:** 400k / 800k / 1.6M.
 - **Parallel:** eight independent 1× attempts, reported as pass@1/2/4/8.
 - **Sequential:** one work → self-review → revise trajectory per seed, observed at 2×/4×/8× cuts; no external grade or ground truth is shown.
-- **Strategy-diversified robustness:** without external mathematics, enumerate distinct approaches and allocate a token-matched 8× budget across them. Run only on primary-model hint rescues that fail both standard 8× protocols.
+- **IdeaSearch-8 robustness:** an adaptation of [IdeaSearch](https://proceedings.iclr.cc/paper_files/paper/2025/hash/071a637d41ea290ac4360818a8323f33-Abstract-Conference.html) (Wang et al., ICLR 2025) to proof generation. Each of eight independent branches uses a fresh same-model planner (≤20k tokens), then a fresh executor given only the problem and that branch's plan (≤180k). The candidate plan is not an oracle; the executor may repair or abandon it. Branches share no context and the bank totals 8×. Run only on primary-model hint rescues that fail both standard 8× protocols.
 
 Parallel and sequential are separate experiments. Each receives 8×; running both spends 16× and is never reported as one 8× cell. Verifier-guided tree search is outside scope because no validated proof-level process verifier exists.
 
@@ -63,21 +63,21 @@ Parallel and sequential are separate experiments. Each receives 8×; running bot
 | `baseline` | no hint, 1× | all 35 | 3 |
 | `baseline-parallel` | parallel scaling | baseline failures | +5; 8 samples total |
 | `baseline-sequential` | sequential 2×/4×/8× cuts | baseline failures | 3 trajectories |
-| `baseline-strategy` | strategy-diversified 8× | primary-model robustly compute-flat hint rescues | 3 |
+| `baseline-ideasearch` | IdeaSearch-8 | primary-model robustly compute-flat hint rescues | 8 branches |
 | `placebo-hint` | placebo, 1× | non-ceiling | 3 |
 | `hint` | strategy hint, 1× | non-ceiling | 3 |
 | `hint-sequential` | strategy hint, sequential 8× | hint failures | 3 |
 
-`baseline-strategy` is planned; the other listed slugs are the canonical harness and result-path names. The standard design has at most 20 completed trajectories per problem × main model; the robustness arm raises this to 23 only on surviving headline cases.
+The standard design has at most 20 completed trajectories per problem × main model. `baseline-ideasearch` adds one eight-branch bank only on surviving headline cases.
 
 ## Analysis and grading
 
-- A run succeeds at audit score ≥5. In three-run cells, **solved = ≥2/3**, **failed = 0/3**; 1/3 cases are reported separately and excluded from discrete profiles. Parallel success is pass@k over its eight-sample bank.
+- A run succeeds at audit score ≥5. In three-run cells, **solved = ≥2/3**, **failed = 0/3**; 1/3 cases are reported separately and excluded from discrete profiles. Parallel success is pass@k over its eight-sample bank; IdeaSearch-8 succeeds if any of its eight audited proofs passes.
 - **Primary tests:** compare hint-responsive with hint-unresponsive problems separately at parallel 8× and sequential 8× using one-sided problem-level permutation tests with Holm correction.
 - **Boundary shift:** among Opus baseline failures, compare Fable baseline success on Opus hint-responsive / robustly compute-flat problems versus remaining failures, conditioning on pre-run human difficulty and baseline pass rate. Also report Sonnet → Opus → Fable transition matrices.
 - **Saturation:** freeze a practical-equivalence margin on development data and test whether the aggregate 4×→8× gain remains below it.
 - **Continuous analysis:** model hint response and parallel/sequential compute response separately, conditioning on baseline success; use model fixed effects, problem random effects, and problem bootstrap uncertainty.
-- Any `baseline-strategy` rescue narrows the conclusion to ordinary parallel sampling and sequential revision.
+- Any `baseline-ideasearch` rescue narrows the conclusion to ordinary parallel sampling and sequential revision.
 
 **Proof grading.** Scores are 7 (complete), 6 (one obvious one-line gap), 5 (two or three such gaps), or 0. Auditors see only the proposed proof, not its arm or hint. Fable grades sub-frontier outputs; GPT-5.6 Sol grades Fable outputs.
 
@@ -87,6 +87,6 @@ Include one fully read case study per observed profile, especially failures wher
 
 ## Budget and discipline
 
-The full standard design costs at most 62 token-units per problem × main model, or ≈868M output tokens across 35 problems × Opus and GPT, before gating. `baseline-strategy` adds 4.8M per surviving Opus case. Each baseline + hint ladder/open-weight model adds at most ≈42M before targeted follow-up.
+The full standard design costs at most 62 token-units per problem × main model, or ≈868M output tokens across 35 problems × Opus and GPT, before gating. IdeaSearch-8 adds 1.6M per surviving Opus case. Each baseline + hint ladder/open-weight model adds at most ≈42M before targeted follow-up.
 
 Nothing runs unless it feeds a primary test, the boundary-shift result, a figure, or a frozen prediction.

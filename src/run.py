@@ -5,12 +5,13 @@ Usage:
     python -m src.run --arm hint --problems usamo-2026-3,china-2026-5
 
 An attempt = one (problem, seed) pair. Mode 'single' runs one solve phase;
-mode 'sequential' runs solve -> (critique -> revise)* until the attempt's
-output-token budget is exhausted. Completed attempts (meta.json present) are
-skipped, so an interrupted run resumes cleanly.
+mode 'sequential' runs solve -> (critique -> revise)*; mode 'ideasearch'
+runs a fresh planner followed by a fresh proof executor. Completed attempts
+(meta.json present) are skipped, so an interrupted run resumes cleanly.
 """
 
 import argparse
+import dataclasses
 import logging
 
 import anyio
@@ -27,14 +28,25 @@ from src.constants import (
     HINT_NONE,
     LOG_FORMAT,
     LOG_LEVEL,
+    MODE_IDEASEARCH,
     MODE_SEQUENTIAL,
     PHASE_CRITIQUE,
     PHASE_REVISE,
+    PHASE_PLAN,
+    PHASE_PLAN_WRAP_UP,
     PHASE_SOLVE,
     PHASE_WRAP_UP,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
-from src.prompts import critique_prompt, revise_prompt, task_prompt, wrap_up_prompt
+from src.prompts import (
+    critique_prompt,
+    ideasearch_execute_prompt,
+    ideasearch_plan_prompt,
+    ideasearch_plan_wrap_up_prompt,
+    revise_prompt,
+    task_prompt,
+    wrap_up_prompt,
+)
 from src.solver import (
     BudgetTracker,
     StderrTail,
@@ -55,6 +67,147 @@ from src.storage import (
 from src.token_pool import TokenPool
 
 log = logging.getLogger("run")
+
+
+def _proposed_strategy_text(phases: list[PhaseResult]) -> str:
+    """Last complete planner response, falling back to interrupted text."""
+    for phase in reversed(phases):
+        if not phase.budget_exhausted and phase.text.strip():
+            return phase.text
+    for phase in reversed(phases):
+        if phase.text.strip():
+            return phase.text
+    raise RuntimeError("IdeaSearch planner produced no strategy text")
+
+
+def _offset_cumulative_tokens(
+    phases: list[PhaseResult], offset: int
+) -> list[PhaseResult]:
+    """Express a fresh executor's token counts in the branch-wide coordinate."""
+    return [
+        dataclasses.replace(
+            phase,
+            cumulative_output_tokens=phase.cumulative_output_tokens + offset,
+        )
+        for phase in phases
+    ]
+
+
+async def solve_ideasearch_seed(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    oauth_token: str,
+) -> None:
+    """Run one isolated IdeaSearch branch: planner (20k) -> executor (180k).
+
+    The two agents use fresh SDK sessions and distinct scratch directories.
+    Unused planner tokens are not transferred to the executor, so every branch
+    has the same pre-registered caps and never exceeds one 200k token-unit.
+    """
+    plan_budget = config.ideasearch_plan_tokens
+    proof_budget = config.unit_output_tokens - plan_budget
+    plan_scratch_path = fresh_scratch_dir()
+    proof_scratch_path = fresh_scratch_dir()
+
+    plan_tracker = BudgetTracker(
+        plan_budget, config.ideasearch_plan_wrap_up_reserve_tokens
+    )
+    plan_stderr = StderrTail()
+    plan_options = build_options(
+        config, str(plan_scratch_path), plan_budget, oauth_token, plan_stderr
+    )
+    plan_phases: list[PhaseResult] = []
+    async with (
+        spend_limit_guard(plan_stderr),
+        ClaudeSDKClient(options=plan_options) as planner,
+    ):
+        plan = await run_phase(
+            planner,
+            ideasearch_plan_prompt(
+                problem, str(plan_scratch_path), plan_budget
+            ),
+            PHASE_PLAN,
+            plan_tracker,
+            plan_tracker.soft_limit_tokens,
+        )
+        plan_phases.append(plan)
+        if plan_tracker.soft_exhausted:
+            plan_wrap = await run_phase(
+                planner,
+                ideasearch_plan_wrap_up_prompt(plan_tracker.remaining),
+                PHASE_PLAN_WRAP_UP,
+                plan_tracker,
+                plan_tracker.budget_tokens,
+            )
+            plan_phases.append(plan_wrap)
+
+    proposed_strategy = _proposed_strategy_text(plan_phases)
+    log.info(
+        "%s/%s seed %d: plan done (%d/%d tokens)",
+        arm.name,
+        problem.problem_id,
+        seed,
+        plan_tracker.spent,
+        plan_budget,
+    )
+
+    proof_tracker = BudgetTracker(proof_budget, config.wrap_up_reserve_tokens)
+    proof_stderr = StderrTail()
+    proof_options = build_options(
+        config, str(proof_scratch_path), proof_budget, oauth_token, proof_stderr
+    )
+    proof_phases: list[PhaseResult] = []
+    async with (
+        spend_limit_guard(proof_stderr),
+        ClaudeSDKClient(options=proof_options) as executor,
+    ):
+        solve = await run_phase(
+            executor,
+            ideasearch_execute_prompt(
+                problem,
+                proposed_strategy,
+                str(proof_scratch_path),
+                proof_budget,
+            ),
+            PHASE_SOLVE,
+            proof_tracker,
+            proof_tracker.soft_limit_tokens,
+        )
+        proof_phases.append(solve)
+        if proof_tracker.soft_exhausted:
+            wrap_up = await run_phase(
+                executor,
+                wrap_up_prompt(proof_tracker.remaining),
+                PHASE_WRAP_UP,
+                proof_tracker,
+                proof_tracker.budget_tokens,
+            )
+            proof_phases.append(wrap_up)
+
+    phases = plan_phases + _offset_cumulative_tokens(
+        proof_phases, plan_tracker.spent
+    )
+    output_dir = write_seed_outputs(
+        config,
+        arm,
+        problem,
+        seed,
+        config.unit_output_tokens,
+        phases,
+        proof_scratch_path,
+        plan_scratch_path=plan_scratch_path,
+    )
+    log.info(
+        "%s/%s seed %d done (%d/%d tokens) -> %s",
+        arm.name,
+        problem.problem_id,
+        seed,
+        plan_tracker.spent + proof_tracker.spent,
+        config.unit_output_tokens,
+        output_dir,
+    )
 
 
 def hint_for(problem: Problem, arm: ArmConfig) -> str | None:
@@ -95,6 +248,10 @@ async def solve_seed(
     wrap-up phase tells the model how many tokens remain and to write down
     what it has; only that phase may spend into the hard budget.
     """
+    if arm.mode == MODE_IDEASEARCH:
+        await solve_ideasearch_seed(config, arm, problem, seed, oauth_token)
+        return
+
     scratch_path = fresh_scratch_dir()
     budget_tokens = config.budget_tokens(arm)
     tracker = BudgetTracker(budget_tokens, config.wrap_up_reserve_tokens)

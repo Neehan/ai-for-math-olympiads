@@ -3,8 +3,9 @@
 Per-seed output layout (nothing mixed):
     results/<model>/<arm>/<problem_id>/seed_<k>/
         logs.jsonl.zst   one JSON line per phase: prompt, text, tool calls, usage
-        solution.md      the graded final write-up (last non-critique phase)
-        scratch/         copy of the agent's scratch dir (its created files)
+        solution.md      the graded final write-up (last proof phase)
+        scratch/         copy of the proof executor's scratch dir
+        plan_scratch/    IdeaSearch only: copy of the isolated planner scratch
         meta.json        attempt metadata; written LAST = completion marker
 """
 
@@ -26,10 +27,14 @@ from src.constants import (
     HINTS_URL,
     LOGS_FILENAME,
     META_FILENAME,
+    MODE_IDEASEARCH,
     MODE_SEQUENTIAL,
     OUTLINES_FILE_ENV,
     OUTLINES_URL,
     PHASE_CRITIQUE,
+    PHASE_PLAN,
+    PHASE_PLAN_WRAP_UP,
+    PLAN_SCRATCH_SUBDIR,
     PROBLEMS_FILE_ENV,
     PROBLEMS_URL,
     RESULTS_ROOT,
@@ -177,18 +182,20 @@ def _phase_record(phase: PhaseResult) -> dict[str, object]:
 
 
 def final_solution_text(phases: list[PhaseResult]) -> str:
-    """The graded write-up: last COMPLETE non-critique phase's text.
+    """The graded write-up: last COMPLETE proof-producing phase's text.
 
     Same convention as the budget-cut snapshots — an interrupted phase's text
     is partial commentary, not a final message, and grading it would let the
     full-budget point score below a lower cut (artifactual non-monotonicity).
-    Falls back to the last non-critique phase only when nothing completed.
+    Planner and critique phases are never gradeable. Falls back to the last
+    proof-producing phase only when no such phase completed cleanly.
     """
+    excluded = {PHASE_CRITIQUE, PHASE_PLAN, PHASE_PLAN_WRAP_UP}
     for phase in reversed(phases):
-        if phase.label != PHASE_CRITIQUE and not phase.budget_exhausted:
+        if phase.label not in excluded and not phase.budget_exhausted:
             return phase.text
     for phase in reversed(phases):
-        if phase.label != PHASE_CRITIQUE:
+        if phase.label not in excluded:
             return phase.text
     raise ValueError("Attempt has no solve/revise phase to grade")
 
@@ -239,6 +246,7 @@ def write_seed_outputs(
     budget_tokens: int,
     phases: list[PhaseResult],
     scratch_path: Path,
+    plan_scratch_path: Path | None = None,
 ) -> Path:
     """Write logs.jsonl.zst, solution.md, scratch/ copy, then meta.json (marker).
 
@@ -292,6 +300,12 @@ def write_seed_outputs(
         shutil.rmtree(scratch_copy)
     shutil.copytree(scratch_path, scratch_copy)
 
+    plan_scratch_copy = output_dir / PLAN_SCRATCH_SUBDIR
+    if plan_scratch_copy.exists():
+        shutil.rmtree(plan_scratch_copy)
+    if plan_scratch_path is not None:
+        shutil.copytree(plan_scratch_path, plan_scratch_copy)
+
     meta = {
         "problem_id": problem.problem_id,
         "arm": arm.name,
@@ -302,13 +316,31 @@ def write_seed_outputs(
         "seed": seed,
         "scratch_dir_name": scratch_path.name,
         "budget_output_tokens": budget_tokens,
-        "output_tokens_spent": phases[-1].cumulative_output_tokens if phases else 0,
+        "output_tokens_spent": sum(p.output_tokens for p in phases),
         "budget_exhausted": any(p.budget_exhausted for p in phases),
         "num_phases": len(phases),
         "phase_labels": [p.label for p in phases],
         "total_cost_usd": sum(p.total_cost_usd for p in phases),
         "budget_cuts": budget_cuts,
     }
+    if plan_scratch_path is not None:
+        meta["plan_scratch_dir_name"] = plan_scratch_path.name
+    if arm.mode == MODE_IDEASEARCH:
+        plan_labels = {PHASE_PLAN, PHASE_PLAN_WRAP_UP}
+        meta.update(
+            {
+                "ideasearch_plan_budget_output_tokens": config.ideasearch_plan_tokens,
+                "ideasearch_proof_budget_output_tokens": (
+                    config.unit_output_tokens - config.ideasearch_plan_tokens
+                ),
+                "ideasearch_plan_output_tokens_spent": sum(
+                    p.output_tokens for p in phases if p.label in plan_labels
+                ),
+                "ideasearch_proof_output_tokens_spent": sum(
+                    p.output_tokens for p in phases if p.label not in plan_labels
+                ),
+            }
+        )
     _atomic_write_bytes(
         output_dir / META_FILENAME,
         (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),

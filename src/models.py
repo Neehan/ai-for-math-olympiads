@@ -44,6 +44,8 @@ class ExperimentConfig:
     effort: str
     unit_output_tokens: int
     wrap_up_reserve_tokens: int
+    ideasearch_plan_tokens: int
+    ideasearch_plan_wrap_up_reserve_tokens: int
     max_turns_per_phase: int
     sequential_max_rounds: int
     audit_max_turns: int

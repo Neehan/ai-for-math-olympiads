@@ -1,19 +1,21 @@
 # Harness
 
-One harness implementing the paper's arms (top-level README): every attempt is one (arm, problem, seed) run of the Claude Agent SDK, in one of two modes.
+One harness implementing the paper's arms (top-level README): every attempt is one (arm, problem, seed) run of the Claude Agent SDK, in one of three modes.
 
 - **single** — one solve phase (arms `baseline`, `baseline-parallel`, `placebo-hint`, `hint`, `outline`).
 - **sequential** — solve → (critique → revise)× under one shared output-token budget, cut off mid-phase when the budget is spent (arms `baseline-sequential`, `hint-sequential`, `outline-sequential`). This is budget-bounded Self-Refine (Madaan et al. 2023); the per-phase cumulative token counts in the logs let the analysis cut the trajectory at 2×/4× for the saturation curve.
+- **ideasearch** — one fresh planner (≤20k) proposes a candidate strategy, then one fresh executor (≤180k) receives only the problem and its branch's plan and writes the proof. `baseline-ideasearch` has eight independent seeds/branches, an IdeaSearch-8 adaptation for proof generation.
 
 ## Configuration — `config.json`
 
-Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), `max_turns_per_phase` / `sequential_max_rounds` / `audit_max_turns` (runaway guards; the token budget is the real stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`) or OpenRouter `vendor/model` ids (`openai/gpt-5.5`), which route through OpenRouter's Anthropic-compatible endpoint using `OPENROUTER_API_KEY*` keys from `.env` (same round-robin pool scheme); results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
+Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), the IdeaSearch plan and wrap reserves, `max_turns_per_phase` / `sequential_max_rounds` / `audit_max_turns` (runaway guards; the token budget is the real stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`) or OpenRouter `vendor/model` ids (`openai/gpt-5.5`), which route through OpenRouter's Anthropic-compatible endpoint using `OPENROUTER_API_KEY*` keys from `.env` (same round-robin pool scheme); results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
 
 ## Compute ladder (1×/2×/4×/8×)
 
 - **Parallel:** the 8 independent seeds (`baseline` 1–3 + `baseline-parallel` 4–8) are each audited; pass@1/2/4/8 comes from the standard unbiased estimator (Chen et al. 2021) over the per-seed audit scores — never "first n seeds", which is ordering-dependent noise.
 - **Sequential:** one 8× trajectory per seed, cut post hoc. Every phase's full write-up is preserved in the logs (phases are separate records; nothing is overwritten), and the harness snapshots `solution_1x.md` / `solution_2x.md` / `solution_4x.md` — the last COMPLETE non-critique write-up emitted before cumulative output tokens crossed each threshold, i.e. exactly what a hard-stopped run at that budget would have been graded on. `meta.json` records which phase each cut came from. The audit stage grades every snapshot as a standalone proof, so each curve point has its own score + note; a budget with no complete write-up scores 0 with an explanatory note. Caveat to state in the paper: the model knows its full 8× budget, so pacing at lower cuts approximates (rather than replays) a true smaller-budget run — the curve's 1× point should come from the real `baseline` arm.
 - **Repeats:** the pre-registered k = 3 runs per cell are the arm's `seeds` (1, 2, 3); each (problem, seed) attempt is fully independent with its own `seed_<k>/` output tree.
+- **IdeaSearch-8:** seeds 1–8 are independent branches, not repeats of one shared search tree. Planner and executor use separate SDK sessions and scratch directories; unused planner tokens do not transfer to the executor.
 
 ## Compute budget enforcement
 
@@ -35,7 +37,7 @@ In Docker, the entrypoint prefetches all three BEFORE the egress firewall closes
 
 ## Prompts — `prompts/*.md`
 
-All prompts are editable markdown files: `system.md`, `task.md`, `hint.md`, `critique.md`, `revise.md`, `audit.md`. Placeholders use `{{name}}` and are filled by literal replacement (LaTeX braces can never break rendering); an unfilled placeholder fails loud. A hint arm fails fast before spending tokens if a selected problem lacks its hint.
+All prompts are editable markdown files, including the three `ideasearch_*.md` templates. Placeholders use `{{name}}` and are filled by literal replacement (LaTeX braces can never break rendering); an unfilled placeholder fails loud. A hint arm fails fast before spending tokens if a selected problem lacks its hint.
 
 ## Isolation (contamination control)
 
@@ -48,8 +50,8 @@ All prompts are editable markdown files: `system.md`, `task.md`, `hint.md`, `cri
 ## Outputs — `results/<model>/<arm>/<problem_id>/seed_<k>/`
 
 - `logs.jsonl.zst` — one JSON line per phase: prompt, full response text, every tool call (full input/result), per-phase and cumulative output tokens, turns, duration, cost, stop reason.
-- `solution.md` — the graded artifact: the last COMPLETE non-critique phase (normally the wrap-up), same convention as the budget cuts so the full-budget point can never score below a lower cut by truncation artifact. The judge grades ONLY its `## Final Solution` section (anything before the heading is working notes; no heading at all scores 0).
-- `scratch/` — copy of the agent's scratch directory. The live scratch path shown to the model is short and opaque (`.scratch/r3`) so the prompt carries no arm, contest, or seed identity, and the session's cwd IS that dir (the model is told to use relative paths); the mapping back to the canonical attempt is this archived location plus `scratch_dir_name` in meta.json.
+- `solution.md` — the graded artifact: the last COMPLETE proof-producing phase (normally the wrap-up), same convention as the budget cuts so the full-budget point can never score below a lower cut by truncation artifact. The judge grades ONLY its `## Final Solution` section (anything before the heading is working notes; no heading at all scores 0).
+- `scratch/` — copy of the proof solver's scratch directory. The live path is short and opaque (`.scratch/r3`) so the prompt carries no arm, contest, or seed identity. IdeaSearch branches additionally archive the isolated planner workspace as `plan_scratch/`.
 - `meta.json` — attempt metadata and totals; written last, so its presence is the completion marker for resumable runs.
 - `audit.json` — the judge's verdict (full solution + per-cut scores/notes); `audit_scratch/` — any computations the judge ran while grading.
 
@@ -65,6 +67,7 @@ cp .env.example .env   # set CLAUDE_CODE_OAUTH_TOKEN (or OPENROUTER_API_KEY* for
 # generation (Docker), one arm per invocation
 ./run.sh run --arm baseline
 ./run.sh run --arm baseline-parallel
+./run.sh run --arm baseline-ideasearch --problems <surviving-ids>
 ./run.sh run --arm hint
 ./run.sh run --arm outline
 ./run.sh run --arm placebo-hint
@@ -93,7 +96,7 @@ python -m src.audit --arm baseline
 
 Concurrency is async (anyio) under a capacity limiter: at most `max_concurrency` (config.json) agent sessions in flight at once.
 
-Resumable: attempts whose `meta.json` exists are skipped; a rate-limited token cools down and work rotates to the next token, sleeping only when all are cooling. Run one arm per invocation; gated arms (`baseline-parallel`/`baseline-sequential` on `baseline` failures, `hint-sequential` on `hint` failures, `outline-sequential` on `outline` failures) take the failure list via `--problems`.
+Resumable: attempts whose `meta.json` exists are skipped; a rate-limited token cools down and work rotates to the next token, sleeping only when all are cooling. Run one arm per invocation; gated arms take the selected problem list via `--problems`. An interrupted IdeaSearch branch restarts that branch atomically, never from another branch's plan.
 
 ## Type checking
 

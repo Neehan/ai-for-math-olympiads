@@ -4,7 +4,7 @@ import dataclasses
 import json
 from pathlib import Path
 
-from src.constants import HINT_KINDS, MODES
+from src.constants import HINT_KINDS, HINT_NONE, MODE_IDEASEARCH, MODES
 from src.models import ArmConfig, ExperimentConfig
 
 _VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high", "max"})
@@ -16,6 +16,8 @@ _REQUIRED_TOP_KEYS: frozenset[str] = frozenset(
         "effort",
         "unit_output_tokens",
         "wrap_up_reserve_tokens",
+        "ideasearch_plan_tokens",
+        "ideasearch_plan_wrap_up_reserve_tokens",
         "max_turns_per_phase",
         "sequential_max_rounds",
         "audit_max_turns",
@@ -69,6 +71,10 @@ def load_config(path: Path) -> ExperimentConfig:
         effort=str(raw["effort"]),
         unit_output_tokens=int(raw["unit_output_tokens"]),
         wrap_up_reserve_tokens=int(raw["wrap_up_reserve_tokens"]),
+        ideasearch_plan_tokens=int(raw["ideasearch_plan_tokens"]),
+        ideasearch_plan_wrap_up_reserve_tokens=int(
+            raw["ideasearch_plan_wrap_up_reserve_tokens"]
+        ),
         max_turns_per_phase=int(raw["max_turns_per_phase"]),
         sequential_max_rounds=int(raw["sequential_max_rounds"]),
         audit_max_turns=int(raw["audit_max_turns"]),
@@ -86,6 +92,40 @@ def load_config(path: Path) -> ExperimentConfig:
             f"{path}: wrap_up_reserve_tokens must be positive and below "
             f"unit_output_tokens"
         )
+    if not 0 < config.ideasearch_plan_tokens < config.unit_output_tokens:
+        raise ValueError(
+            f"{path}: ideasearch_plan_tokens must be positive and below "
+            f"unit_output_tokens"
+        )
+    if not (
+        0
+        < config.ideasearch_plan_wrap_up_reserve_tokens
+        < config.ideasearch_plan_tokens
+    ):
+        raise ValueError(
+            f"{path}: ideasearch_plan_wrap_up_reserve_tokens must be positive "
+            f"and below ideasearch_plan_tokens"
+        )
+    ideasearch_proof_tokens = (
+        config.unit_output_tokens - config.ideasearch_plan_tokens
+    )
+    if config.wrap_up_reserve_tokens >= ideasearch_proof_tokens:
+        raise ValueError(
+            f"{path}: wrap_up_reserve_tokens must be below the IdeaSearch proof "
+            f"budget ({ideasearch_proof_tokens})"
+        )
+    for arm in config.arms.values():
+        if arm.mode != MODE_IDEASEARCH:
+            continue
+        if (
+            arm.hint != HINT_NONE
+            or arm.budget_units != 1
+            or arm.seeds != list(range(1, 9))
+        ):
+            raise ValueError(
+                f"{path}: IdeaSearch arm '{arm.name}' must use hint='none', "
+                f"budget_units=1, and seeds [1, ..., 8]"
+            )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")
     _check_judge_differs(config, str(path))

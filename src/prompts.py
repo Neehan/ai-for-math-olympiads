@@ -11,6 +11,9 @@ from src.constants import (
     AUDIT_PROMPT_FILE,
     CRITIQUE_PROMPT_FILE,
     HINT_PROMPT_FILE,
+    IDEASEARCH_EXECUTE_PROMPT_FILE,
+    IDEASEARCH_PLAN_PROMPT_FILE,
+    IDEASEARCH_PLAN_WRAP_UP_PROMPT_FILE,
     PROMPTS_DIR,
     REVISE_PROMPT_FILE,
     SYSTEM_PROMPT_FILE,
@@ -83,6 +86,46 @@ def revise_prompt() -> str:
 def wrap_up_prompt(tokens_left: int) -> str:
     """Final wrap-up prompt: stop working, write down the solution now."""
     return _render(_load(WRAP_UP_PROMPT_FILE), {"tokens_left": f"{tokens_left:,}"})
+
+
+def ideasearch_plan_prompt(
+    problem: Problem, scratch_dir: str, budget_tokens: int
+) -> str:
+    """Ask a fresh planner for one self-contained candidate strategy."""
+    return _render(
+        _load(IDEASEARCH_PLAN_PROMPT_FILE),
+        {
+            "budget_tokens": f"{budget_tokens:,}",
+            "scratch_dir": scratch_dir,
+            "statement": problem.statement.strip(),
+        },
+    )
+
+
+def ideasearch_plan_wrap_up_prompt(tokens_left: int) -> str:
+    """Force an over-budget planner to commit its best strategy succinctly."""
+    return _render(
+        _load(IDEASEARCH_PLAN_WRAP_UP_PROMPT_FILE),
+        {"tokens_left": f"{tokens_left:,}"},
+    )
+
+
+def ideasearch_execute_prompt(
+    problem: Problem,
+    proposed_strategy: str,
+    scratch_dir: str,
+    budget_tokens: int,
+) -> str:
+    """Give a fresh executor only the statement and its branch's proposed plan."""
+    return _render(
+        _load(IDEASEARCH_EXECUTE_PROMPT_FILE),
+        {
+            "budget_tokens": f"{budget_tokens:,}",
+            "scratch_dir": scratch_dir,
+            "proposed_strategy": proposed_strategy.strip(),
+            "statement": problem.statement.strip(),
+        },
+    )
 
 
 def audit_prompt(problem: Problem, solution_text: str) -> str:

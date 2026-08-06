@@ -28,6 +28,7 @@ SOLUTION_FILENAME: str = "solution.md"
 SOLUTION_CUT_FILENAME_FORMAT: str = "solution_{multiplier}x.md"
 META_FILENAME: str = "meta.json"
 SCRATCH_SUBDIR: str = "scratch"
+PLAN_SCRATCH_SUBDIR: str = "plan_scratch"
 ZSTD_LEVEL: int = 9
 
 # --- Audit ----------------------------------------------------------------
@@ -48,6 +49,9 @@ HINT_PROMPT_FILE: str = "hint.md"
 CRITIQUE_PROMPT_FILE: str = "critique.md"
 REVISE_PROMPT_FILE: str = "revise.md"
 WRAP_UP_PROMPT_FILE: str = "wrap_up.md"
+IDEASEARCH_PLAN_PROMPT_FILE: str = "ideasearch_plan.md"
+IDEASEARCH_PLAN_WRAP_UP_PROMPT_FILE: str = "ideasearch_plan_wrap_up.md"
+IDEASEARCH_EXECUTE_PROMPT_FILE: str = "ideasearch_execute.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
 
 # --- Problem/hint data sources -------------------------------------------
@@ -74,13 +78,16 @@ HINT_H3: str = "h3"
 HINT_KINDS: frozenset[str] = frozenset({HINT_NONE, HINT_H1, HINT_H2, HINT_H3})
 MODE_SINGLE: str = "single"
 MODE_SEQUENTIAL: str = "sequential"
-MODES: frozenset[str] = frozenset({MODE_SINGLE, MODE_SEQUENTIAL})
+MODE_IDEASEARCH: str = "ideasearch"
+MODES: frozenset[str] = frozenset({MODE_SINGLE, MODE_SEQUENTIAL, MODE_IDEASEARCH})
 
 # --- Phase labels ---------------------------------------------------------
 PHASE_SOLVE: str = "solve"
 PHASE_CRITIQUE: str = "critique"
 PHASE_REVISE: str = "revise"
 PHASE_WRAP_UP: str = "wrap_up"
+PHASE_PLAN: str = "plan"
+PHASE_PLAN_WRAP_UP: str = "plan_wrap_up"
 
 # --- Tool policy ----------------------------------------------------------
 # Pre-approved tools; network is blocked by the firewall + settings denies.
