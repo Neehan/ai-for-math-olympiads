@@ -42,6 +42,50 @@ IMAGE=olympiad-harness
 docker build -q -t "$IMAGE" -f docker/Dockerfile . >/dev/null
 mkdir -p results
 
+# Mount only this stage/model/arm's opaque checkpoint namespace.  Mounting the
+# whole bank would let a tool-using solver inspect interrupted work from a
+# different intervention arm.  The namespace is stable across reruns but its
+# host name reveals no experiment identity inside the container.
+ARM_NAME=""
+MODEL_NAME=$(python -c 'import json; print(json.load(open("config.json"))["model"])')
+AUDIT_MODEL_NAME=$(python -c 'import json; print(json.load(open("config.json"))["audit_model"])')
+EXPECT_VALUE=""
+for ARGUMENT in "$@"; do
+    if [ "$EXPECT_VALUE" = "arm" ]; then
+        ARM_NAME="$ARGUMENT"
+        EXPECT_VALUE=""
+        continue
+    fi
+    if [ "$EXPECT_VALUE" = "model" ]; then
+        MODEL_NAME="$ARGUMENT"
+        EXPECT_VALUE=""
+        continue
+    fi
+    if [ "$EXPECT_VALUE" = "audit_model" ]; then
+        AUDIT_MODEL_NAME="$ARGUMENT"
+        EXPECT_VALUE=""
+        continue
+    fi
+    case "$ARGUMENT" in
+        --arm) EXPECT_VALUE="arm" ;;
+        --model) EXPECT_VALUE="model" ;;
+        --audit-model) EXPECT_VALUE="audit_model" ;;
+        --arm=*) ARM_NAME=${ARGUMENT#--arm=} ;;
+        --model=*) MODEL_NAME=${ARGUMENT#--model=} ;;
+        --audit-model=*) AUDIT_MODEL_NAME=${ARGUMENT#--audit-model=} ;;
+    esac
+done
+if [ -z "$ARM_NAME" ]; then
+    echo "ERROR: --arm requires a value" >&2
+    exit 2
+fi
+CHECKPOINT_NAMESPACE=$(python -c \
+    'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:]).encode()); files=[pathlib.Path("config.json"),pathlib.Path("agent_settings.json"),*sorted(pathlib.Path("prompts").glob("*.md"))]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
+    "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME")
+CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$CHECKPOINT_NAMESPACE"
+mkdir -p "$CHECKPOINT_MOUNT"
+chmod 700 .session-checkpoints .session-checkpoints/runtime "$CHECKPOINT_MOUNT"
+
 # Pass every provider key var through (round-robin token pools).
 token_args=()
 while IFS= read -r name; do
@@ -50,6 +94,12 @@ done < <(compgen -v | grep -E '^(CLAUDE_CODE_OAUTH_TOKEN|OPENROUTER_API_KEY)')
 
 RESULTS_MOUNT="$PWD/results"
 STAGING=""
+cleanup_completed_checkpoints() {
+    if [ ! -d "$CHECKPOINT_MOUNT/attempts" ]; then
+        return
+    fi
+    python src/cleanup_checkpoints.py "$CHECKPOINT_MOUNT" "$PWD/results"
+}
 merge_staging() {
     if [ -n "$STAGING" ] && [ -d "$STAGING" ]; then
         # A completed attempt has both files: solution.md is written first and
@@ -68,7 +118,11 @@ merge_staging() {
         rm -rf "$STAGING"
     fi
 }
-trap merge_staging EXIT
+finish_stage() {
+    merge_staging
+    cleanup_completed_checkpoints
+}
+trap finish_stage EXIT
 
 if [ "$1" = "run" ]; then
     STAGING=$(mktemp -d "$PWD/.results-staging.XXXXXX")
@@ -77,10 +131,18 @@ if [ "$1" = "run" ]; then
     RESULTS_MOUNT="$STAGING"
 fi
 
+checkpoint_args=()
+if [ "$1" = "run" ]; then
+    checkpoint_args=(-e HARNESS_DEFER_CHECKPOINT_CLEANUP=1)
+fi
+
 docker run --rm --cap-add=NET_ADMIN \
     "${token_args[@]}" \
+    "${checkpoint_args[@]}" \
     -v "$PWD/prompts:/app/prompts:ro" \
     -v "$PWD/config.json:/app/config.json:ro" \
     -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
     -v "$RESULTS_MOUNT:/app/results" \
+    -v "$CHECKPOINT_MOUNT:/c" \
+    -e HARNESS_CHECKPOINT_ROOT=/c \
     "$IMAGE" "$@"

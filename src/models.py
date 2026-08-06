@@ -1,6 +1,6 @@
 """Data models for problems, arm/experiment config, and phase results."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,6 @@ class ExperimentConfig:
     ideasearch_plan_tokens: int
     ideasearch_plan_wrap_up_reserve_tokens: int
     max_turns_per_phase: int
-    sequential_max_rounds: int
     audit_max_turns: int
     max_concurrency: int
     arms: dict[str, ArmConfig]
@@ -111,3 +110,9 @@ class PhaseResult:
     budget_exhausted: bool
     tool_calls: list[ToolCall]
     reconnects: list[ReconnectEvent]
+    # A killed process may be resumed from the same provider transcript.  Its
+    # incomplete response prefix is retained for auditing but is not spliced
+    # into the replacement complete response used as the phase artifact.
+    process_resume_count: int = 0
+    discarded_output_text: str = ""
+    discarded_tool_calls: list[ToolCall] = field(default_factory=list)

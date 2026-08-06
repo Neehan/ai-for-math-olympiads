@@ -222,6 +222,10 @@ __marimo__/
 # run, so the live scratch root itself is not tracked.
 .scratch/
 
+# Private provider session checkpoints. These contain local conversation state
+# needed to continue paid trajectories and must never be committed.
+.session-checkpoints/
+
 # Contest problems are never committed (leaks contest identity); fetched
 # from the dataset URLs at runtime, in memory only.
 problems.jsonl

@@ -7,7 +7,6 @@
   "ideasearch_plan_tokens": 20000,
   "ideasearch_plan_wrap_up_reserve_tokens": 2000,
   "max_turns_per_phase": 128,
-  "sequential_max_rounds": 64,
   "audit_max_turns": 64,
   "max_concurrency": 8,
   "arms": {

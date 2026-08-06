@@ -15,12 +15,12 @@ CONFIG_PATH: Path = REPO_ROOT / "config.json"
 PROMPTS_DIR: Path = REPO_ROOT / "prompts"
 AGENT_SETTINGS_PATH: Path = REPO_ROOT / "agent_settings.json"
 RESULTS_ROOT: Path = REPO_ROOT / "results"
-# Transient agent working space; its contents are copied into the seed's
-# results dir after the run, so this root itself is git-ignored.
-SCRATCH_ROOT: Path = REPO_ROOT / ".scratch"
 # Per-attempt Claude transcript/config store. Keeping it under that attempt's
 # opaque scratch dir prevents concurrent conversations from sharing ~/.claude.
 SESSION_STATE_SUBDIR: str = ".claude-runtime"
+CHECKPOINT_ROOT_ENV: str = "HARNESS_CHECKPOINT_ROOT"
+CHECKPOINT_ROOT_DEFAULT: Path = REPO_ROOT / ".session-checkpoints" / "runtime"
+DEFER_CHECKPOINT_CLEANUP_ENV: str = "HARNESS_DEFER_CHECKPOINT_CLEANUP"
 
 # --- Per-seed output filenames -------------------------------------------
 LOGS_FILENAME: str = "logs.jsonl.zst"
@@ -103,6 +103,16 @@ SEQUENTIAL_NO_GAP_STREAK_TO_STOP: int = 2
 # auditable transport intervention rather than a problem-specific hint.
 SESSION_RECOVERY_PROMPT: str = (
     "Continue from exactly where you were interrupted."
+)
+# Used only when the local harness process died mid-response.  Unlike a live
+# credential handoff, an abruptly terminated CLI may not have committed the
+# partial assistant turn to its transcript, so continuation could silently
+# omit material.  Re-emitting the complete response gives a gradeable phase;
+# the discarded prefix remains in the private checkpoint/audit log and its
+# tokens remain charged to the same BudgetTracker.
+PROCESS_RECOVERY_PROMPT: str = (
+    "The local harness restarted while submitting or answering a request. "
+    "Produce one complete response to the pending request reproduced below."
 )
 
 # --- Tool policy ----------------------------------------------------------

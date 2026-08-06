@@ -198,7 +198,14 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("src.solver.ClaudeSDKClient", FakeClaudeSDKClient):
             async with ResumableClaudeSession(pool, options_factory) as session:
-                result = await run_phase(session, "solve", "solve", tracker, 100)
+                result = await run_phase(
+                    session,
+                    "solve",
+                    "solve",
+                    tracker,
+                    100,
+                    process_resume_count=1,
+                )
                 next_result = await run_phase(
                     session, "critique", "critique", tracker, 100
                 )
@@ -206,6 +213,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.output_tokens, 17)
         self.assertEqual(result.cumulative_output_tokens, 17)
         self.assertEqual(result.text, "partial proof\ncompleted proof")
+        self.assertEqual(result.process_resume_count, 1)
         self.assertEqual(len(result.reconnects), 1)
         self.assertEqual(result.reconnects[0].from_credential, "credential_1")
         self.assertEqual(result.reconnects[0].to_credential, "credential_2")
@@ -223,7 +231,10 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             FakeClaudeSDKClient.queries,
             [
                 ("token-a", "solve"),
-                ("token-b", SESSION_RECOVERY_PROMPT),
+                (
+                    "token-b",
+                    f"{SESSION_RECOVERY_PROMPT}\n\nPending request:\nsolve",
+                ),
                 ("token-b", "critique"),
             ],
         )
@@ -235,6 +246,34 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             assigned,
             ["token-a", "token-b", "token-a", "token-b", "token-a", "token-b"],
         )
+
+    async def test_cutoff_is_reapplied_after_credential_handoff(self) -> None:
+        pool = TokenPool(["token-a", "token-b"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+                task_budget={"total": max(1, tracker.remaining)},
+                include_partial_messages=True,
+            )
+
+        with patch("src.solver.ClaudeSDKClient", FakeClaudeSDKClient):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                result = await run_phase(session, "solve", "solve", tracker, 10)
+
+        first, second = FakeClaudeSDKClient.instances
+        self.assertTrue(first.interrupted)
+        self.assertTrue(second.interrupted)
+        self.assertTrue(result.budget_exhausted)
 
     async def test_one_credential_reaches_eight_way_concurrency(self) -> None:
         pool = TokenPool(["only-token"], "TEST_TOKEN")
@@ -278,6 +317,20 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         tracker.add("new-message", {"output_tokens": 4})
         self.assertEqual(tracker.finish_phase(4), 4)
         self.assertEqual(tracker.spent, 14)
+
+    def test_cost_counter_resets_only_when_cli_connection_changes(self) -> None:
+        tracker = BudgetTracker(100, 0)
+        self.assertAlmostEqual(tracker.phase_cost_delta(0.050, "cli-a"), 0.050)
+        self.assertAlmostEqual(tracker.phase_cost_delta(0.084, "cli-a"), 0.034)
+        # A resumed CLI has a fresh cumulative counter. Its first phase can
+        # cost more than the old process's total, so numeric comparisons alone
+        # cannot identify this boundary.
+        self.assertAlmostEqual(tracker.phase_cost_delta(0.200, "cli-b"), 0.200)
+        self.assertAlmostEqual(tracker.phase_cost_delta(0.230, "cli-b"), 0.030)
+
+        restored = BudgetTracker.restore(tracker.snapshot(), 100, 0)
+        self.assertAlmostEqual(restored.phase_cost_delta(0.250, "cli-b"), 0.020)
+        self.assertAlmostEqual(restored.phase_cost_delta(0.010, "cli-c"), 0.010)
 
 
 if __name__ == "__main__":

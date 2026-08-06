@@ -9,7 +9,6 @@ Per-seed output layout (nothing mixed):
         meta.json        attempt metadata; written LAST = completion marker
 """
 
-import itertools
 import json
 import os
 import shutil
@@ -39,7 +38,6 @@ from src.constants import (
     PROBLEMS_FILE_ENV,
     PROBLEMS_URL,
     RESULTS_ROOT,
-    SCRATCH_ROOT,
     SCRATCH_SUBDIR,
     SESSION_STATE_SUBDIR,
     SEED_AUDIT_FILENAME,
@@ -127,34 +125,19 @@ def seed_done(output_dir: Path) -> bool:
     return (output_dir / META_FILENAME).exists()
 
 
-_scratch_counter = itertools.count()
-
-
-def fresh_scratch_dir() -> Path:
-    """Create an EMPTY per-attempt scratch dir with a short OPAQUE name (r0, r1...).
-
-    The path appears in the model's prompt, so it must carry no arm, contest,
-    problem, or seed identity — a named path like '.scratch/placebo-hint/
-    china-2026-3' would tell the model which arm it is in. Short names, not
-    uuids: models truncate long hex paths and write to the parent. The mapping
-    back to the canonical attempt is the archived copy in results/ + meta.json.
-    """
-    path = SCRATCH_ROOT / f"r{next(_scratch_counter)}"
-    path.mkdir(parents=True, exist_ok=False)
-    return path
-
-
-def clear_scratch_root() -> None:
-    """Delete all leftover scratch dirs from killed runs (call at stage start)."""
-    if SCRATCH_ROOT.exists():
-        shutil.rmtree(SCRATCH_ROOT)
-
-
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write bytes atomically: temp file in the same dir, then os.replace."""
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    tmp.write_bytes(data)
+    with tmp.open("wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(tmp, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _phase_record(phase: PhaseResult) -> dict[str, object]:
@@ -182,6 +165,17 @@ def _phase_record(phase: PhaseResult) -> dict[str, object]:
             }
             for c in phase.tool_calls
         ],
+        "process_resume_count": phase.process_resume_count,
+        "discarded_output_text": phase.discarded_output_text,
+        "discarded_tool_calls": [
+            {
+                "name": c.name,
+                "input": c.tool_input,
+                "result": c.result,
+                "is_error": c.is_error,
+            }
+            for c in phase.discarded_tool_calls
+        ],
     }
 
 
@@ -196,12 +190,16 @@ def final_solution_text(phases: list[PhaseResult]) -> str:
     """
     excluded = {PHASE_CRITIQUE, PHASE_PLAN, PHASE_PLAN_WRAP_UP}
     for phase in reversed(phases):
-        if phase.label not in excluded and not phase.budget_exhausted:
+        if (
+            phase.label not in excluded
+            and not phase.budget_exhausted
+            and phase.text.strip()
+        ):
             return phase.text
     for phase in reversed(phases):
-        if phase.label not in excluded:
+        if phase.label not in excluded and phase.text.strip():
             return phase.text
-    raise ValueError("Attempt has no solve/revise phase to grade")
+    raise ValueError("Attempt has no nonempty solve/revise phase to grade")
 
 
 def budget_cut_multipliers(budget_units: int) -> list[int]:
@@ -235,7 +233,11 @@ def _phase_at_cut(
     """
     found: tuple[int, PhaseResult] | None = None
     for index, phase in enumerate(phases):
-        if phase.label == PHASE_CRITIQUE or phase.budget_exhausted:
+        if (
+            phase.label == PHASE_CRITIQUE
+            or phase.budget_exhausted
+            or not phase.text.strip()
+        ):
             continue
         if phase.cumulative_output_tokens <= threshold_tokens:
             found = (index, phase)
@@ -252,6 +254,7 @@ def write_seed_outputs(
     scratch_path: Path,
     plan_scratch_path: Path | None = None,
     termination_reason: str | None = None,
+    provider_session_ids: dict[str, str] | None = None,
 ) -> Path:
     """Write logs.jsonl.zst, solution.md, scratch/ copy, then meta.json (marker).
 
@@ -319,6 +322,7 @@ def write_seed_outputs(
             ignore=shutil.ignore_patterns(SESSION_STATE_SUBDIR),
         )
 
+    process_resume_count = sum(p.process_resume_count for p in phases)
     meta = {
         "problem_id": problem.problem_id,
         "arm": arm.name,
@@ -339,7 +343,15 @@ def write_seed_outputs(
             asdict(event) for phase in phases for event in phase.reconnects
         ],
         "budget_cuts": budget_cuts,
+        "process_resume_count": process_resume_count,
+        "token_accounting_status": (
+            "provider_reported_complete"
+            if process_resume_count == 0
+            else "process_recovered_unreported_suffix_possible"
+        ),
     }
+    if provider_session_ids:
+        meta["provider_session_ids"] = dict(sorted(provider_session_ids.items()))
     if plan_scratch_path is not None:
         meta["plan_scratch_dir_name"] = plan_scratch_path.name
     if termination_reason is not None:
@@ -385,19 +397,33 @@ def write_seed_audit(output_dir: Path, record: dict[str, object]) -> None:
     )
 
 
-def archive_audit_scratch(output_dir: Path, scratch_path: Path) -> None:
-    """Archive the judge's scratch (if it checked anything) beside the attempt.
+def archive_audit_scratches(
+    output_dir: Path, scratch_paths: dict[str, Path]
+) -> None:
+    """Archive each isolated judge call's visible scratch beside the attempt.
 
     Keeps the audit auditable: any computation the judge ran while grading is
-    preserved under audit_scratch/. The live scratch dir is always removed.
+    preserved under audit_scratch/. The live checkpoint workspace is retained
+    until audit.json is durable, so a crash during copying can retry without
+    destroying either the transcript or an earlier complete archive.
     """
-    destination = output_dir / AUDIT_SCRATCH_SUBDIR
-    shutil.rmtree(scratch_path / SESSION_STATE_SUBDIR, ignore_errors=True)
-    if destination.exists():
-        shutil.rmtree(destination)
-    if any(scratch_path.iterdir()):
-        shutil.copytree(scratch_path, destination)
-    shutil.rmtree(scratch_path)
+    destination_root = output_dir / AUDIT_SCRATCH_SUBDIR
+    if destination_root.exists():
+        shutil.rmtree(destination_root)
+    visible = {
+        role: scratch
+        for role, scratch in scratch_paths.items()
+        if any(entry.name != SESSION_STATE_SUBDIR for entry in scratch.iterdir())
+    }
+    if not visible:
+        return
+    destination_root.mkdir()
+    for role, scratch in sorted(visible.items()):
+        shutil.copytree(
+            scratch,
+            destination_root / role,
+            ignore=shutil.ignore_patterns(SESSION_STATE_SUBDIR),
+        )
 
 
 def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, int]:

@@ -39,6 +39,7 @@ from src.constants import (
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
     PERMISSION_MODE,
+    PROCESS_RECOVERY_PROMPT,
     SESSION_RECOVERY_PROMPT,
     SESSION_STATE_SUBDIR,
     SPEND_LIMIT_MARKERS,
@@ -56,6 +57,11 @@ from src.token_pool import TokenPool
 log = logging.getLogger("solver")
 
 STOP_BUDGET_EXHAUSTED: str = "budget_exhausted"
+
+
+def process_recovery_prompt(pending_prompt: str) -> str:
+    """Self-contained restart prompt, safe even if the first query never landed."""
+    return f"{PROCESS_RECOVERY_PROMPT}\n\nPending request:\n{pending_prompt}"
 
 
 class StderrTail:
@@ -96,14 +102,36 @@ class ResumableClaudeSession:
     scratch directory, and BudgetTracker stay alive across that transition.
     """
 
-    def __init__(self, pool: TokenPool, options_factory: OptionsFactory) -> None:
+    def __init__(
+        self,
+        pool: TokenPool,
+        options_factory: OptionsFactory,
+        *,
+        session_id: str | None = None,
+        reconnects: list[ReconnectEvent] | None = None,
+    ) -> None:
         self._pool = pool
         self._options_factory = options_factory
-        self._session_id = str(uuid.uuid4())
+        self._session_id = session_id or str(uuid.uuid4())
+        self._resume_on_enter = session_id is not None
         self._client: ClaudeSDKClient | None = None
         self._token: str | None = None
         self._stderr_tail: StderrTail | None = None
-        self._reconnects: list[ReconnectEvent] = []
+        self._reconnects: list[ReconnectEvent] = list(reconnects or [])
+        self._connection_id: str | None = None
+        self._pending_prompt: str | None = None
+
+    @property
+    def session_id(self) -> str:
+        """Stable provider conversation UUID, safe to persist (not a secret)."""
+        return self._session_id
+
+    @property
+    def connection_id(self) -> str:
+        """Opaque id for the current CLI process's cumulative cost counter."""
+        if self._connection_id is None:
+            raise RuntimeError("Session has no open CLI connection")
+        return self._connection_id
 
     @property
     def reconnect_count(self) -> int:
@@ -116,7 +144,12 @@ class ResumableClaudeSession:
         return list(self._reconnects)
 
     async def __aenter__(self) -> "ResumableClaudeSession":
-        await self._open(resume=False)
+        if self._resume_on_enter:
+            log.warning(
+                "Resuming checkpointed session %s after process restart",
+                self._session_id,
+            )
+        await self._open(resume=self._resume_on_enter)
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
@@ -154,6 +187,7 @@ class ResumableClaudeSession:
             self._token = token
             self._stderr_tail = stderr_tail
             self._client = client
+            self._connection_id = str(uuid.uuid4())
             return
 
     async def _close(self, *, suppress_errors: bool) -> None:
@@ -211,6 +245,7 @@ class ResumableClaudeSession:
         """Send a normal experiment prompt to the active conversation."""
         if self._client is None:
             raise RuntimeError("Session is not open")
+        self._pending_prompt = prompt
         await self._client.query(prompt)
 
     async def receive_response(self) -> AsyncIterator[object]:
@@ -254,7 +289,10 @@ class ResumableClaudeSession:
 
             if self._client is None:
                 raise RuntimeError("Recovered session has no active client")
-            await self._client.query(SESSION_RECOVERY_PROMPT)
+            recovery = SESSION_RECOVERY_PROMPT
+            if self._pending_prompt:
+                recovery = f"{recovery}\n\nPending request:\n{self._pending_prompt}"
+            await self._client.query(recovery)
 
     async def interrupt(self) -> None:
         """Interrupt the currently active CLI process at the output cutoff."""
@@ -283,7 +321,7 @@ class BudgetTracker:
         self._message_tokens: dict[str, int] = {}
         self._current_phase_streamed_tokens = 0
         self._prev_session_cost = 0.0
-        self._prev_session_turns = 0
+        self._prev_connection_id: str | None = None
 
     def add(self, message_id: str | None, usage: dict[str, object] | None) -> None:
         """Accumulate the current phase's streamed usage (max snapshot per id).
@@ -337,17 +375,76 @@ class BudgetTracker:
         """Output tokens left before the hard budget."""
         return max(0, self.budget_tokens - self.spent)
 
-    def phase_cost_delta(self, session_cost_usd: float) -> float:
-        """This phase's cost from the session-cumulative figure the SDK reports."""
-        delta = max(0.0, session_cost_usd - self._prev_session_cost)
-        self._prev_session_cost = max(self._prev_session_cost, session_cost_usd)
+    def phase_cost_delta(
+        self, session_cost_usd: float, connection_id: str
+    ) -> float:
+        """This phase's cost from a CLI-process-cumulative cost figure.
+
+        The CLI counter accumulates across queries in one live process but
+        resets when a transcript is resumed by a new process.  Track that
+        boundary explicitly; comparing numeric values cannot detect a reset
+        when the first resumed phase happens to cost more than the old total.
+        """
+        if self._prev_connection_id != connection_id:
+            delta = max(0.0, session_cost_usd)
+        else:
+            delta = max(0.0, session_cost_usd - self._prev_session_cost)
+        self._prev_session_cost = max(0.0, session_cost_usd)
+        self._prev_connection_id = connection_id
         return delta
 
-    def phase_turns_delta(self, session_turns: int) -> int:
-        """This phase's turn count from the session-cumulative figure."""
-        delta = max(0, session_turns - self._prev_session_turns)
-        self._prev_session_turns = max(self._prev_session_turns, session_turns)
-        return delta
+    def snapshot(self) -> dict[str, object]:
+        """Return every counter needed for exact cross-process restoration."""
+        return {
+            "budget_tokens": self.budget_tokens,
+            "soft_limit_tokens": self.soft_limit_tokens,
+            "spent": self.spent,
+            "completed_phases_tokens": self._completed_phases_tokens,
+            "message_tokens": dict(self._message_tokens),
+            "current_phase_streamed_tokens": self._current_phase_streamed_tokens,
+            "prev_session_cost": self._prev_session_cost,
+            "prev_connection_id": self._prev_connection_id,
+        }
+
+    @classmethod
+    def restore(
+        cls,
+        snapshot: dict[str, object],
+        budget_tokens: int,
+        wrap_up_reserve_tokens: int,
+    ) -> "BudgetTracker":
+        """Restore a tracker, rejecting a checkpoint for a different budget."""
+        tracker = cls(budget_tokens, wrap_up_reserve_tokens)
+        expected_soft = budget_tokens - wrap_up_reserve_tokens
+        if int(str(snapshot["budget_tokens"])) != budget_tokens or int(
+            str(snapshot["soft_limit_tokens"])
+        ) != expected_soft:
+            raise ValueError("Checkpoint token budget does not match this invocation")
+        tracker.spent = int(str(snapshot["spent"]))
+        tracker._completed_phases_tokens = int(
+            str(snapshot["completed_phases_tokens"])
+        )
+        raw_messages = snapshot.get("message_tokens", {})
+        if not isinstance(raw_messages, dict):
+            raise TypeError("Checkpoint message_tokens must be an object")
+        tracker._message_tokens = {
+            str(message_id): int(tokens)
+            for message_id, tokens in raw_messages.items()
+        }
+        tracker._current_phase_streamed_tokens = int(
+            str(snapshot["current_phase_streamed_tokens"])
+        )
+        tracker._prev_session_cost = float(str(snapshot["prev_session_cost"]))
+        raw_connection_id = snapshot.get("prev_connection_id")
+        tracker._prev_connection_id = (
+            str(raw_connection_id) if raw_connection_id else None
+        )
+        if tracker.spent != (
+            tracker._completed_phases_tokens
+            + tracker._current_phase_streamed_tokens
+        ):
+            raise ValueError("Checkpoint BudgetTracker counters are inconsistent")
+        return tracker
 
 
 def uses_openrouter(model: str) -> bool:
@@ -485,6 +582,14 @@ async def run_phase(
     label: str,
     tracker: BudgetTracker,
     stop_at_tokens: int,
+    *,
+    query_prompt: str | None = None,
+    process_resume_count: int = 0,
+    discarded_output_text: str = "",
+    discarded_tool_calls: list[ToolCall] | None = None,
+    reconnect_start: int | None = None,
+    on_progress: Callable[[dict[str, object]], None] | None = None,
+    on_complete: Callable[[PhaseResult], None] | None = None,
 ) -> PhaseResult:
     """Send one prompt on an existing session and capture the full response.
 
@@ -494,8 +599,9 @@ async def run_phase(
     interrupted and the phase is marked budget_exhausted. Fails loud if no
     ResultMessage arrives or the result is an API error.
     """
-    await client.query(prompt)
-    reconnect_start = client.reconnect_count
+    await client.query(query_prompt if query_prompt is not None else prompt)
+    if reconnect_start is None:
+        reconnect_start = client.reconnect_count
 
     assistant_messages: list[AssistantMessage] = []
     seen_assistant_ids: set[str] = set()
@@ -503,13 +609,55 @@ async def run_phase(
     tool_results: dict[str, ToolResultBlock] = {}
     result_message: ResultMessage | None = None
     interrupted = False
+    interrupted_connections: set[str] = set()
 
     current_stream_id: str | None = None
+    streamed_text: dict[str, list[str]] = {}
+
+    def progress_record() -> dict[str, object]:
+        """Serializable prefix retained if the local process is killed."""
+        return {
+            "text_parts": [
+                *(
+                    block.text
+                    for message in assistant_messages
+                    for block in message.content
+                    if isinstance(block, TextBlock)
+                ),
+                *(
+                    "".join(parts)
+                    for parts in streamed_text.values()
+                    if parts
+                ),
+            ],
+            "seen_assistant_ids": sorted(seen_assistant_ids),
+            "current_stream_id": current_stream_id,
+            "tool_uses": {
+                use_id: {"name": use.name, "input": dict(use.input)}
+                for use_id, use in tool_uses.items()
+            },
+            "tool_results": {
+                use_id: {
+                    "result": _stringify_result(result.content),
+                    "is_error": bool(result.is_error),
+                }
+                for use_id, result in tool_results.items()
+            },
+        }
+
+    def save_progress() -> None:
+        if on_progress is not None:
+            on_progress(progress_record())
 
     async def interrupt_if_over_budget() -> None:
         nonlocal interrupted
-        if tracker.spent >= stop_at_tokens and not interrupted:
+        connection_id = client.connection_id
+        if (
+            tracker.spent >= stop_at_tokens
+            and connection_id not in interrupted_connections
+        ):
             interrupted = True
+            interrupted_connections.add(connection_id)
             log.info(
                 "%s: token cutoff reached (%d/%d, stop at %d); interrupting",
                 label,
@@ -531,10 +679,15 @@ async def run_phase(
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
                         tool_uses[block.id] = block
+            if assistant_id is not None:
+                streamed_text.pop(assistant_id, None)
+            if current_stream_id is not None:
+                streamed_text.pop(current_stream_id, None)
             # SDK assistant envelopes should carry the API message id. If one
             # does not, reuse the most recent stream id so its initial usage
             # snapshot cannot be double-counted against message_delta.
             tracker.add(message.message_id or current_stream_id, message.usage)
+            save_progress()
             await interrupt_if_over_budget()
         elif isinstance(message, StreamEvent):
             # The real per-message output count arrives in message_delta;
@@ -542,13 +695,33 @@ async def run_phase(
             event_type = message.event.get("type")
             if event_type == "message_start":
                 current_stream_id = message.event.get("message", {}).get("id")
+                if current_stream_id is not None:
+                    streamed_text.setdefault(current_stream_id, [])
+                save_progress()
+                # If a quota handoff happened after the previous CLI was
+                # interrupted, stop the replacement before it can continue
+                # materially beyond the same attempt cutoff.
+                await interrupt_if_over_budget()
             elif event_type == "message_delta":
                 tracker.add(current_stream_id, message.event.get("usage"))
+                save_progress()
                 await interrupt_if_over_budget()
+            elif event_type == "content_block_delta":
+                delta = message.event.get("delta", {})
+                if (
+                    current_stream_id is not None
+                    and isinstance(delta, dict)
+                    and delta.get("type") == "text_delta"
+                ):
+                    streamed_text.setdefault(current_stream_id, []).append(
+                        str(delta.get("text", ""))
+                    )
+                    save_progress()
         elif isinstance(message, UserMessage) and isinstance(message.content, list):
             for block in message.content:
                 if isinstance(block, ToolResultBlock):
                     tool_results[block.tool_use_id] = block
+            save_progress()
         elif isinstance(message, ResultMessage):
             result_message = message
 
@@ -581,18 +754,28 @@ async def run_phase(
         if interrupted
         else (result_message.stop_reason or "end_turn")
     )
-    return PhaseResult(
+    phase = PhaseResult(
         label=label,
         prompt=prompt,
         text=text,
         output_tokens=phase_tokens,
         cumulative_output_tokens=tracker.spent,
-        num_turns=tracker.phase_turns_delta(result_message.num_turns),
+        # ResultMessage.num_turns is per query (unlike total_cost_usd, which
+        # accumulates across queries in one live CLI process).
+        num_turns=result_message.num_turns,
         duration_ms=result_message.duration_ms,
-        total_cost_usd=tracker.phase_cost_delta(cost if cost is not None else 0.0),
+        total_cost_usd=tracker.phase_cost_delta(
+            cost if cost is not None else 0.0, client.connection_id
+        ),
         is_error=result_message.is_error,
         stop_reason=stop_reason,
         budget_exhausted=interrupted,
         tool_calls=_collect_tool_calls(tool_uses, tool_results),
         reconnects=reconnects,
+        process_resume_count=process_resume_count,
+        discarded_output_text=discarded_output_text,
+        discarded_tool_calls=list(discarded_tool_calls or []),
     )
+    if on_complete is not None:
+        on_complete(phase)
+    return phase

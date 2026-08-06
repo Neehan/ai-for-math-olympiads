@@ -96,5 +96,8 @@ PY
 # bypassPermissions as root, and a non-root agent cannot alter the firewall.
 chown appuser /app
 chown -R appuser /run/contest
+if [ -d /c ]; then
+    chown -R appuser /c
+fi
 export HOME=/home/appuser
 exec gosu appuser python -m "src.$STAGE" "$@"

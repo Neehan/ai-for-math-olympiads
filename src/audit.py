@@ -19,6 +19,7 @@ import argparse
 import dataclasses
 import logging
 import os
+from pathlib import Path
 
 import anyio
 
@@ -27,6 +28,7 @@ from claude_agent_sdk import (
     ResultMessage,
 )
 
+from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
 from src.concurrency import run_all
 from src.config import load_config, override_models
 from src.constants import (
@@ -34,13 +36,14 @@ from src.constants import (
     ALLOWED_TOOLS,
     AUDIT_SCORE_INVALID,
     AUDIT_SCORES,
-    AUDIT_SCRATCH_SUBDIR,
     CLI_PATH_ENV,
     CONFIG_PATH,
     DISALLOWED_TOOLS,
     LOG_FORMAT,
     LOG_LEVEL,
     PERMISSION_MODE,
+    RESULTS_ROOT,
+    SEED_AUDIT_FILENAME,
 )
 from src.models import ArmConfig, ExperimentConfig, Problem, ReconnectEvent
 from src.prompts import audit_prompt
@@ -49,15 +52,14 @@ from src.solver import (
     ResumableClaudeSession,
     StderrTail,
     isolated_session_env,
+    process_recovery_prompt,
     token_env_name,
 )
 from src.storage import (
-    archive_audit_scratch,
+    archive_audit_scratches,
     budget_cut_multipliers,
-    clear_scratch_root,
     compile_arm_audit,
     cut_solution_path,
-    fresh_scratch_dir,
     load_problems,
     seed_audited,
     seed_done,
@@ -118,9 +120,32 @@ def _audit_options(
 
 
 async def _judge(
-    config: ExperimentConfig, prompt: str, pool: TokenPool, scratch_dir: str
+    config: ExperimentConfig,
+    prompt: str,
+    pool: TokenPool,
+    scratch_dir: str,
+    checkpoint: AttemptCheckpoint,
+    role: str,
 ) -> tuple[dict[str, object], list[ReconnectEvent]]:
     """Run one judge call and return its validated structured verdict."""
+    saved = checkpoint.call_result(role)
+    if saved is not None:
+        raw_verdict = saved.get("verdict")
+        if not isinstance(raw_verdict, dict):
+            raise TypeError("Checkpoint judge verdict is corrupt")
+        saved_verdict: dict[str, object] = dict(raw_verdict)
+        reconnects = [
+            ReconnectEvent(**item) for item in saved.get("reconnects", [])
+        ]
+        return saved_verdict, reconnects
+
+    active = checkpoint.active(role)
+    process_recovery = active is not None
+    if active is None:
+        active = checkpoint.begin_call(role, prompt)
+    else:
+        active = checkpoint.prepare_process_resume(role)
+
     result: ResultMessage | None = None
     reconnects: list[ReconnectEvent] = []
     async with ResumableClaudeSession(
@@ -133,17 +158,35 @@ async def _judge(
             session_id=session_id,
             resume_session_id=resume_id,
         ),
+        session_id=checkpoint.session_id(role),
+        reconnects=checkpoint.reconnects(role),
     ) as session:
-        await session.query(prompt)
+        checkpoint.save_session(role, session.session_id, session.reconnect_events)
+        await session.query(
+            process_recovery_prompt(str(active["prompt"]))
+            if process_recovery
+            else prompt
+        )
         async for message in session.receive_response():
             if isinstance(message, ResultMessage):
                 result = message
         reconnects = session.reconnect_events
+        checkpoint.save_session(role, session.session_id, reconnects)
     if result is None or result.is_error:
         raise RuntimeError(f"Judge call failed: {result and result.errors}")
     if not isinstance(result.structured_output, dict):
         raise RuntimeError("Judge returned no structured verdict")
     verdict: dict[str, object] = result.structured_output
+    checkpoint.finish_call(
+        role,
+        {
+            "verdict": verdict,
+            "reconnects": [dataclasses.asdict(event) for event in reconnects],
+            "process_resume_count": int(active.get("process_resume_count", 0)),
+        },
+        session.session_id,
+        reconnects,
+    )
     return verdict, reconnects
 
 
@@ -163,62 +206,113 @@ async def audit_seed(
     """
     output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
     solution = seed_solution_text(output_dir)
-    scratch_path = fresh_scratch_dir()
-    scratch = str(scratch_path)
-    verdict, full_reconnects = await _judge(
-        config, audit_prompt(problem, solution), pool, scratch
-    )
-
-    cuts: dict[str, dict[str, object]] = {}
-    for multiplier in budget_cut_multipliers(arm.budget_units):
-        cut_path = cut_solution_path(output_dir, multiplier)
-        if not cut_path.exists():
-            cuts[f"{multiplier}x"] = {
-                "audit_score": AUDIT_SCORE_INVALID,
-                "note": "No complete write-up was emitted within this budget cut.",
-                "session_reconnect_count": 0,
-                "session_reconnects": [],
-            }
-            continue
-        cut_text = cut_path.read_text(encoding="utf-8")
-        cut_verdict, cut_reconnects = await _judge(
-            config, audit_prompt(problem, cut_text), pool, scratch
+    cut_artifacts = {
+        f"{multiplier}x": (
+            cut_solution_path(output_dir, multiplier).read_text(encoding="utf-8")
+            if cut_solution_path(output_dir, multiplier).exists()
+            else None
         )
-        cuts[f"{multiplier}x"] = {
-            "audit_score": cut_verdict["score"],
-            "note": cut_verdict["note"],
-            "session_reconnect_count": len(cut_reconnects),
-            "session_reconnects": [
-                dataclasses.asdict(event) for event in cut_reconnects
-            ],
-        }
-
-    archive_audit_scratch(output_dir, scratch_path)
-    write_seed_audit(
-        output_dir,
+        for multiplier in budget_cut_multipliers(arm.budget_units)
+    }
+    checkpoint = AttemptCheckpoint(
         {
-            "problem_id": problem.problem_id,
-            "arm": arm.name,
-            "seed": seed,
+            "stage": "audit",
             "solver_model": config.model,
             "audit_model": config.audit_model,
-            "audit_score": verdict["score"],
-            "note": verdict["note"],
-            "session_reconnect_count": len(full_reconnects),
-            "session_reconnects": [
-                dataclasses.asdict(event) for event in full_reconnects
-            ],
-            "budget_cuts": cuts,
-        },
+            "effort": config.effort,
+            "arm": dataclasses.asdict(arm),
+            "problem_id": problem.problem_id,
+            "problem_statement": problem.statement,
+            "seed": seed,
+            "solution": solution,
+            "budget_cut_artifacts": cut_artifacts,
+            "audit_max_turns": config.audit_max_turns,
+            "protocol_fingerprint": protocol_fingerprint(),
+        }
     )
-    log.info(
-        "%s/%s seed %d: score %s (%d cut snapshots graded)",
-        arm.name,
-        problem.problem_id,
-        seed,
-        verdict["score"],
-        len(cuts),
-    )
+    try:
+        scratch_paths: dict[str, Path] = {}
+        full_scratch = checkpoint.scratch_dir("full")
+        scratch_paths["full"] = full_scratch
+        verdict, full_reconnects = await _judge(
+            config,
+            audit_prompt(problem, solution),
+            pool,
+            str(full_scratch),
+            checkpoint,
+            "full",
+        )
+
+        cuts: dict[str, dict[str, object]] = {}
+        for multiplier in budget_cut_multipliers(arm.budget_units):
+            cut_text = cut_artifacts[f"{multiplier}x"]
+            if cut_text is None:
+                cuts[f"{multiplier}x"] = {
+                    "audit_score": AUDIT_SCORE_INVALID,
+                    "note": "No complete write-up was emitted within this budget cut.",
+                    "session_reconnect_count": 0,
+                    "session_reconnects": [],
+                }
+                continue
+            role = f"cut_{multiplier}x"
+            cut_scratch = checkpoint.scratch_dir(role)
+            scratch_paths[role] = cut_scratch
+            cut_verdict, cut_reconnects = await _judge(
+                config,
+                audit_prompt(problem, cut_text),
+                pool,
+                str(cut_scratch),
+                checkpoint,
+                role,
+            )
+            cuts[f"{multiplier}x"] = {
+                "audit_score": cut_verdict["score"],
+                "note": cut_verdict["note"],
+                "session_reconnect_count": len(cut_reconnects),
+                "session_reconnects": [
+                    dataclasses.asdict(event) for event in cut_reconnects
+                ],
+            }
+
+        checkpoint.prepare_completion(
+            (output_dir / SEED_AUDIT_FILENAME)
+            .relative_to(RESULTS_ROOT)
+            .as_posix()
+        )
+        archive_audit_scratches(output_dir, scratch_paths)
+        write_seed_audit(
+            output_dir,
+            {
+                "problem_id": problem.problem_id,
+                "arm": arm.name,
+                "seed": seed,
+                "solver_model": config.model,
+                "audit_model": config.audit_model,
+                "audit_score": verdict["score"],
+                "note": verdict["note"],
+                "session_reconnect_count": len(full_reconnects),
+                "session_reconnects": [
+                    dataclasses.asdict(event) for event in full_reconnects
+                ],
+                "provider_session_ids": checkpoint.session_ids(),
+                "process_resume_count": sum(
+                    int(record.get("process_resume_count", 0))
+                    for record in checkpoint.data().get("calls", {}).values()
+                ),
+                "budget_cuts": cuts,
+            },
+        )
+        log.info(
+            "%s/%s seed %d: score %s (%d cut snapshots graded)",
+            arm.name,
+            problem.problem_id,
+            seed,
+            verdict["score"],
+            len(cuts),
+        )
+        checkpoint.complete()
+    finally:
+        checkpoint.close()
 
 
 async def main() -> None:
@@ -256,7 +350,6 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
-    clear_scratch_root()
     problems = select_problems(load_problems(), args.problems, args.domain)
     seeds = select_seeds(arm, args.seeds)
 
