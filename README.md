@@ -1,10 +1,10 @@
-# Paper 1: One-Line Strategy Probes Predict Test-Time Scaling Saturation (ICLR 2027, ~7 weeks)
+# Paper 1: When More Inference Cannot Replace a Missing Strategy (ICLR 2027, ~7 weeks)
 
-**Goal.** Test whether response to a frozen, one-sentence oracle strategy hint predicts the outcome and saturation of unaided test-time scaling on hard, novel olympiad proofs. We predict that hint-responsive failures remain largely unsolved through 8× unaided compute, while compute-responsive failures are recovered early, with negligible additional yield beyond 4×. Labels come only from the hint axis at 1×; the independent compute axis tests the prediction. Cognitive terms (capability/rigor, recognition/execution) appear only as interpretation in the discussion. Hints are diagnostic probes, not a proposed solving method.
+**Goal.** Test whether additional inference can substitute for strategic information on hard, novel olympiad proofs. We supply one frozen ≤25-word strategy hint at fixed compute and independently scale unaided inference through 8×. We predict that hint-responsive failures remain largely unsolved under unaided scaling, while compute-responsive failures are recovered early, with negligible additional yield beyond 4×. Hints are diagnostic interventions, not a proposed solving method.
 
-**Current development stage.** The 13-problem combinatorics runs are the intervention-development roadmap: five technique tags tested a lower-information probe and the three-step outline tested an oracle-guidance ceiling. The current step is to test the compressed single-sentence ≤25-word strategy probe before freezing the authoring rule and all held-out hints. Development problems stay outside the held-out confirmatory headline analysis.
+**Current development stage.** On the 13-problem combinatorics pilot, the ≤25-word hint succeeds on 9/13 for Opus 4.8 and Sonnet 5 baseline succeeds on 1/13; the frozen Sonnet hint run is next. The ~50-word outline is a development-only oracle-guidance ceiling. Development problems stay outside the held-out confirmatory headline analysis.
 
-## Design: 2×2 factorial, {no-hint, hint} × {1×, 8×}
+## Design: strategic information × inference compute
 
 Every non-ceiling problem runs in all four cells, k = 3 independent runs per cell per model. Labels come from the two 1× cells; the two 8× cells are the pre-registered predictions (bold = the test).
 
@@ -40,20 +40,19 @@ Compute is operationalized as the **total output-token budget of an attempt** (t
 
 **Models.** Contamination rule: every model's published training cutoff must predate the earliest contest (Feb 2026); we state each model's cutoff next to each contest date in the appendix.
 
-- **Sub-frontier mains (full 2×2 + both compute channels): Opus 4.8 (cutoff Jan 2026) + GPT-5.5.** Cross-lab replication; all primary statistics are within-model, paired across problems. GPT-5.6 is excluded as contaminated (cutoff postdates the problem set).
+- **Sub-frontier mains (full design + both compute channels): Opus 4.8 (cutoff Jan 2026) + GPT-5.5.** Cross-lab replication; all primary statistics are within-model, paired across problems. GPT-5.6 is excluded as contaminated (cutoff postdates the problem set).
+- **Development transfer check:** Sonnet 5 baseline + frozen hint on the 13-problem pilot.
 - **Frontier (boundary shift): Fable 5 (cutoff Jan 2026)**, no-hint 1× on all 35 (k = 3, same 200k cap, same harness, same grading) plus the frozen confirmatory hint at 1× on its baseline failures only. No saturation sweep — Fable is a frontier baseline and positive control. The boundary-shift prediction is that Opus hint-responsive failures disproportionately become Fable baseline solves; residual Fable failures test whether the same compact strategy probe still unlocks performance at the frontier.
 - **Open-source replication: reserved for October rebuttal** (discipline rule) — one open-weights reasoning model with a verifiable pre-Feb-2026 cutoff, for permanent reproducibility.
 
 
 ## Hint development roadmap
 
-- **Legacy lower-information probe (H2-v1):** up to 5 well-known technique-tag keywords, with no steps. This development-only file is archived as `hard_hints-v1.jsonl` and is no longer used.
-- **Current compressed probe (`hint` / H2):** a single ≤25-word oracle strategy hint stored verbatim in the scalar `hint` field of `hard_hints.jsonl`.
-- **Current oracle ceiling (`outline` / H3):** an audited three-step strategy outline that leaves derivations and proof obligations to the solver. The 13-problem combinatorics run is exploratory.
-- **Decision gate:** if outlines materially rescue Opus, compress the useful strategic content into one sentence of at most 25 whitespace-delimited words. The sentence may state the exact problem-specific strategic information—including a bespoke construction, invariant, reduction, target lemma, numerical cutoff, or short sequence—but may not state the final answer or supply a derivation. The solver remains responsible for proving every step.
-- **Confirmatory intervention:** the resulting ≤25-word oracle strategy hint is the sole guidance treatment in the held-out study. Its specification and all held-out hints are frozen before any held-out run.
+- **Strategy hint (`hint`):** one ≤25-word oracle strategy hint. It may state exact problem-specific strategic information but not the final answer or a derivation.
+- **Outline (`outline`):** an audited ~50-word strategy outline used only as a development ceiling.
+- **Confirmatory intervention:** the frozen ≤25-word hint is the sole guidance treatment in the held-out study.
 - **Authorship and audit:** the IMO medalist panel writes hints from problem statements and official human solutions only. Hints are committed, hashed, and published verbatim; a different panelist audits template compliance and information leakage.
-- **Placebo (`placebo-hint` / H1):** retained as an available length/control arm while the intervention is under development; its confirmatory role is decided before held-out runs.
+- **Placebo (`placebo-hint`):** retained as a length/control arm.
 
 ## Arms & runs (per problem × model)
 
@@ -64,27 +63,25 @@ Arm slugs below are the exact names used in `config.json`, the harness CLI, and 
 | `baseline` | no-hint 1× | all 35 (ceiling screen) | 3 |
 | `baseline-parallel` | no-hint 1×, parallel channel | `baseline` failures only | +5 (8 seeds total with `baseline`) |
 | `baseline-sequential` | no-hint 2×, 4×, 8×, sequential channel | `baseline` failures only | 9 |
-| `placebo-hint` | H1 (placebo) 1× | non-ceiling | 3 |
-| `hint` | H2 1× | non-ceiling | 3 |
-| `hint-sequential` | H2 8×, sequential channel | `hint` failures only | 3 |
-| `outline` | H3 outline 1× | non-ceiling | 3 |
-| `outline-sequential` | H3 outline 8×, sequential channel | `outline` failures only | 3 |
+| `placebo-hint` | placebo 1× | non-ceiling | 3 |
+| `hint` | ≤25-word strategy hint 1× | non-ceiling | 3 |
+| `hint-sequential` | strategy hint 8×, sequential channel | `hint` failures only | 3 |
 
-Worst case 32 runs per problem × model with both outline arms included; gating makes the realistic average far lower. No best-of-N-with-verifier arm, no multi-agent arm — paper 2. The no-hint 8× cell of the 2×2 counts as failed only if **both** channels fail. The guided 8× cells are deliberately sequential-only (no hint- or outline-parallel arm): they feed no primary statistic, and the asymmetry is conservative both ways — both channels on no-hint 8× make its predicted **failed** harder to sustain, while sequential-only guided 8× can only undercount guidance + 8× solves. Channel-symmetric guided parallel runs on surviving failures are October rebuttal ammo, not core protocol.
+The outline arms remain available for development diagnostics but are not run on the held-out 35. Worst case is 23 runs per problem × model; gating makes the realistic average far lower. No best-of-N-with-verifier arm, no multi-agent arm — paper 2. The no-hint 8× cell counts as failed only if **both** channels fail. The guided 8× cell is deliberately sequential-only: both channels on no-hint 8× make its predicted **failed** harder to sustain, while sequential-only guided 8× can only undercount guidance + 8× solves.
 
 ## Analysis (pre-registered before any 8× run)
 
-- Solve rate per cell from k = 3: **solved = ≥ 2/3, failed = 0/3**. Problems landing at exactly 1/3 in a labeling cell are excluded from buckets (reported separately) but kept in the continuous analysis.
+- Solve rate per cell from k = 3: a run succeeds at audit score ≥ 5; **solved = ≥ 2/3 successful runs, failed = 0/3**. Problems landing at exactly 1/3 in a labeling cell are excluded from buckets (reported separately) but kept in the continuous analysis.
 - **Primary test:** among non-ceiling problems, no-hint/8× solve rate is higher for hint-unresponsive than for hint-responsive problems; one-sided permutation test, resampling by problem.
 - **Pre-registered saturation prediction:** among problems rescued anywhere by unaided compute through 8×, nearly all rescues occur by 4×; the incremental aggregate gain from 4× to 8× must remain below a practical-equivalence margin selected on the development set and frozen before held-out runs.
 - **Secondary (continuous):** hint response R_H = p_hint − p_no-hint at 1×; compute response R_C = p_8× − p_1× no-hint. Coefficient of R_H on R_C negative after conditioning on baseline solve rate; logistic mixed model (model fixed effects, problem random effects), uncertainty bootstrapped by problem.
-- **Placebo-high problems** (H1 ≥ 2/3) are reported against baseline only, no mechanism claimed.
+- **Placebo-high problems** (placebo ≥ 2/3) are reported against baseline only, no mechanism claimed.
 - Per-problem 3-seed calls are noisy; all statistics aggregate, paired across problems.
 
 ## Grading (validated, not trusted)
 
 - Completeness standard: **7** = complete and rigorous; **6** = complete in essence with exactly one small local gap whose fix is an obvious single line; **5** = complete in essence with two or three such one-line gaps; **0** = anything else, with no other partial credit (a solution missing one of two required bounds scores 0). Every run graded by a frontier-model auditor other than its author, seeing the proof standalone (hint not shown, arm not disclosed): Fable 5 judges the sub-frontier models; Fable-authored runs are judged by GPT-5.6 Sol (cross-lab, so no same-family preference; judge-side contamination is harmless — knowing official solutions only sharpens verification, and the human-validation subset certifies each judge separately).
-- **Human validation subset:** 45 unique solutions (30 auditor-passed — false 7s are what corrupt results — 15 auditor-failed), stratified across models × cells, enriched around pivotal cells (the bold predictions). Two medalists grade independently, a third resolves; graders blind to arm. Report precision/recall (positive = 7; precision is load-bearing) with a one-sided lower confidence bound as the acceptance criterion, Cohen's κ, and inter-medalist agreement as the ceiling. Pre-commit: if the precision bound fails, pivotal cells are re-graded by humans.
+- **Human validation subset:** 45 unique solutions (30 auditor-passed, 15 auditor-failed), stratified across models × cells and enriched around pivotal cells. Two medalists grade independently, a third resolves; graders blind to arm. Report precision/recall (positive = score ≥ 5; precision is load-bearing) with a one-sided lower confidence bound as the acceptance criterion, Cohen's κ, and inter-medalist agreement as the ceiling. Pre-commit: if the precision bound fails, pivotal cells are re-graded by humans.
 
 ## Case studies (required section)
 
@@ -92,6 +89,6 @@ One problem per bucket gets a full trajectory read: what the model did with and 
 
 ## Budget
 
-With both outline arms, the configured worst case is 89 token-units per problem × model (3 baseline + 5 parallel + 24 baseline-sequential + 3 placebo + 3 hint + 24 hint-sequential + 3 outline + 24 outline-sequential) ≈ 17.8M output tokens; across 35 problems × 2 sub-frontier models ≈ 1.25B output tokens worst case, realistically far lower after the ceiling screen and gating. Fable adds ≈ 21M (105 × 1× baseline) plus guided cells on its failures only. Auditor grades everything; humans grade 45–60.
+The confirmatory worst case is 62 token-units per problem × model (3 baseline + 5 parallel + 24 baseline-sequential + 3 placebo + 3 hint + 24 hint-sequential) ≈ 12.4M output tokens; across 35 problems × 2 sub-frontier models ≈ 868M output tokens worst case, realistically far lower after the ceiling screen and gating. Fable adds ≈ 21M (105 × 1× baseline) plus guided cells on its failures only. Auditor grades everything; humans grade 45–60.
 
 **Discipline rule:** nothing runs that doesn't feed the primary test, a figure, or a pre-registered prediction. Rebuttal ammo (extra model, extra seeds, analog-pointer tier) happens in October, not now.
