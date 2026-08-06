@@ -62,24 +62,11 @@ class ExperimentConfig:
         return self.model.replace("/", "-")
 
 
-class RateLimitExhausted(Exception):
-    """Raised when the account's usage limit is hit (RateLimitInfo 'rejected').
-
-    Carries resets_at (unix seconds) so the caller can wait until the limit
-    resets and resume.
-    """
-
-    def __init__(self, resets_at: int) -> None:
-        """Store the reset time and build a human-readable message."""
-        self.resets_at = resets_at
-        super().__init__(f"Rate limit exhausted; resets at unix {resets_at}")
-
-
 class TokenSpendLimit(Exception):
     """Raised when a token's org spend limit is hit (CLI dies at startup).
 
     Unlike a rate limit there is no reset to wait for — the token is removed
-    from rotation and the attempt retries on the next token.
+    from rotation and the live conversation resumes on the next token.
     """
 
 
@@ -95,6 +82,16 @@ class ToolCall:
     tool_input: dict[str, object]
     result: str
     is_error: bool
+
+
+@dataclass(frozen=True)
+class ReconnectEvent:
+    """One operational provider-session recovery, with no secret material."""
+
+    reason: str
+    resets_at: int | None
+    from_credential: str
+    to_credential: str
 
 
 @dataclass
@@ -113,3 +110,4 @@ class PhaseResult:
     stop_reason: str
     budget_exhausted: bool
     tool_calls: list[ToolCall]
+    reconnects: list[ReconnectEvent]

@@ -8,9 +8,8 @@ interrupting the session the moment cumulative output tokens exceed the budget.
 
 import logging
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
-from typing import TypeVar
+import uuid
+from collections.abc import AsyncIterator, Callable
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -28,6 +27,7 @@ from claude_agent_sdk import (
 from src.constants import (
     AGENT_SETTINGS_PATH,
     ALLOWED_TOOLS,
+    CLAUDE_CONFIG_DIR_ENV,
     CLI_PATH_ENV,
     DISALLOWED_TOOLS,
     ANTHROPIC_API_KEY_ENV,
@@ -39,12 +39,14 @@ from src.constants import (
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
     PERMISSION_MODE,
+    SESSION_RECOVERY_PROMPT,
+    SESSION_STATE_SUBDIR,
     SPEND_LIMIT_MARKERS,
 )
 from src.models import (
     ExperimentConfig,
     PhaseResult,
-    RateLimitExhausted,
+    ReconnectEvent,
     TokenSpendLimit,
     ToolCall,
 )
@@ -52,8 +54,6 @@ from src.prompts import system_prompt
 from src.token_pool import TokenPool
 
 log = logging.getLogger("solver")
-
-T = TypeVar("T")
 
 STOP_BUDGET_EXHAUSTED: str = "budget_exhausted"
 
@@ -81,20 +81,186 @@ class StderrTail:
             raise TokenSpendLimit("\n".join(self.lines[-2:]))
 
 
-@asynccontextmanager
-async def spend_limit_guard(stderr_tail: StderrTail) -> AsyncIterator[None]:
-    """Wrap one SDK session: turn its generic fatal exit into TokenSpendLimit.
+OptionsFactory = Callable[
+    [str, str | None, str | None, StderrTail], ClaudeAgentOptions
+]
 
-    The CLI dies with a bare 'exit code 1' when the org is out of budget; only
-    the captured stderr distinguishes that from a real failure.
+
+class ResumableClaudeSession:
+    """One Claude conversation that can rotate credentials without restarting.
+
+    The CLI transcript is local and identified by an explicit UUID. If the
+    provider rejects a live query, the exhausted credential is cooled (or
+    disabled for a spend limit), the next available credential is selected, and
+    a new CLI process resumes the same transcript. The caller's phase objects,
+    scratch directory, and BudgetTracker stay alive across that transition.
     """
-    try:
-        yield
-    except (RateLimitExhausted, TokenSpendLimit):
-        raise
-    except Exception:
-        stderr_tail.raise_if_spend_limit()
-        raise
+
+    def __init__(self, pool: TokenPool, options_factory: OptionsFactory) -> None:
+        self._pool = pool
+        self._options_factory = options_factory
+        self._session_id = str(uuid.uuid4())
+        self._client: ClaudeSDKClient | None = None
+        self._token: str | None = None
+        self._stderr_tail: StderrTail | None = None
+        self._reconnects: list[ReconnectEvent] = []
+
+    @property
+    def reconnect_count(self) -> int:
+        """Number of successful credential transitions in this conversation."""
+        return len(self._reconnects)
+
+    @property
+    def reconnect_events(self) -> list[ReconnectEvent]:
+        """Return an immutable-by-convention snapshot for result logging."""
+        return list(self._reconnects)
+
+    async def __aenter__(self) -> "ResumableClaudeSession":
+        await self._open(resume=False)
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        await self._close(suppress_errors=exc_type is not None)
+        return False
+
+    async def _open(self, *, resume: bool) -> None:
+        """Open a CLI process, skipping credentials already at spend limit."""
+        while True:
+            token = await self._pool.acquire()
+            stderr_tail = StderrTail()
+            options = self._options_factory(
+                token,
+                None if resume else self._session_id,
+                self._session_id if resume else None,
+                stderr_tail,
+            )
+            client = ClaudeSDKClient(options=options)
+            try:
+                await client.connect()
+            except Exception:
+                try:
+                    stderr_tail.raise_if_spend_limit()
+                except TokenSpendLimit:
+                    await self._pool.mark_dead(token)
+                    await self._pool.release(token)
+                    log.warning(
+                        "%s was unusable at session startup; trying another "
+                        "credential",
+                        self._pool.credential_label(token),
+                    )
+                    continue
+                await self._pool.release(token)
+                raise
+            self._token = token
+            self._stderr_tail = stderr_tail
+            self._client = client
+            return
+
+    async def _close(self, *, suppress_errors: bool) -> None:
+        """Close the active CLI; release is a pool-policy compatibility hook."""
+        client, token = self._client, self._token
+        self._client = None
+        self._token = None
+        self._stderr_tail = None
+        try:
+            if client is not None:
+                await client.disconnect()
+        except Exception:
+            if not suppress_errors:
+                raise
+            log.debug("Ignoring expected CLI shutdown error during recovery")
+        finally:
+            if token is not None:
+                await self._pool.release(token)
+
+    async def _recover(self, reason: str, resets_at: int | None) -> None:
+        """Rotate credentials and resume this exact local transcript."""
+        old_token = self._token
+        if old_token is None:
+            raise RuntimeError("Cannot recover a session with no leased credential")
+        old_label = self._pool.credential_label(old_token)
+        if reason == "rate_limit":
+            await self._pool.mark_rate_limited(old_token, resets_at or 0)
+        elif reason == "spend_limit":
+            await self._pool.mark_dead(old_token)
+        else:
+            raise ValueError(f"Unknown recovery reason: {reason}")
+
+        await self._close(suppress_errors=True)
+        await self._open(resume=True)
+        if self._token is None:
+            raise RuntimeError("Recovery opened no replacement credential")
+        new_label = self._pool.credential_label(self._token)
+        event = ReconnectEvent(
+            reason=reason,
+            resets_at=resets_at,
+            from_credential=old_label,
+            to_credential=new_label,
+        )
+        self._reconnects.append(event)
+        log.warning(
+            "Session %s resumed after %s (%s -> %s); preserving accumulated "
+            "output-token accounting",
+            self._session_id,
+            reason,
+            old_label,
+            new_label,
+        )
+
+    async def query(self, prompt: str) -> None:
+        """Send a normal experiment prompt to the active conversation."""
+        if self._client is None:
+            raise RuntimeError("Session is not open")
+        await self._client.query(prompt)
+
+    async def receive_response(self) -> AsyncIterator[object]:
+        """Stream one response, transparently reconnecting after quota rejection."""
+        while True:
+            if self._client is None or self._stderr_tail is None:
+                raise RuntimeError("Session is not open")
+            rate_limit_reset: int | None = None
+            spend_limited = False
+            try:
+                async for message in self._client.receive_response():
+                    message_session_id = getattr(message, "session_id", None)
+                    if message_session_id:
+                        self._session_id = str(message_session_id)
+                    if isinstance(message, RateLimitEvent):
+                        info = message.rate_limit_info
+                        if info.status == "rejected":
+                            rate_limit_reset = (
+                                info.resets_at if info.resets_at is not None else 0
+                            )
+                        continue
+                    # Once rejected, drain the dying CLI without exposing its
+                    # error ResultMessage as a completed experimental phase.
+                    if rate_limit_reset is None:
+                        yield message
+            except Exception:
+                if rate_limit_reset is None:
+                    try:
+                        self._stderr_tail.raise_if_spend_limit()
+                    except TokenSpendLimit:
+                        spend_limited = True
+                    if not spend_limited:
+                        raise
+
+            if rate_limit_reset is not None:
+                await self._recover("rate_limit", rate_limit_reset)
+            elif spend_limited:
+                await self._recover("spend_limit", None)
+            else:
+                return
+
+            if self._client is None:
+                raise RuntimeError("Recovered session has no active client")
+            await self._client.query(SESSION_RECOVERY_PROMPT)
+
+    async def interrupt(self) -> None:
+        """Interrupt the currently active CLI process at the output cutoff."""
+        if self._client is None:
+            raise RuntimeError("Session is not open")
+        await self._client.interrupt()
 
 
 class BudgetTracker:
@@ -112,7 +278,10 @@ class BudgetTracker:
         self.soft_limit_tokens = budget_tokens - wrap_up_reserve_tokens
         self.spent = 0
         self._completed_phases_tokens = 0
+        # Persist maxima for the whole conversation: a resumed CLI may replay
+        # an earlier message, including one from a completed phase.
         self._message_tokens: dict[str, int] = {}
+        self._current_phase_streamed_tokens = 0
         self._prev_session_cost = 0.0
         self._prev_session_turns = 0
 
@@ -127,11 +296,14 @@ class BudgetTracker:
             return
         tokens = int(str(usage.get("output_tokens", 0)))
         if message_id is None:
+            self._current_phase_streamed_tokens += tokens
             self.spent += tokens
             return
         previous = self._message_tokens.get(message_id, 0)
         if tokens > previous:
-            self.spent += tokens - previous
+            delta = tokens - previous
+            self._current_phase_streamed_tokens += delta
+            self.spent += delta
             self._message_tokens[message_id] = tokens
 
     def finish_phase(self, result_output_tokens: int | None) -> int:
@@ -143,10 +315,10 @@ class BudgetTracker:
         otherwise a soft-limit interrupt could un-trip soft_exhausted and
         skip the wrap-up phase. Returns the phase's token count.
         """
-        streamed = sum(self._message_tokens.values())
+        streamed = self._current_phase_streamed_tokens
         phase_tokens = max(result_output_tokens or 0, streamed)
         self._completed_phases_tokens += phase_tokens
-        self._message_tokens.clear()
+        self._current_phase_streamed_tokens = 0
         self.spent = self._completed_phases_tokens
         return phase_tokens
 
@@ -201,12 +373,23 @@ def provider_env(model: str, api_key: str) -> dict[str, str]:
     return {OAUTH_TOKEN_ENV: api_key, **cap}
 
 
+def isolated_session_env(model: str, api_key: str, scratch_dir: str) -> dict[str, str]:
+    """Provider auth plus a transcript store private to this attempt."""
+    return {
+        **provider_env(model, api_key),
+        CLAUDE_CONFIG_DIR_ENV: os.path.join(scratch_dir, SESSION_STATE_SUBDIR),
+    }
+
+
 def build_options(
     config: ExperimentConfig,
     scratch_dir: str,
     budget_tokens: int,
     oauth_token: str,
     stderr_tail: StderrTail,
+    *,
+    session_id: str | None = None,
+    resume_session_id: str | None = None,
 ) -> ClaudeAgentOptions:
     """Construct agent options for one attempt.
 
@@ -221,7 +404,7 @@ def build_options(
     return ClaudeAgentOptions(
         model=config.model,
         cli_path=os.environ.get(CLI_PATH_ENV),
-        env=provider_env(config.model, oauth_token),
+        env=isolated_session_env(config.model, oauth_token, scratch_dir),
         effort=config.effort,  # type: ignore[arg-type]
         stderr=stderr_tail,
         system_prompt=system_prompt(),
@@ -234,6 +417,8 @@ def build_options(
         task_budget={"total": budget_tokens},
         include_partial_messages=True,
         cwd=scratch_dir,
+        session_id=session_id,
+        resume=resume_session_id,
     )
 
 
@@ -295,7 +480,7 @@ def _collect_tool_calls(
 
 
 async def run_phase(
-    client: ClaudeSDKClient,
+    client: ResumableClaudeSession,
     prompt: str,
     label: str,
     tracker: BudgetTracker,
@@ -310,12 +495,13 @@ async def run_phase(
     ResultMessage arrives or the result is an API error.
     """
     await client.query(prompt)
+    reconnect_start = client.reconnect_count
 
     assistant_messages: list[AssistantMessage] = []
+    seen_assistant_ids: set[str] = set()
     tool_uses: dict[str, ToolUseBlock] = {}
     tool_results: dict[str, ToolResultBlock] = {}
     result_message: ResultMessage | None = None
-    rate_limit_reset: int | None = None
     interrupted = False
 
     current_stream_id: str | None = None
@@ -333,44 +519,38 @@ async def run_phase(
             )
             await client.interrupt()
 
-    # A rejected session can still crash the CLI at shutdown (exit 1 after all
-    # messages arrived) — the rejection we already saw must win over that
-    # generic reader error, or the token would never rotate.
-    try:
-        async for message in client.receive_response():
-            if isinstance(message, AssistantMessage):
+    async for message in client.receive_response():
+        if isinstance(message, AssistantMessage):
+            # API message ids are stable if a resumed CLI replays the tail;
+            # SDK envelope UUIDs need not be.
+            assistant_id = message.message_id or message.uuid
+            if assistant_id is None or assistant_id not in seen_assistant_ids:
                 assistant_messages.append(message)
+                if assistant_id is not None:
+                    seen_assistant_ids.add(assistant_id)
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
                         tool_uses[block.id] = block
-                tracker.add(message.message_id, message.usage)
+            # SDK assistant envelopes should carry the API message id. If one
+            # does not, reuse the most recent stream id so its initial usage
+            # snapshot cannot be double-counted against message_delta.
+            tracker.add(message.message_id or current_stream_id, message.usage)
+            await interrupt_if_over_budget()
+        elif isinstance(message, StreamEvent):
+            # The real per-message output count arrives in message_delta;
+            # AssistantMessage.usage only carries the initial tiny snapshot.
+            event_type = message.event.get("type")
+            if event_type == "message_start":
+                current_stream_id = message.event.get("message", {}).get("id")
+            elif event_type == "message_delta":
+                tracker.add(current_stream_id, message.event.get("usage"))
                 await interrupt_if_over_budget()
-            elif isinstance(message, StreamEvent):
-                # The real per-message output count arrives in message_delta;
-                # AssistantMessage.usage only carries the initial tiny snapshot.
-                event_type = message.event.get("type")
-                if event_type == "message_start":
-                    current_stream_id = message.event.get("message", {}).get("id")
-                elif event_type == "message_delta":
-                    tracker.add(current_stream_id, message.event.get("usage"))
-                    await interrupt_if_over_budget()
-            elif isinstance(message, UserMessage) and isinstance(message.content, list):
-                for block in message.content:
-                    if isinstance(block, ToolResultBlock):
-                        tool_results[block.tool_use_id] = block
-            elif isinstance(message, ResultMessage):
-                result_message = message
-            elif isinstance(message, RateLimitEvent):
-                info = message.rate_limit_info
-                if info.status == "rejected":
-                    rate_limit_reset = info.resets_at if info.resets_at is not None else 0
-    except Exception:
-        if rate_limit_reset is not None:
-            raise RateLimitExhausted(rate_limit_reset) from None
-        raise
-
-    if rate_limit_reset is not None:
-        raise RateLimitExhausted(rate_limit_reset)
+        elif isinstance(message, UserMessage) and isinstance(message.content, list):
+            for block in message.content:
+                if isinstance(block, ToolResultBlock):
+                    tool_results[block.tool_use_id] = block
+        elif isinstance(message, ResultMessage):
+            result_message = message
 
     if result_message is None:
         raise RuntimeError(f"Agent produced no ResultMessage for phase '{label}'")
@@ -384,8 +564,9 @@ async def run_phase(
             f"errors={result_message.errors} result={result_message.result!r}"
         )
 
+    reconnects = client.reconnect_events[reconnect_start:]
     text = _collect_text(assistant_messages)
-    if result_message.result is not None and not interrupted:
+    if result_message.result is not None and not interrupted and not reconnects:
         text = result_message.result
 
     result_usage = result_message.usage or {}
@@ -413,23 +594,5 @@ async def run_phase(
         stop_reason=stop_reason,
         budget_exhausted=interrupted,
         tool_calls=_collect_tool_calls(tool_uses, tool_results),
+        reconnects=reconnects,
     )
-
-
-async def run_resumable(pool: TokenPool, factory: Callable[[str], Awaitable[T]]) -> T:
-    """Run an attempt factory with pool tokens, rotating on rate limits.
-
-    The factory receives the OAuth token for its session. On RateLimitExhausted
-    the token is put on cooldown and the attempt restarts from scratch with the
-    next available token; the pool only sleeps when every token is cooling, so
-    a rate limit never kills the run. On TokenSpendLimit (org out of budget,
-    no reset to wait for) the token is removed from rotation entirely.
-    """
-    while True:
-        token = await pool.acquire()
-        try:
-            return await factory(token)
-        except RateLimitExhausted as exhausted:
-            await pool.mark_rate_limited(token, exhausted.resets_at)
-        except TokenSpendLimit:
-            await pool.mark_dead(token)

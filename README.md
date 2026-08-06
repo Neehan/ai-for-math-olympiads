@@ -46,12 +46,12 @@ Every solver's published cutoff must predate the earliest contest (February 2026
 - **Outline:** audited ~50-word development ceiling; never used on the held-out 35.
 - Hints are written from the statement and official solution, independently audited for leakage, committed, hashed, and published verbatim.
 
-Compute is total output tokens: thinking, visible text, and tool-call text. Reasoning effort stays fixed at high.
+Compute is total output tokens: thinking, visible text, and tool-call text. Reasoning effort stays fixed at high. Provider quota rejection is transport recovery: the same local conversation UUID resumes through the next available credential with one fixed continuation message, all streamed output remains charged to the original budget, and every reconnect is logged.
 
 - **1×:** 200k output tokens.
 - **2× / 4× / 8×:** 400k / 800k / 1.6M.
 - **Parallel:** eight independent 1× attempts, reported as pass@1/2/4/8.
-- **Sequential:** one work → self-review → revise trajectory per seed, observed at 2×/4×/8× cuts; no external grade or ground truth is shown.
+- **Sequential:** one work → self-review → revise trajectory per seed, observed at 2×/4×/8× cuts; no external grade or ground truth is shown. It stops early after two consecutive exact `NO GENUINE GAP FOUND` critiques and carries that proof forward. An audited failure that self-converged requires forced full-budget follow-up before it can be called compute-flat.
 - **IdeaSearch-8 robustness:** an adaptation of [IdeaSearch](https://proceedings.iclr.cc/paper_files/paper/2025/hash/071a637d41ea290ac4360818a8323f33-Abstract-Conference.html) (Wang et al., ICLR 2025) to proof generation. Each of eight independent branches uses a fresh same-model planner (≤20k tokens), then a fresh executor given only the problem and that branch's plan (≤180k). The candidate plan is not an oracle; the executor may repair or abandon it. Branches share no context and the bank totals 8×. Run only on primary-model hint rescues that fail both standard 8× protocols.
 
 Parallel and sequential are separate experiments. Each receives 8×; running both spends 16× and is never reported as one 8× cell. Verifier-guided tree search is outside scope because no validated proof-level process verifier exists.
@@ -77,6 +77,7 @@ The standard design has at most 20 completed trajectories per problem × main mo
 - **Boundary shift:** among Opus baseline failures, compare Fable baseline success on Opus hint-responsive / robustly compute-flat problems versus remaining failures, conditioning on pre-run human difficulty and baseline pass rate. Also report Sonnet → Opus → Fable transition matrices.
 - **Saturation:** freeze a practical-equivalence margin on development data and test whether the aggregate 4×→8× gain remains below it.
 - **Continuous analysis:** model hint response and parallel/sequential compute response separately, conditioning on baseline success; use model fixed effects, problem random effects, and problem bootstrap uncertainty.
+- **Operational sensitivity:** report all session reconnects; if a headline cell depends on a recovered attempt, repeat it uninterrupted or show that excluding recovered attempts leaves the conclusion unchanged.
 - Any `baseline-ideasearch` rescue narrows the conclusion to ordinary parallel sampling and sequential revision.
 
 **Proof grading.** Scores are 7 (complete), 6 (one obvious one-line gap), 5 (two or three such gaps), or 0. Auditors see only the proposed proof, not its arm or hint. Fable grades sub-frontier outputs; GPT-5.6 Sol grades Fable outputs.

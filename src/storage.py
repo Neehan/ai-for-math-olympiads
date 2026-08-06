@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import urllib.request
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ from src.constants import (
     RESULTS_ROOT,
     SCRATCH_ROOT,
     SCRATCH_SUBDIR,
+    SESSION_STATE_SUBDIR,
     SEED_AUDIT_FILENAME,
     SOLUTION_CUT_FILENAME_FORMAT,
     SOLUTION_FILENAME,
@@ -169,6 +171,8 @@ def _phase_record(phase: PhaseResult) -> dict[str, object]:
         "is_error": phase.is_error,
         "stop_reason": phase.stop_reason,
         "budget_exhausted": phase.budget_exhausted,
+        "session_reconnect_count": len(phase.reconnects),
+        "session_reconnects": [asdict(event) for event in phase.reconnects],
         "tool_calls": [
             {
                 "name": c.name,
@@ -247,6 +251,7 @@ def write_seed_outputs(
     phases: list[PhaseResult],
     scratch_path: Path,
     plan_scratch_path: Path | None = None,
+    termination_reason: str | None = None,
 ) -> Path:
     """Write logs.jsonl.zst, solution.md, scratch/ copy, then meta.json (marker).
 
@@ -298,13 +303,21 @@ def write_seed_outputs(
     scratch_copy = output_dir / SCRATCH_SUBDIR
     if scratch_copy.exists():
         shutil.rmtree(scratch_copy)
-    shutil.copytree(scratch_path, scratch_copy)
+    shutil.copytree(
+        scratch_path,
+        scratch_copy,
+        ignore=shutil.ignore_patterns(SESSION_STATE_SUBDIR),
+    )
 
     plan_scratch_copy = output_dir / PLAN_SCRATCH_SUBDIR
     if plan_scratch_copy.exists():
         shutil.rmtree(plan_scratch_copy)
     if plan_scratch_path is not None:
-        shutil.copytree(plan_scratch_path, plan_scratch_copy)
+        shutil.copytree(
+            plan_scratch_path,
+            plan_scratch_copy,
+            ignore=shutil.ignore_patterns(SESSION_STATE_SUBDIR),
+        )
 
     meta = {
         "problem_id": problem.problem_id,
@@ -321,10 +334,16 @@ def write_seed_outputs(
         "num_phases": len(phases),
         "phase_labels": [p.label for p in phases],
         "total_cost_usd": sum(p.total_cost_usd for p in phases),
+        "session_reconnect_count": sum(len(p.reconnects) for p in phases),
+        "session_reconnects": [
+            asdict(event) for phase in phases for event in phase.reconnects
+        ],
         "budget_cuts": budget_cuts,
     }
     if plan_scratch_path is not None:
         meta["plan_scratch_dir_name"] = plan_scratch_path.name
+    if termination_reason is not None:
+        meta["termination_reason"] = termination_reason
     if arm.mode == MODE_IDEASEARCH:
         plan_labels = {PHASE_PLAN, PHASE_PLAN_WRAP_UP}
         meta.update(
@@ -373,6 +392,7 @@ def archive_audit_scratch(output_dir: Path, scratch_path: Path) -> None:
     preserved under audit_scratch/. The live scratch dir is always removed.
     """
     destination = output_dir / AUDIT_SCRATCH_SUBDIR
+    shutil.rmtree(scratch_path / SESSION_STATE_SUBDIR, ignore_errors=True)
     if destination.exists():
         shutil.rmtree(destination)
     if any(scratch_path.iterdir()):

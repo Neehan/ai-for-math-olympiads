@@ -16,8 +16,6 @@ import logging
 
 import anyio
 
-from claude_agent_sdk import ClaudeSDKClient
-
 from src.concurrency import run_all
 from src.config import load_config, override_models
 from src.constants import (
@@ -30,12 +28,14 @@ from src.constants import (
     LOG_LEVEL,
     MODE_IDEASEARCH,
     MODE_SEQUENTIAL,
+    NO_GENUINE_GAP_MARKER,
     PHASE_CRITIQUE,
     PHASE_REVISE,
     PHASE_PLAN,
     PHASE_PLAN_WRAP_UP,
     PHASE_SOLVE,
     PHASE_WRAP_UP,
+    SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
 from src.prompts import (
@@ -49,11 +49,9 @@ from src.prompts import (
 )
 from src.solver import (
     BudgetTracker,
-    StderrTail,
+    ResumableClaudeSession,
     build_options,
     run_phase,
-    run_resumable,
-    spend_limit_guard,
     token_env_name,
 )
 from src.storage import (
@@ -93,12 +91,25 @@ def _offset_cumulative_tokens(
     ]
 
 
+def _critique_reports_no_gap(text: str) -> bool:
+    """True only when a critique contains the exact standalone no-gap verdict.
+
+    Markdown emphasis and a final period are ignored. Merely discussing or
+    quoting the marker inside a longer sentence cannot trigger early stopping.
+    """
+    for line in text.splitlines():
+        normalized = line.strip().strip("*_` ").rstrip(".").strip()
+        if normalized == NO_GENUINE_GAP_MARKER:
+            return True
+    return False
+
+
 async def solve_ideasearch_seed(
     config: ExperimentConfig,
     arm: ArmConfig,
     problem: Problem,
     seed: int,
-    oauth_token: str,
+    pool: TokenPool,
 ) -> None:
     """Run one isolated IdeaSearch branch: planner (20k) -> executor (180k).
 
@@ -114,15 +125,19 @@ async def solve_ideasearch_seed(
     plan_tracker = BudgetTracker(
         plan_budget, config.ideasearch_plan_wrap_up_reserve_tokens
     )
-    plan_stderr = StderrTail()
-    plan_options = build_options(
-        config, str(plan_scratch_path), plan_budget, oauth_token, plan_stderr
-    )
     plan_phases: list[PhaseResult] = []
-    async with (
-        spend_limit_guard(plan_stderr),
-        ClaudeSDKClient(options=plan_options) as planner,
-    ):
+    async with ResumableClaudeSession(
+        pool,
+        lambda token, session_id, resume_id, stderr: build_options(
+            config,
+            str(plan_scratch_path),
+            max(1, plan_tracker.remaining),
+            token,
+            stderr,
+            session_id=session_id,
+            resume_session_id=resume_id,
+        ),
+    ) as planner:
         plan = await run_phase(
             planner,
             ideasearch_plan_prompt(
@@ -154,15 +169,19 @@ async def solve_ideasearch_seed(
     )
 
     proof_tracker = BudgetTracker(proof_budget, config.wrap_up_reserve_tokens)
-    proof_stderr = StderrTail()
-    proof_options = build_options(
-        config, str(proof_scratch_path), proof_budget, oauth_token, proof_stderr
-    )
     proof_phases: list[PhaseResult] = []
-    async with (
-        spend_limit_guard(proof_stderr),
-        ClaudeSDKClient(options=proof_options) as executor,
-    ):
+    async with ResumableClaudeSession(
+        pool,
+        lambda token, session_id, resume_id, stderr: build_options(
+            config,
+            str(proof_scratch_path),
+            max(1, proof_tracker.remaining),
+            token,
+            stderr,
+            session_id=session_id,
+            resume_session_id=resume_id,
+        ),
+    ) as executor:
         solve = await run_phase(
             executor,
             ideasearch_execute_prompt(
@@ -239,7 +258,7 @@ async def solve_seed(
     arm: ArmConfig,
     problem: Problem,
     seed: int,
-    oauth_token: str,
+    pool: TokenPool,
 ) -> None:
     """Run one attempt (one seed) of one problem under one arm; write outputs.
 
@@ -249,19 +268,27 @@ async def solve_seed(
     what it has; only that phase may spend into the hard budget.
     """
     if arm.mode == MODE_IDEASEARCH:
-        await solve_ideasearch_seed(config, arm, problem, seed, oauth_token)
+        await solve_ideasearch_seed(config, arm, problem, seed, pool)
         return
 
     scratch_path = fresh_scratch_dir()
     budget_tokens = config.budget_tokens(arm)
     tracker = BudgetTracker(budget_tokens, config.wrap_up_reserve_tokens)
-    stderr_tail = StderrTail()
-    options = build_options(
-        config, str(scratch_path), budget_tokens, oauth_token, stderr_tail
-    )
     phases: list[PhaseResult] = []
+    termination_reason: str | None = None
 
-    async with spend_limit_guard(stderr_tail), ClaudeSDKClient(options=options) as client:
+    async with ResumableClaudeSession(
+        pool,
+        lambda token, session_id, resume_id, stderr: build_options(
+            config,
+            str(scratch_path),
+            max(1, tracker.remaining),
+            token,
+            stderr,
+            session_id=session_id,
+            resume_session_id=resume_id,
+        ),
+    ) as client:
         solve = await run_phase(
             client,
             task_prompt(problem, hint_for(problem, arm), str(scratch_path), budget_tokens),
@@ -281,6 +308,7 @@ async def solve_seed(
 
         if arm.mode == MODE_SEQUENTIAL:
             round_num = 0
+            no_gap_streak = 0
             while not tracker.soft_exhausted and round_num < config.sequential_max_rounds:
                 round_num += 1
                 critique = await run_phase(
@@ -291,6 +319,23 @@ async def solve_seed(
                     tracker.soft_limit_tokens,
                 )
                 phases.append(critique)
+                if _critique_reports_no_gap(critique.text):
+                    no_gap_streak += 1
+                else:
+                    no_gap_streak = 0
+                if no_gap_streak >= SEQUENTIAL_NO_GAP_STREAK_TO_STOP:
+                    termination_reason = "self_converged"
+                    log.info(
+                        "%s/%s seed %d: stopping after %d consecutive "
+                        "no-gap critiques (%d/%d tokens)",
+                        arm.name,
+                        problem.problem_id,
+                        seed,
+                        no_gap_streak,
+                        tracker.spent,
+                        budget_tokens,
+                    )
+                    break
                 if tracker.soft_exhausted:
                     break
                 revise = await run_phase(
@@ -311,6 +356,11 @@ async def solve_seed(
                     budget_tokens,
                 )
 
+            if termination_reason is None:
+                termination_reason = (
+                    "token_limit" if tracker.soft_exhausted else "round_limit"
+                )
+
         if tracker.soft_exhausted:
             wrap_up = await run_phase(
                 client,
@@ -322,7 +372,14 @@ async def solve_seed(
             phases.append(wrap_up)
 
     output_dir = write_seed_outputs(
-        config, arm, problem, seed, budget_tokens, phases, scratch_path
+        config,
+        arm,
+        problem,
+        seed,
+        budget_tokens,
+        phases,
+        scratch_path,
+        termination_reason=termination_reason,
     )
     log.info("%s/%s seed %d done -> %s", arm.name, problem.problem_id, seed, output_dir)
 
@@ -412,9 +469,7 @@ async def main() -> None:
     )
     pool = TokenPool.from_env(token_env_name(config.model))
     tasks = [
-        lambda p=problem, s=seed: run_resumable(
-            pool, lambda token: solve_seed(config, arm, p, s, token)
-        )
+        lambda p=problem, s=seed: solve_seed(config, arm, p, s, pool)
         for problem, seed in pending
     ]
     await run_all(tasks, config.max_concurrency)

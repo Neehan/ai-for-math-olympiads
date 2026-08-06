@@ -16,6 +16,7 @@ results/<model>/<arm>/audit.jsonl, one line per (problem, seed).
 """
 
 import argparse
+import dataclasses
 import logging
 import os
 
@@ -23,9 +24,7 @@ import anyio
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
-    RateLimitEvent,
     ResultMessage,
-    query,
 )
 
 from src.concurrency import run_all
@@ -43,13 +42,13 @@ from src.constants import (
     LOG_LEVEL,
     PERMISSION_MODE,
 )
-from src.models import ArmConfig, ExperimentConfig, Problem, RateLimitExhausted
+from src.models import ArmConfig, ExperimentConfig, Problem, ReconnectEvent
 from src.prompts import audit_prompt
 from src.run import select_problems, select_seeds
 from src.solver import (
+    ResumableClaudeSession,
     StderrTail,
-    provider_env,
-    run_resumable,
+    isolated_session_env,
     token_env_name,
 )
 from src.storage import (
@@ -88,6 +87,9 @@ def _audit_options(
     oauth_token: str,
     scratch_dir: str,
     stderr_tail: StderrTail,
+    *,
+    session_id: str | None = None,
+    resume_session_id: str | None = None,
 ) -> ClaudeAgentOptions:
     """Judge session options: scratch tools to CHECK (audit, not solve),
     structured 0/5/6/7 output, opaque scratch cwd (never the repo root).
@@ -101,7 +103,7 @@ def _audit_options(
         cli_path=os.environ.get(CLI_PATH_ENV),
         effort=config.effort,  # type: ignore[arg-type]
         stderr=stderr_tail,
-        env=provider_env(config.audit_model, oauth_token),
+        env=isolated_session_env(config.audit_model, oauth_token, scratch_dir),
         allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
         settings=str(AGENT_SETTINGS_PATH),
@@ -110,41 +112,39 @@ def _audit_options(
         max_turns=config.audit_max_turns,
         cwd=scratch_dir,
         output_format={"type": "json_schema", "schema": AUDIT_OUTPUT_SCHEMA},
+        session_id=session_id,
+        resume=resume_session_id,
     )
 
 
 async def _judge(
-    config: ExperimentConfig, prompt: str, oauth_token: str, scratch_dir: str
-) -> dict[str, object]:
+    config: ExperimentConfig, prompt: str, pool: TokenPool, scratch_dir: str
+) -> tuple[dict[str, object], list[ReconnectEvent]]:
     """Run one judge call and return its validated structured verdict."""
     result: ResultMessage | None = None
-    rate_limit_reset: int | None = None
-    stderr_tail = StderrTail()
-    options = _audit_options(config, oauth_token, scratch_dir, stderr_tail)
-    # A rejected session can still crash the CLI at shutdown (exit 1 after all
-    # messages arrived) — the rejection we already saw must win over that
-    # generic reader error, or the token would never rotate.
-    try:
-        async for message in query(prompt=prompt, options=options):
+    reconnects: list[ReconnectEvent] = []
+    async with ResumableClaudeSession(
+        pool,
+        lambda token, session_id, resume_id, stderr: _audit_options(
+            config,
+            token,
+            scratch_dir,
+            stderr,
+            session_id=session_id,
+            resume_session_id=resume_id,
+        ),
+    ) as session:
+        await session.query(prompt)
+        async for message in session.receive_response():
             if isinstance(message, ResultMessage):
                 result = message
-            elif isinstance(message, RateLimitEvent):
-                info = message.rate_limit_info
-                if info.status == "rejected":
-                    rate_limit_reset = info.resets_at if info.resets_at is not None else 0
-    except Exception:
-        if rate_limit_reset is not None:
-            raise RateLimitExhausted(rate_limit_reset) from None
-        stderr_tail.raise_if_spend_limit()
-        raise
-    if rate_limit_reset is not None:
-        raise RateLimitExhausted(rate_limit_reset)
+        reconnects = session.reconnect_events
     if result is None or result.is_error:
         raise RuntimeError(f"Judge call failed: {result and result.errors}")
     if not isinstance(result.structured_output, dict):
         raise RuntimeError("Judge returned no structured verdict")
     verdict: dict[str, object] = result.structured_output
-    return verdict
+    return verdict, reconnects
 
 
 async def audit_seed(
@@ -152,7 +152,7 @@ async def audit_seed(
     arm: ArmConfig,
     problem: Problem,
     seed: int,
-    oauth_token: str,
+    pool: TokenPool,
 ) -> None:
     """Grade one completed attempt (full solution + any budget-cut snapshots).
 
@@ -165,7 +165,9 @@ async def audit_seed(
     solution = seed_solution_text(output_dir)
     scratch_path = fresh_scratch_dir()
     scratch = str(scratch_path)
-    verdict = await _judge(config, audit_prompt(problem, solution), oauth_token, scratch)
+    verdict, full_reconnects = await _judge(
+        config, audit_prompt(problem, solution), pool, scratch
+    )
 
     cuts: dict[str, dict[str, object]] = {}
     for multiplier in budget_cut_multipliers(arm.budget_units):
@@ -174,15 +176,21 @@ async def audit_seed(
             cuts[f"{multiplier}x"] = {
                 "audit_score": AUDIT_SCORE_INVALID,
                 "note": "No complete write-up was emitted within this budget cut.",
+                "session_reconnect_count": 0,
+                "session_reconnects": [],
             }
             continue
         cut_text = cut_path.read_text(encoding="utf-8")
-        cut_verdict = await _judge(
-            config, audit_prompt(problem, cut_text), oauth_token, scratch
+        cut_verdict, cut_reconnects = await _judge(
+            config, audit_prompt(problem, cut_text), pool, scratch
         )
         cuts[f"{multiplier}x"] = {
             "audit_score": cut_verdict["score"],
             "note": cut_verdict["note"],
+            "session_reconnect_count": len(cut_reconnects),
+            "session_reconnects": [
+                dataclasses.asdict(event) for event in cut_reconnects
+            ],
         }
 
     archive_audit_scratch(output_dir, scratch_path)
@@ -196,6 +204,10 @@ async def audit_seed(
             "audit_model": config.audit_model,
             "audit_score": verdict["score"],
             "note": verdict["note"],
+            "session_reconnect_count": len(full_reconnects),
+            "session_reconnects": [
+                dataclasses.asdict(event) for event in full_reconnects
+            ],
             "budget_cuts": cuts,
         },
     )
@@ -273,9 +285,7 @@ async def main() -> None:
 
     pool = TokenPool.from_env(token_env_name(config.audit_model))
     tasks = [
-        lambda p=problem, s=seed: run_resumable(
-            pool, lambda token: audit_seed(config, arm, p, s, token)
-        )
+        lambda p=problem, s=seed: audit_seed(config, arm, p, s, pool)
         for problem, seed in pending
     ]
     await run_all(tasks, config.max_concurrency)

@@ -18,6 +18,9 @@ RESULTS_ROOT: Path = REPO_ROOT / "results"
 # Transient agent working space; its contents are copied into the seed's
 # results dir after the run, so this root itself is git-ignored.
 SCRATCH_ROOT: Path = REPO_ROOT / ".scratch"
+# Per-attempt Claude transcript/config store. Keeping it under that attempt's
+# opaque scratch dir prevents concurrent conversations from sharing ~/.claude.
+SESSION_STATE_SUBDIR: str = ".claude-runtime"
 
 # --- Per-seed output filenames -------------------------------------------
 LOGS_FILENAME: str = "logs.jsonl.zst"
@@ -88,6 +91,19 @@ PHASE_REVISE: str = "revise"
 PHASE_WRAP_UP: str = "wrap_up"
 PHASE_PLAN: str = "plan"
 PHASE_PLAN_WRAP_UP: str = "plan_wrap_up"
+
+# Sequential self-refinement stops only after the model reaches the prompt's
+# exact no-gap verdict twice in a row. One optimistic critique is
+# not enough to terminate a trajectory.
+NO_GENUINE_GAP_MARKER: str = "NO GENUINE GAP FOUND"
+SEQUENTIAL_NO_GAP_STREAK_TO_STOP: int = 2
+
+# Mechanical recovery instruction used only after the provider rejects a
+# live request for quota/spend reasons. Keeping it fixed makes reconnects an
+# auditable transport intervention rather than a problem-specific hint.
+SESSION_RECOVERY_PROMPT: str = (
+    "Continue from exactly where you were interrupted."
+)
 
 # --- Tool policy ----------------------------------------------------------
 # Pre-approved tools; network is blocked by the firewall + settings denies.
@@ -162,13 +178,14 @@ ANTHROPIC_API_KEY_ENV: str = "ANTHROPIC_API_KEY"
 
 # --- Auth / resume --------------------------------------------------------
 OAUTH_TOKEN_ENV: str = "CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_CONFIG_DIR_ENV: str = "CLAUDE_CONFIG_DIR"
 # Extra seconds to wait past a reported rate-limit reset time (clock skew).
 RESET_WAIT_BUFFER_SECONDS: int = 60
 # Cooldown applied when a rejection reports no usable reset time; without it a
 # resets_at of 0/None would put the token straight back into rotation.
 RATE_LIMIT_FALLBACK_COOLDOWN_SECONDS: int = 300
 # CLI stderr markers meaning the token's org is out of budget (no reset to
-# wait for): the token is removed from rotation and the attempt retries.
+# wait for): the token is removed and the live conversation changes credentials.
 SPEND_LIMIT_MARKERS: tuple[str, ...] = ("spend limit", "usage limit reached")
 
 # --- Logging --------------------------------------------------------------

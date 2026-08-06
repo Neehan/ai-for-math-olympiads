@@ -4,7 +4,7 @@ import dataclasses
 import json
 from pathlib import Path
 
-from src.constants import HINT_KINDS, HINT_NONE, MODE_IDEASEARCH, MODES
+from src.constants import HINT_KINDS, HINT_NONE, MODE_IDEASEARCH, MODE_SINGLE, MODES
 from src.models import ArmConfig, ExperimentConfig
 
 _VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high", "max"})
@@ -126,6 +126,27 @@ def load_config(path: Path) -> ExperimentConfig:
                 f"{path}: IdeaSearch arm '{arm.name}' must use hint='none', "
                 f"budget_units=1, and seeds [1, ..., 8]"
             )
+    baseline = config.arms.get("baseline")
+    parallel = config.arms.get("baseline-parallel")
+    if baseline is None or parallel is None:
+        raise ValueError(f"{path}: baseline and baseline-parallel arms are required")
+    if any(
+        arm.hint != HINT_NONE
+        or arm.mode != MODE_SINGLE
+        or arm.budget_units != 1
+        for arm in (baseline, parallel)
+    ):
+        raise ValueError(
+            f"{path}: baseline and baseline-parallel must be no-hint single 1x arms"
+        )
+    if (
+        set(baseline.seeds) & set(parallel.seeds)
+        or sorted(baseline.seeds + parallel.seeds) != list(range(1, 9))
+    ):
+        raise ValueError(
+            f"{path}: baseline plus baseline-parallel must define each seed 1..8 "
+            "exactly once"
+        )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")
     _check_judge_differs(config, str(path))

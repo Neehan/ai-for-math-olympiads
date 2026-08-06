@@ -3,7 +3,7 @@
 One harness implementing the paper's arms (top-level README): every attempt is one (arm, problem, seed) run of the Claude Agent SDK, in one of three modes.
 
 - **single** — one solve phase (arms `baseline`, `baseline-parallel`, `placebo-hint`, `hint`, `outline`).
-- **sequential** — solve → (critique → revise)× under one shared output-token budget, cut off mid-phase when the budget is spent (arms `baseline-sequential`, `hint-sequential`, `outline-sequential`). This is budget-bounded Self-Refine (Madaan et al. 2023); the per-phase cumulative token counts in the logs let the analysis cut the trajectory at 2×/4× for the saturation curve.
+- **sequential** — solve → (critique → revise)× under one shared output-token budget, cut off mid-phase when the budget is spent (arms `baseline-sequential`, `hint-sequential`, `outline-sequential`). Two consecutive critiques containing the exact standalone verdict `NO GENUINE GAP FOUND` stop the trajectory as self-converged; one optimistic critique does not. This is budget-bounded Self-Refine (Madaan et al. 2023); the per-phase cumulative token counts in the logs let the analysis cut the trajectory at 2×/4× for the saturation curve.
 - **ideasearch** — one fresh planner (≤20k) proposes a candidate strategy, then one fresh executor (≤180k) receives only the problem and its branch's plan and writes the proof. `baseline-ideasearch` has eight independent seeds/branches, an IdeaSearch-8 adaptation for proof generation.
 
 ## Configuration — `config.json`
@@ -45,14 +45,15 @@ All prompts are editable markdown files, including the three `ideasearch_*.md` t
 - **Prior results never enter a generation container.** The run stage mounts a staging dir pre-seeded with only `meta.json` completion markers (resume still works), then merges only newly completed attempts containing both `solution.md` and the last-written `meta.json`. Marker-only resume inputs and partial writes are discarded rather than re-merged, preventing a long-running arm from resurrecting stale results archived while it was active. An agent can never read past arms' solutions or hint-carrying logs, even by exploring the filesystem. The audit stage mounts the real tree (the judge must read solutions).
 - **Network:** the entrypoint installs an egress firewall (loopback + established + TLS to the LLM API endpoints only — Anthropic and `openrouter.ai` — default DROP) and self-tests it before any token is spent: the run aborts unless a non-allowlisted host is unreachable and both APIs are reachable. Only the LLM connection leaves the container.
 - **Tools:** `agent_settings.json` (passed via the SDK's `--settings`) denies `WebSearch`, `WebFetch`, and network/download Bash commands (`curl`, `wget`, `git`, `pip install`, …); `disallowed_tools` strips the web, subagent/fleet, publishing, and background-scheduling built-ins. User/project settings are excluded by passing `--setting-sources` explicitly empty (the SDK silently drops a falsy `setting_sources=[]`).
+- **Live transcripts:** each attempt uses its own Claude config/session directory inside its opaque scratch directory; concurrent seeds never share a resumable transcript, and this runtime state is excluded from archived scratch.
 - Every tool call is captured untruncated in the logs, so a run can be proven clean after the fact.
 
 ## Outputs — `results/<model>/<arm>/<problem_id>/seed_<k>/`
 
-- `logs.jsonl.zst` — one JSON line per phase: prompt, full response text, every tool call (full input/result), per-phase and cumulative output tokens, turns, duration, cost, stop reason.
+- `logs.jsonl.zst` — one JSON line per phase: prompt, full response text, every tool call (full input/result), per-phase and cumulative output tokens, turns, duration, cost, stop reason, and any credential reconnects.
 - `solution.md` — the graded artifact: the last COMPLETE proof-producing phase (normally the wrap-up), same convention as the budget cuts so the full-budget point can never score below a lower cut by truncation artifact. The judge grades ONLY its `## Final Solution` section (anything before the heading is working notes; no heading at all scores 0).
 - `scratch/` — copy of the proof solver's scratch directory. The live path is short and opaque (`.scratch/r3`) so the prompt carries no arm, contest, or seed identity. IdeaSearch branches additionally archive the isolated planner workspace as `plan_scratch/`.
-- `meta.json` — attempt metadata and totals; written last, so its presence is the completion marker for resumable runs.
+- `meta.json` — attempt metadata and totals, including sequential `termination_reason` (`self_converged`, `token_limit`, or `round_limit`); written last, so its presence is the completion marker for resumable runs.
 - `audit.json` — the judge's verdict (full solution + per-cut scores/notes); `audit_scratch/` — any computations the judge ran while grading.
 
 ## Audit (grading)
@@ -94,12 +95,13 @@ python -m src.run --arm baseline
 python -m src.audit --arm baseline
 ```
 
-Concurrency is async (anyio) under a capacity limiter: at most `max_concurrency` (config.json) agent sessions in flight at once.
+Concurrency is async (anyio) under a capacity limiter: at most `max_concurrency` (config.json) agent sessions in flight at once. Available credentials are assigned round-robin; keys are not per-request concurrency limits, so one healthy key can serve all eight sessions. Duplicate values under multiple env names are ignored.
 
-Resumable: attempts whose `meta.json` exists are skipped; a rate-limited token cools down and work rotates to the next token, sleeping only when all are cooling. Run one arm per invocation; gated arms take the selected problem list via `--problems`. An interrupted IdeaSearch branch restarts that branch atomically, never from another branch's plan.
+Resumable: attempts whose `meta.json` exists are skipped. Within a live attempt, provider quota rejection cools the credential and resumes the same explicit conversation UUID through the next available credential using one fixed, non-mathematical continuation message; the existing `BudgetTracker`, phase state, and scratch files remain live, so pre- and post-reconnect streamed output count once toward the same cap. Reconnect details are archived without secrets. If every credential is cooling, the attempt waits. External process/container termination still restarts an unfinished attempt; an interrupted IdeaSearch branch restarts only that branch, never from another branch's plan. Run one arm per invocation; gated arms take the selected problem list via `--problems`.
 
 ## Type checking
 
 ```bash
 npx pyright        # standard mode; must pass clean
+python -m unittest discover -s tests -v
 ```
