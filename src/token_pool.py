@@ -127,9 +127,9 @@ class TokenPool:
             delay = max(0.0, wake_at - time.time())
             if delay > 1.0:
                 log.warning(
-                    "All tokens rate-limited; waiting %.0f s until "
+                    "All tokens rate-limited; waiting %.0f min until "
                     "the earliest reset",
-                    delay,
+                    delay / 60,
                 )
             with anyio.move_on_after(max(0.01, delay)):
                 await event.wait()
