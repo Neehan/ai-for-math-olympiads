@@ -44,8 +44,9 @@ class ExperimentConfig:
     effort: str
     unit_output_tokens: int
     wrap_up_reserve_tokens: int
-    ideasearch_plan_tokens: int
-    ideasearch_plan_wrap_up_reserve_tokens: int
+    uniform_strategy_plan_tokens: int
+    uniform_strategy_plan_wrap_up_reserve_tokens: int
+    uniform_strategy_branches: int
     max_turns_per_phase: int
     audit_max_turns: int
     max_concurrency: int

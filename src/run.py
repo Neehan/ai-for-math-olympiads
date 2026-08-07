@@ -5,14 +5,17 @@ Usage:
     python -m src.run --arm hint --problems usamo-2026-3,china-2026-5
 
 An attempt = one (problem, seed) pair. Mode 'single' runs one solve phase;
-mode 'sequential' runs solve -> (critique -> revise)*; mode 'ideasearch'
-runs a fresh planner followed by a fresh proof executor. Completed attempts
-(meta.json present) are skipped, so an interrupted run resumes cleanly.
+mode 'sequential' runs solve -> (critique -> revise)*; mode
+'uniform_strategy' runs one shared planner followed by eight fresh proof
+executors. Completed attempts (meta.json present) are skipped, so an
+interrupted run resumes cleanly.
 """
 
 import argparse
 import dataclasses
 import logging
+import re
+from pathlib import Path
 
 import anyio
 
@@ -33,8 +36,8 @@ from src.constants import (
     LOG_FORMAT,
     LOG_LEVEL,
     META_FILENAME,
-    MODE_IDEASEARCH,
     MODE_SEQUENTIAL,
+    MODE_UNIFORM_STRATEGY,
     NO_GENUINE_GAP_MARKER,
     PHASE_CRITIQUE,
     PHASE_REVISE,
@@ -48,11 +51,11 @@ from src.constants import (
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
 from src.prompts import (
     critique_prompt,
-    ideasearch_execute_prompt,
-    ideasearch_plan_prompt,
-    ideasearch_plan_wrap_up_prompt,
     revise_prompt,
     task_prompt,
+    uniform_strategy_execute_prompt,
+    uniform_strategy_plan_prompt,
+    uniform_strategy_plan_wrap_up_prompt,
     wrap_up_prompt,
 )
 from src.solver import (
@@ -68,6 +71,10 @@ from src.storage import (
     load_problems,
     seed_done,
     seed_output_dir,
+    uniform_branch_output_dir,
+    write_uniform_strategy_bank_meta,
+    write_uniform_strategy_plan_artifacts,
+    write_uniform_strategy_planner_failure,
     write_seed_outputs,
 )
 from src.token_pool import TokenPool
@@ -93,9 +100,7 @@ async def _checkpointed_phase(
                 f"Refusing to start {label!r} at exhausted cutoff "
                 f"{tracker.spent}/{stop_at_tokens}"
             )
-        active = checkpoint.begin_phase(
-            role, label, prompt, stop_at_tokens, tracker
-        )
+        active = checkpoint.begin_phase(role, label, prompt, stop_at_tokens, tracker)
     else:
         if active.get("label") != label:
             raise ValueError(
@@ -125,11 +130,8 @@ async def _checkpointed_phase(
                 budget_exhausted=True,
                 tool_calls=progress_tool_calls(progress),
                 reconnects=reconnects,
-                process_resume_count=int(active.get("process_resume_count", 0))
-                + 1,
-                discarded_output_text=str(
-                    active.get("discarded_output_text", "")
-                ),
+                process_resume_count=int(active.get("process_resume_count", 0)) + 1,
+                discarded_output_text=str(active.get("discarded_output_text", "")),
                 discarded_tool_calls=tool_calls_from_records(
                     active.get("discarded_tool_calls", [])
                 ),
@@ -199,28 +201,109 @@ async def _checkpointed_phase(
     )
 
 
-def _proposed_strategy_text(phases: list[PhaseResult]) -> str:
-    """Last complete planner response, falling back to interrupted text."""
-    for phase in reversed(phases):
-        if not phase.budget_exhausted and phase.text.strip():
-            return phase.text
-    for phase in reversed(phases):
-        if phase.text.strip():
-            return phase.text
-    raise RuntimeError("IdeaSearch planner produced no strategy text")
+async def _run_strict_wrap_phase(
+    config: ExperimentConfig,
+    checkpoint: AttemptCheckpoint,
+    role: str,
+    tracker: BudgetTracker,
+    phases: list[PhaseResult],
+    scratch_path: Path,
+    pool: TokenPool,
+    label: str,
+    prompt: str,
+    response_cap: int,
+) -> None:
+    """Resume once for a tool-free, one-turn final response.
 
-
-def _offset_cumulative_tokens(
-    phases: list[PhaseResult], offset: int
-) -> list[PhaseResult]:
-    """Express a fresh executor's token counts in the branch-wide coordinate."""
-    return [
-        dataclasses.replace(
-            phase,
-            cumulative_output_tokens=phase.cumulative_output_tokens + offset,
+    The provider task envelope remains at least 20k, while the explicit
+    per-response cap is the predeclared wrap reserve. Artifact selection later
+    rejects any phase whose cumulative usage finishes beyond the hard tier.
+    """
+    active = checkpoint.active(role)
+    active_is_wrap = active is not None and active.get("label") == label
+    if not active_is_wrap and not (
+        tracker.soft_exhausted
+        and not tracker.exhausted
+        and not any(phase.label == label for phase in phases)
+    ):
+        return
+    async with ResumableClaudeSession(
+        pool,
+        lambda token, session_id, resume_id, stderr: build_options(
+            config,
+            str(scratch_path),
+            response_cap,
+            token,
+            stderr,
+            session_id=session_id,
+            resume_session_id=resume_id,
+            max_output_tokens_per_response=response_cap,
+            max_turns=1,
+            tools_enabled=False,
+        ),
+        session_id=checkpoint.session_id(role),
+        reconnects=checkpoint.reconnects(role),
+    ) as client:
+        checkpoint.save_session(role, client.session_id, client.reconnect_events)
+        wrapped = await _checkpointed_phase(
+            checkpoint,
+            role,
+            client,
+            tracker,
+            str(active["prompt"]) if active_is_wrap and active is not None else prompt,
+            label,
+            (
+                int(active["stop_at_tokens"])
+                if active_is_wrap and active is not None
+                else tracker.budget_tokens
+            ),
         )
-        for phase in phases
-    ]
+        phases.append(wrapped)
+
+
+def _planner_text(phases: list[PhaseResult], budget_tokens: int) -> str:
+    """Last complete planner response finishing within its hard allocation."""
+    for phase in reversed(phases):
+        if (
+            not phase.budget_exhausted
+            and phase.cumulative_output_tokens <= budget_tokens
+            and phase.text.strip()
+        ):
+            return phase.text
+    raise RuntimeError(
+        "Uniform Strategy planner produced no complete within-budget strategy text"
+    )
+
+
+_STRATEGY_TAG = re.compile(r"<strategy>(.*?)</strategy>", re.DOTALL | re.IGNORECASE)
+
+
+def _proposed_strategies(
+    phases: list[PhaseResult], maximum: int, budget_tokens: int
+) -> list[str]:
+    """Parse and deduplicate the planner's final tagged strategy set.
+
+    If the final response is substantive but imperfectly formatted, it becomes
+    one strategy rather than triggering another paid planner attempt.
+    """
+    text = _planner_text(phases, budget_tokens)
+    parsed = [match.strip() for match in _STRATEGY_TAG.findall(text) if match.strip()]
+    if not parsed:
+        marker = "## Strategy Set"
+        fallback = text.split(marker, 1)[-1].strip() if marker in text else text.strip()
+        parsed = [fallback]
+    unique: list[str] = []
+    seen: set[str] = set()
+    for strategy in parsed:
+        normalized = " ".join(strategy.split()).casefold()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(strategy)
+        if len(unique) == maximum:
+            break
+    if not unique:
+        raise RuntimeError("Uniform Strategy planner produced no usable strategy")
+    return unique
 
 
 def _critique_reports_no_gap(text: str) -> bool:
@@ -236,7 +319,125 @@ def _critique_reports_no_gap(text: str) -> bool:
     return False
 
 
-async def solve_ideasearch_seed(
+async def _solve_uniform_strategy_branch(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    bank_seed: int,
+    branch: int,
+    strategy_index: int,
+    strategy: str,
+    executor_budget: int,
+    pool: TokenPool,
+) -> None:
+    """Run one fresh executor under one shared-bank strategy."""
+    bank_dir = seed_output_dir(config, arm, problem.problem_id, bank_seed)
+    output_dir = uniform_branch_output_dir(bank_dir, branch)
+    if seed_done(output_dir):
+        return
+    identity = run_checkpoint_identity(config, arm, problem, bank_seed)
+    identity.update(
+        {
+            "uniform_strategy_branch": branch,
+            "uniform_strategy_index": strategy_index,
+            "uniform_strategy_text": strategy,
+            "uniform_strategy_executor_budget": executor_budget,
+        }
+    )
+    checkpoint = AttemptCheckpoint(identity)
+    try:
+        scratch_path = checkpoint.scratch_dir("main")
+        phases = checkpoint.phases("main")
+        tracker = checkpoint.tracker(
+            "main", executor_budget, config.wrap_up_reserve_tokens
+        )
+        active_main = checkpoint.active("main")
+        active_is_wrap = (
+            active_main is not None and active_main.get("label") == PHASE_WRAP_UP
+        )
+        needs_work_session = not active_is_wrap and (
+            active_main is not None or not phases
+        )
+        if needs_work_session:
+            async with ResumableClaudeSession(
+                pool,
+                lambda token, session_id, resume_id, stderr: build_options(
+                    config,
+                    str(scratch_path),
+                    max(1, tracker.remaining),
+                    token,
+                    stderr,
+                    session_id=session_id,
+                    resume_session_id=resume_id,
+                ),
+                session_id=checkpoint.session_id("main"),
+                reconnects=checkpoint.reconnects("main"),
+            ) as executor:
+                checkpoint.save_session(
+                    "main", executor.session_id, executor.reconnect_events
+                )
+                if not phases:
+                    solve = await _checkpointed_phase(
+                        checkpoint,
+                        "main",
+                        executor,
+                        tracker,
+                        uniform_strategy_execute_prompt(
+                            problem,
+                            strategy,
+                            str(scratch_path),
+                            executor_budget,
+                        ),
+                        PHASE_SOLVE,
+                        tracker.soft_limit_tokens,
+                    )
+                    phases.append(solve)
+        await _run_strict_wrap_phase(
+            config,
+            checkpoint,
+            "main",
+            tracker,
+            phases,
+            scratch_path,
+            pool,
+            PHASE_WRAP_UP,
+            wrap_up_prompt(tracker.remaining),
+            config.wrap_up_reserve_tokens,
+        )
+        checkpoint.prepare_completion(
+            (output_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+        )
+        write_seed_outputs(
+            config,
+            arm,
+            problem,
+            bank_seed,
+            executor_budget,
+            phases,
+            scratch_path,
+            provider_session_ids=checkpoint.session_ids(),
+            output_dir_override=output_dir,
+            meta_extra={
+                "uniform_strategy_bank_seed": bank_seed,
+                "uniform_strategy_branch": branch,
+                "uniform_strategy_index": strategy_index,
+            },
+        )
+        log.info(
+            "%s/%s seed %d branch %d done (%d/%d tokens)",
+            arm.name,
+            problem.problem_id,
+            bank_seed,
+            branch,
+            tracker.spent,
+            executor_budget,
+        )
+        checkpoint.complete()
+    finally:
+        checkpoint.close()
+
+
+async def solve_uniform_strategy_bank(
     config: ExperimentConfig,
     arm: ArmConfig,
     problem: Problem,
@@ -244,36 +445,24 @@ async def solve_ideasearch_seed(
     pool: TokenPool,
     checkpoint: AttemptCheckpoint,
 ) -> None:
-    """Run one isolated IdeaSearch branch: planner (20k) -> executor (180k).
-
-    The two agents use fresh SDK sessions and distinct scratch directories.
-    Unused planner tokens are not transferred to the executor, so every branch
-    has the same pre-registered caps and never exceeds one 200k token-unit.
-    """
-    plan_budget = config.ideasearch_plan_tokens
-    proof_budget = config.unit_output_tokens - plan_budget
+    """Run one shared strategy planner and eight fresh proof executors."""
+    plan_budget = config.uniform_strategy_plan_tokens
+    total_budget = config.budget_tokens(arm)
+    executor_budget = (total_budget - plan_budget) // config.uniform_strategy_branches
+    bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
     plan_scratch_path = checkpoint.scratch_dir("plan")
-    proof_scratch_path = checkpoint.scratch_dir("proof")
-
-    # Load phase ledgers first: this reconciles a process death between the
-    # durable phase commit and the controller-state advance.
     plan_phases = checkpoint.phases("plan")
     plan_tracker = checkpoint.tracker(
-        "plan", plan_budget, config.ideasearch_plan_wrap_up_reserve_tokens
+        "plan", plan_budget, config.uniform_strategy_plan_wrap_up_reserve_tokens
     )
-    plan_has_wrap = any(
-        phase.label == PHASE_PLAN_WRAP_UP for phase in plan_phases
+    active_plan = checkpoint.active("plan")
+    active_is_plan_wrap = (
+        active_plan is not None and active_plan.get("label") == PHASE_PLAN_WRAP_UP
     )
-    plan_needs_session = (
-        checkpoint.active("plan") is not None
-        or not plan_phases
-        or (
-            plan_tracker.soft_exhausted
-            and not plan_tracker.exhausted
-            and not plan_has_wrap
-        )
+    plan_needs_work_session = not active_is_plan_wrap and (
+        active_plan is not None or not plan_phases
     )
-    if plan_needs_session:
+    if plan_needs_work_session:
         async with ResumableClaudeSession(
             pool,
             lambda token, session_id, resume_id, stderr: build_options(
@@ -297,162 +486,136 @@ async def solve_ideasearch_seed(
                     "plan",
                     planner,
                     plan_tracker,
-                    ideasearch_plan_prompt(
+                    uniform_strategy_plan_prompt(
                         problem,
                         str(plan_scratch_path),
                         plan_budget,
-                        config.ideasearch_plan_wrap_up_reserve_tokens,
+                        config.uniform_strategy_plan_wrap_up_reserve_tokens,
+                        config.uniform_strategy_branches,
                     ),
                     PHASE_PLAN,
                     plan_tracker.soft_limit_tokens,
                 )
                 plan_phases.append(plan)
-            active_plan = checkpoint.active("plan")
-            active_is_plan_wrap = (
-                active_plan is not None
-                and active_plan.get("label") == PHASE_PLAN_WRAP_UP
-            )
-            if active_is_plan_wrap or (
-                plan_tracker.soft_exhausted
-                and not plan_tracker.exhausted
-                and not any(
-                    phase.label == PHASE_PLAN_WRAP_UP for phase in plan_phases
-                )
-            ):
-                plan_wrap = await _checkpointed_phase(
-                    checkpoint,
-                    "plan",
-                    planner,
-                    plan_tracker,
-                    (
-                        str(active_plan["prompt"])
-                        if active_is_plan_wrap and active_plan is not None
-                        else ideasearch_plan_wrap_up_prompt(plan_tracker.remaining)
-                    ),
-                    PHASE_PLAN_WRAP_UP,
-                    (
-                        int(active_plan["stop_at_tokens"])
-                        if active_is_plan_wrap and active_plan is not None
-                        else plan_tracker.budget_tokens
-                    ),
-                )
-                plan_phases.append(plan_wrap)
+    await _run_strict_wrap_phase(
+        config,
+        checkpoint,
+        "plan",
+        plan_tracker,
+        plan_phases,
+        plan_scratch_path,
+        pool,
+        PHASE_PLAN_WRAP_UP,
+        uniform_strategy_plan_wrap_up_prompt(
+            plan_tracker.remaining,
+            config.uniform_strategy_branches,
+        ),
+        config.uniform_strategy_plan_wrap_up_reserve_tokens,
+    )
 
-    proposed_strategy = _proposed_strategy_text(plan_phases)
+    try:
+        strategies = _proposed_strategies(
+            plan_phases,
+            config.uniform_strategy_branches,
+            plan_budget,
+        )
+    except RuntimeError as error:
+        write_uniform_strategy_plan_artifacts(
+            bank_dir,
+            plan_phases,
+            [],
+            [],
+            plan_scratch_path,
+        )
+        checkpoint.prepare_completion(
+            (bank_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+        )
+        write_uniform_strategy_planner_failure(
+            config,
+            arm,
+            problem,
+            seed,
+            bank_dir,
+            plan_phases,
+            checkpoint.session_ids(),
+            str(error),
+        )
+        log.warning(
+            "%s/%s seed %d bank failed before execution: %s",
+            arm.name,
+            problem.problem_id,
+            seed,
+            error,
+        )
+        checkpoint.complete()
+        return
+    assignments = [
+        (branch - 1) % len(strategies) + 1
+        for branch in range(1, config.uniform_strategy_branches + 1)
+    ]
     log.info(
-        "%s/%s seed %d: plan done (%d/%d tokens)",
+        "%s/%s seed %d: %d strategies planned (%d/%d tokens)",
         arm.name,
         problem.problem_id,
         seed,
+        len(strategies),
         plan_tracker.spent,
         plan_budget,
     )
-
-    proof_phases = checkpoint.phases("proof")
-    proof_tracker = checkpoint.tracker(
-        "proof", proof_budget, config.wrap_up_reserve_tokens
-    )
-    proof_has_wrap = any(phase.label == PHASE_WRAP_UP for phase in proof_phases)
-    proof_needs_session = (
-        checkpoint.active("proof") is not None
-        or not proof_phases
-        or (
-            proof_tracker.soft_exhausted
-            and not proof_tracker.exhausted
-            and not proof_has_wrap
+    tasks = []
+    for branch, strategy_index in enumerate(assignments, start=1):
+        output_dir = uniform_branch_output_dir(bank_dir, branch)
+        if seed_done(output_dir):
+            continue
+        strategy = strategies[strategy_index - 1]
+        tasks.append(
+            lambda b=branch, i=strategy_index, s=strategy: (
+                _solve_uniform_strategy_branch(
+                    config,
+                    arm,
+                    problem,
+                    seed,
+                    b,
+                    i,
+                    s,
+                    executor_budget,
+                    pool,
+                )
+            )
         )
-    )
-    if proof_needs_session:
-        async with ResumableClaudeSession(
-            pool,
-            lambda token, session_id, resume_id, stderr: build_options(
-                config,
-                str(proof_scratch_path),
-                max(1, proof_tracker.remaining),
-                token,
-                stderr,
-                session_id=session_id,
-                resume_session_id=resume_id,
-            ),
-            session_id=checkpoint.session_id("proof"),
-            reconnects=checkpoint.reconnects("proof"),
-        ) as executor:
-            checkpoint.save_session(
-                "proof", executor.session_id, executor.reconnect_events
-            )
-            if not proof_phases:
-                solve = await _checkpointed_phase(
-                    checkpoint,
-                    "proof",
-                    executor,
-                    proof_tracker,
-                    ideasearch_execute_prompt(
-                        problem,
-                        proposed_strategy,
-                        str(proof_scratch_path),
-                        proof_budget,
-                    ),
-                    PHASE_SOLVE,
-                    proof_tracker.soft_limit_tokens,
-                )
-                proof_phases.append(solve)
-            active_proof = checkpoint.active("proof")
-            active_is_wrap = (
-                active_proof is not None
-                and active_proof.get("label") == PHASE_WRAP_UP
-            )
-            if active_is_wrap or (
-                proof_tracker.soft_exhausted
-                and not proof_tracker.exhausted
-                and not any(phase.label == PHASE_WRAP_UP for phase in proof_phases)
-            ):
-                wrap_up = await _checkpointed_phase(
-                    checkpoint,
-                    "proof",
-                    executor,
-                    proof_tracker,
-                    (
-                        str(active_proof["prompt"])
-                        if active_is_wrap and active_proof is not None
-                        else wrap_up_prompt(proof_tracker.remaining)
-                    ),
-                    PHASE_WRAP_UP,
-                    (
-                        int(active_proof["stop_at_tokens"])
-                        if active_is_wrap and active_proof is not None
-                        else proof_tracker.budget_tokens
-                    ),
-                )
-                proof_phases.append(wrap_up)
-
-    phases = plan_phases + _offset_cumulative_tokens(
-        proof_phases, plan_tracker.spent
-    )
-    expected_output_dir = seed_output_dir(
-        config, arm, problem.problem_id, seed
+    await run_all(tasks, min(config.max_concurrency, config.uniform_strategy_branches))
+    # Do not expose the shared strategy set in the mounted result tree while
+    # executors are live; each branch receives only its assigned strategy.
+    write_uniform_strategy_plan_artifacts(
+        bank_dir,
+        plan_phases,
+        strategies,
+        assignments,
+        plan_scratch_path,
     )
     checkpoint.prepare_completion(
-        (expected_output_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+        (bank_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
     )
-    output_dir = write_seed_outputs(
+    write_uniform_strategy_bank_meta(
         config,
         arm,
         problem,
         seed,
-        config.unit_output_tokens,
-        phases,
-        proof_scratch_path,
-        plan_scratch_path=plan_scratch_path,
-        provider_session_ids=checkpoint.session_ids(),
+        bank_dir,
+        plan_phases,
+        len(strategies),
+        assignments,
+        executor_budget,
+        checkpoint.session_ids(),
     )
     log.info(
-        "%s/%s seed %d done (%d/%d tokens) -> %s",
+        "%s/%s seed %d bank done (%d strategies, %d executors) -> %s",
         arm.name,
         problem.problem_id,
         seed,
-        plan_tracker.spent + proof_tracker.spent,
-        config.unit_output_tokens,
-        output_dir,
+        len(strategies),
+        config.uniform_strategy_branches,
+        bank_dir,
     )
     checkpoint.complete()
 
@@ -471,9 +634,7 @@ def hint_for(problem: Problem, arm: ArmConfig) -> str | None:
     }
     hint = by_tier[arm.hint]
     if hint is None:
-        detail = (
-            " (h1/placebo is not authored yet)" if arm.hint == HINT_H1 else ""
-        )
+        detail = " (h1/placebo is not authored yet)" if arm.hint == HINT_H1 else ""
         raise ValueError(
             f"Arm '{arm.name}' needs hint tier '{arm.hint}' but problem "
             f"'{problem.problem_id}' has no such hint in the dataset{detail}"
@@ -496,10 +657,11 @@ def run_checkpoint_identity(
         "seed": seed,
         "unit_output_tokens": config.unit_output_tokens,
         "wrap_up_reserve_tokens": config.wrap_up_reserve_tokens,
-        "ideasearch_plan_tokens": config.ideasearch_plan_tokens,
-        "ideasearch_plan_wrap_up_reserve_tokens": (
-            config.ideasearch_plan_wrap_up_reserve_tokens
+        "uniform_strategy_plan_tokens": config.uniform_strategy_plan_tokens,
+        "uniform_strategy_plan_wrap_up_reserve_tokens": (
+            config.uniform_strategy_plan_wrap_up_reserve_tokens
         ),
+        "uniform_strategy_branches": config.uniform_strategy_branches,
         "max_turns_per_phase": config.max_turns_per_phase,
         "protocol_fingerprint": protocol_fingerprint(),
     }
@@ -519,12 +681,10 @@ async def solve_seed(
     wrap-up phase tells the model how many tokens remain and to write down
     what it has; only that phase may spend into the hard budget.
     """
-    checkpoint = AttemptCheckpoint(
-        run_checkpoint_identity(config, arm, problem, seed)
-    )
+    checkpoint = AttemptCheckpoint(run_checkpoint_identity(config, arm, problem, seed))
     try:
-        if arm.mode == MODE_IDEASEARCH:
-            await solve_ideasearch_seed(
+        if arm.mode == MODE_UNIFORM_STRATEGY:
+            await solve_uniform_strategy_bank(
                 config, arm, problem, seed, pool, checkpoint
             )
             return
@@ -551,9 +711,7 @@ async def solve_seed(
             session_id=checkpoint.session_id("main"),
             reconnects=checkpoint.reconnects("main"),
         ) as client:
-            checkpoint.save_session(
-                "main", client.session_id, client.reconnect_events
-            )
+            checkpoint.save_session("main", client.session_id, client.reconnect_events)
             if not phases:
                 solve = await _checkpointed_phase(
                     checkpoint,
@@ -601,16 +759,13 @@ async def solve_seed(
                 no_gap_streak = 0
                 for phase in phases:
                     if phase.label == PHASE_CRITIQUE:
-                        if (
-                            not phase.budget_exhausted
-                            and _critique_reports_no_gap(phase.text)
+                        if not phase.budget_exhausted and _critique_reports_no_gap(
+                            phase.text
                         ):
                             no_gap_streak += 1
                         else:
                             no_gap_streak = 0
-                round_num = sum(
-                    phase.label == PHASE_CRITIQUE for phase in phases
-                )
+                round_num = sum(phase.label == PHASE_CRITIQUE for phase in phases)
 
                 while (
                     not tracker.soft_exhausted
@@ -629,17 +784,13 @@ async def solve_seed(
                             tracker.soft_limit_tokens,
                         )
                         phases.append(critique)
-                        if (
-                            not critique.budget_exhausted
-                            and _critique_reports_no_gap(critique.text)
+                        if not critique.budget_exhausted and _critique_reports_no_gap(
+                            critique.text
                         ):
                             no_gap_streak += 1
                         else:
                             no_gap_streak = 0
-                        if (
-                            no_gap_streak
-                            >= SEQUENTIAL_NO_GAP_STREAK_TO_STOP
-                        ):
+                        if no_gap_streak >= SEQUENTIAL_NO_GAP_STREAK_TO_STOP:
                             log.info(
                                 "%s/%s seed %d: stopping after %d consecutive "
                                 "no-gap critiques (%d/%d tokens)",
@@ -681,34 +832,18 @@ async def solve_seed(
                     else "token_limit"
                 )
 
-            active_main = checkpoint.active("main")
-            active_is_wrap = (
-                active_main is not None
-                and active_main.get("label") == PHASE_WRAP_UP
-            )
-            if active_is_wrap or (
-                tracker.soft_exhausted
-                and not tracker.exhausted
-                and not any(phase.label == PHASE_WRAP_UP for phase in phases)
-            ):
-                wrap_up = await _checkpointed_phase(
-                    checkpoint,
-                    "main",
-                    client,
-                    tracker,
-                    (
-                        str(active_main["prompt"])
-                        if active_is_wrap and active_main is not None
-                        else wrap_up_prompt(tracker.remaining)
-                    ),
-                    PHASE_WRAP_UP,
-                    (
-                        int(active_main["stop_at_tokens"])
-                        if active_is_wrap and active_main is not None
-                        else tracker.budget_tokens
-                    ),
-                )
-                phases.append(wrap_up)
+        await _run_strict_wrap_phase(
+            config,
+            checkpoint,
+            "main",
+            tracker,
+            phases,
+            scratch_path,
+            pool,
+            PHASE_WRAP_UP,
+            wrap_up_prompt(tracker.remaining),
+            config.wrap_up_reserve_tokens,
+        )
 
         # If the process died after committing wrap-up but before writing the
         # final result, reconstruct the non-token controller field as well.
@@ -716,9 +851,8 @@ async def solve_seed(
             recovered_no_gap_streak = 0
             for phase in phases:
                 if phase.label == PHASE_CRITIQUE:
-                    if (
-                        not phase.budget_exhausted
-                        and _critique_reports_no_gap(phase.text)
+                    if not phase.budget_exhausted and _critique_reports_no_gap(
+                        phase.text
                     ):
                         recovered_no_gap_streak += 1
                     else:
@@ -729,13 +863,9 @@ async def solve_seed(
                 else "token_limit"
             )
 
-        expected_output_dir = seed_output_dir(
-            config, arm, problem.problem_id, seed
-        )
+        expected_output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
         checkpoint.prepare_completion(
-            (expected_output_dir / META_FILENAME)
-            .relative_to(RESULTS_ROOT)
-            .as_posix()
+            (expected_output_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
         )
         output_dir = write_seed_outputs(
             config,
@@ -778,7 +908,9 @@ def select_problems(
     if domain is not None:
         domains = {p.domain for p in problems}
         if domain not in domains:
-            raise ValueError(f"Unknown domain '{domain}'; dataset has {sorted(domains)}")
+            raise ValueError(
+                f"Unknown domain '{domain}'; dataset has {sorted(domains)}"
+            )
         problems = [p for p in problems if p.domain == domain]
     if ids_csv is None:
         return problems
@@ -847,7 +979,10 @@ async def main() -> None:
         lambda p=problem, s=seed: solve_seed(config, arm, p, s, pool)
         for problem, seed in pending
     ]
-    await run_all(tasks, config.max_concurrency)
+    # A Uniform Strategy bank launches its own eight executor calls. Running
+    # one bank controller at a time keeps the global concurrency cap at eight.
+    outer_limit = 1 if arm.mode == MODE_UNIFORM_STRATEGY else config.max_concurrency
+    await run_all(tasks, outer_limit)
 
 
 if __name__ == "__main__":

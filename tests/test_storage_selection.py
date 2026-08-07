@@ -39,7 +39,19 @@ class StorageSelectionTests(unittest.TestCase):
             _phase("critique", "gap", 160),
             _phase("revise", "   \n", 180),
         ]
-        self.assertEqual(final_solution_text(phases), "better proof")
+        self.assertEqual(final_solution_text(phases, 200), "better proof")
+
+    def test_full_solution_rejects_over_budget_terminal_phase(self) -> None:
+        phases = [
+            _phase("solve", "within budget", 180),
+            _phase("wrap_up", "too late", 205),
+        ]
+        self.assertEqual(final_solution_text(phases, 200), "within budget")
+
+    def test_full_solution_has_no_interrupted_fallback(self) -> None:
+        phases = [_phase("solve", "crossing response", 205, interrupted=True)]
+        with self.assertRaises(ValueError):
+            final_solution_text(phases, 200)
 
     def test_cut_omits_empty_or_interrupted_proof_phases(self) -> None:
         phases = [

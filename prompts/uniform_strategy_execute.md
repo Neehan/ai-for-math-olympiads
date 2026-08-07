@@ -2,7 +2,7 @@ Solve the following olympiad problem.
 
 You have a budget of {{budget_tokens}} output tokens for this proof attempt; the run is cut off automatically when the budget is exhausted, so pace yourself. Near the end you will be told to stop and write down your final solution, but emit a complete write-up as soon as it is ready.
 
-A separate instance of the same model proposed the strategy below. Treat it as an unaided candidate, not as an oracle: inspect it critically, repair it when possible, and abandon it if it is wrong or unproductive. You remain responsible for every step of the proof. You receive no other branch's plan or work.
+A separate instance of the same model generated the candidate strategy below without privileged information. Inspect it critically, repair it when possible, and abandon it if it is wrong or unproductive. You remain responsible for every step of the proof. You receive no other candidate strategy or branch's work.
 
 <proposed_strategy>
 {{proposed_strategy}}

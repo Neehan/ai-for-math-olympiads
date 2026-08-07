@@ -11,13 +11,13 @@ from src.constants import (
     AUDIT_PROMPT_FILE,
     CRITIQUE_PROMPT_FILE,
     HINT_PROMPT_FILE,
-    IDEASEARCH_EXECUTE_PROMPT_FILE,
-    IDEASEARCH_PLAN_PROMPT_FILE,
-    IDEASEARCH_PLAN_WRAP_UP_PROMPT_FILE,
     PROMPTS_DIR,
     REVISE_PROMPT_FILE,
     SYSTEM_PROMPT_FILE,
     TASK_PROMPT_FILE,
+    UNIFORM_STRATEGY_EXECUTE_PROMPT_FILE,
+    UNIFORM_STRATEGY_PLAN_PROMPT_FILE,
+    UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE,
     WRAP_UP_PROMPT_FILE,
 )
 from src.models import Problem
@@ -61,7 +61,11 @@ def task_prompt(
     one-sentence strategy hint, or h3 outline) or None for the no-hint arm;
     when present it is wrapped by prompts/hint.md.
     """
-    hint_block = "" if hint_text is None else _render(_load(HINT_PROMPT_FILE), {"hint": hint_text})
+    hint_block = (
+        ""
+        if hint_text is None
+        else _render(_load(HINT_PROMPT_FILE), {"hint": hint_text})
+    )
     return _render(
         _load(TASK_PROMPT_FILE),
         {
@@ -88,43 +92,48 @@ def wrap_up_prompt(tokens_left: int) -> str:
     return _render(_load(WRAP_UP_PROMPT_FILE), {"tokens_left": f"{tokens_left:,}"})
 
 
-def ideasearch_plan_prompt(
+def uniform_strategy_plan_prompt(
     problem: Problem,
     scratch_dir: str,
     budget_tokens: int,
     wrap_up_reserve_tokens: int,
+    max_strategies: int,
 ) -> str:
-    """Ask a fresh planner for one self-contained candidate strategy."""
+    """Ask one planner to enumerate a bounded set of distinct strategies."""
     exploration_tokens = budget_tokens - wrap_up_reserve_tokens
     return _render(
-        _load(IDEASEARCH_PLAN_PROMPT_FILE),
+        _load(UNIFORM_STRATEGY_PLAN_PROMPT_FILE),
         {
             "budget_tokens": f"{budget_tokens:,}",
             "exploration_tokens": f"{exploration_tokens:,}",
             "wrap_up_reserve_tokens": f"{wrap_up_reserve_tokens:,}",
+            "max_strategies": str(max_strategies),
             "scratch_dir": scratch_dir,
             "statement": problem.statement.strip(),
         },
     )
 
 
-def ideasearch_plan_wrap_up_prompt(tokens_left: int) -> str:
-    """Force an over-budget planner to commit its best strategy succinctly."""
+def uniform_strategy_plan_wrap_up_prompt(tokens_left: int, max_strategies: int) -> str:
+    """Force the planner to emit its final parseable strategy set."""
     return _render(
-        _load(IDEASEARCH_PLAN_WRAP_UP_PROMPT_FILE),
-        {"tokens_left": f"{tokens_left:,}"},
+        _load(UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE),
+        {
+            "tokens_left": f"{tokens_left:,}",
+            "max_strategies": str(max_strategies),
+        },
     )
 
 
-def ideasearch_execute_prompt(
+def uniform_strategy_execute_prompt(
     problem: Problem,
     proposed_strategy: str,
     scratch_dir: str,
     budget_tokens: int,
 ) -> str:
-    """Give a fresh executor only the statement and its branch's proposed plan."""
+    """Give a fresh executor only the statement and its assigned strategy."""
     return _render(
-        _load(IDEASEARCH_EXECUTE_PROMPT_FILE),
+        _load(UNIFORM_STRATEGY_EXECUTE_PROMPT_FILE),
         {
             "budget_tokens": f"{budget_tokens:,}",
             "scratch_dir": scratch_dir,

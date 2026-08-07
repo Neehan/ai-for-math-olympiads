@@ -1,3 +1,3 @@
-You have only about {{tokens_left}} output tokens remaining in your budget. STOP working now — do not explore new ideas or run further checks.
+You have only about {{tokens_left}} eligible output tokens remaining in your budget. STOP working now — do not explore new ideas or run further checks. Tools are disabled for this one final response.
 
 Using the work you have already done, write down your complete final solution. If a step remains unproven, state it explicitly as an unproven claim and present your best honest partial progress rather than bluffing a complete proof. End with a '## Final Solution' section containing the complete write-up — this section, and only this section, is what will be graded, standalone. It must contain every argument in full; never refer to earlier messages ('as shown above' — the grader cannot see them).

@@ -17,6 +17,7 @@ results/<model>/<arm>/audit.jsonl, one line per (problem, seed).
 
 import argparse
 import dataclasses
+import json
 import logging
 import os
 from pathlib import Path
@@ -41,9 +42,13 @@ from src.constants import (
     DISALLOWED_TOOLS,
     LOG_FORMAT,
     LOG_LEVEL,
+    META_FILENAME,
+    MODE_SEQUENTIAL,
+    MODE_UNIFORM_STRATEGY,
     PERMISSION_MODE,
     RESULTS_ROOT,
     SEED_AUDIT_FILENAME,
+    UNIFORM_STRATEGIES_FILENAME,
 )
 from src.models import ArmConfig, ExperimentConfig, Problem, ReconnectEvent
 from src.prompts import audit_prompt
@@ -65,6 +70,7 @@ from src.storage import (
     seed_done,
     seed_output_dir,
     seed_solution_text,
+    uniform_branch_output_dir,
     write_seed_audit,
 )
 from src.token_pool import TokenPool
@@ -134,9 +140,7 @@ async def _judge(
         if not isinstance(raw_verdict, dict):
             raise TypeError("Checkpoint judge verdict is corrupt")
         saved_verdict: dict[str, object] = dict(raw_verdict)
-        reconnects = [
-            ReconnectEvent(**item) for item in saved.get("reconnects", [])
-        ]
+        reconnects = [ReconnectEvent(**item) for item in saved.get("reconnects", [])]
         return saved_verdict, reconnects
 
     active = checkpoint.active(role)
@@ -196,6 +200,9 @@ async def audit_seed(
     problem: Problem,
     seed: int,
     pool: TokenPool,
+    *,
+    output_dir_override: Path | None = None,
+    record_extra: dict[str, object] | None = None,
 ) -> None:
     """Grade one completed attempt (full solution + any budget-cut snapshots).
 
@@ -204,15 +211,23 @@ async def audit_seed(
     audit_score + note. A missing snapshot (no complete write-up within that
     budget) is scored invalid with an explanatory note, no judge call spent.
     """
-    output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+    if arm.mode == MODE_UNIFORM_STRATEGY and output_dir_override is None:
+        await audit_uniform_strategy_bank(config, arm, problem, seed, pool)
+        return
+    output_dir = output_dir_override or seed_output_dir(
+        config, arm, problem.problem_id, seed
+    )
     solution = seed_solution_text(output_dir)
+    cut_multipliers = (
+        budget_cut_multipliers(arm.budget_units) if arm.mode == MODE_SEQUENTIAL else []
+    )
     cut_artifacts = {
         f"{multiplier}x": (
             cut_solution_path(output_dir, multiplier).read_text(encoding="utf-8")
             if cut_solution_path(output_dir, multiplier).exists()
             else None
         )
-        for multiplier in budget_cut_multipliers(arm.budget_units)
+        for multiplier in cut_multipliers
     }
     if not solution.strip():
         cuts = {
@@ -222,24 +237,27 @@ async def audit_seed(
                 "session_reconnect_count": 0,
                 "session_reconnects": [],
             }
-            for multiplier in budget_cut_multipliers(arm.budget_units)
+            for multiplier in cut_multipliers
         }
+        empty_record: dict[str, object] = {
+            "problem_id": problem.problem_id,
+            "arm": arm.name,
+            "seed": seed,
+            "solver_model": config.model,
+            "audit_model": config.audit_model,
+            "audit_score": AUDIT_SCORE_INVALID,
+            "note": "No complete write-up was emitted within the attempt budget.",
+            "session_reconnect_count": 0,
+            "session_reconnects": [],
+            "provider_session_ids": {},
+            "process_resume_count": 0,
+            "budget_cuts": cuts,
+        }
+        if record_extra:
+            empty_record.update(record_extra)
         write_seed_audit(
             output_dir,
-            {
-                "problem_id": problem.problem_id,
-                "arm": arm.name,
-                "seed": seed,
-                "solver_model": config.model,
-                "audit_model": config.audit_model,
-                "audit_score": AUDIT_SCORE_INVALID,
-                "note": "No complete write-up was emitted within the attempt budget.",
-                "session_reconnect_count": 0,
-                "session_reconnects": [],
-                "provider_session_ids": {},
-                "process_resume_count": 0,
-                "budget_cuts": cuts,
-            },
+            empty_record,
         )
         log.info(
             "%s/%s seed %d: score 0 (no gradeable write-up)",
@@ -260,6 +278,8 @@ async def audit_seed(
             "seed": seed,
             "solution": solution,
             "budget_cut_artifacts": cut_artifacts,
+            "output_dir": output_dir.relative_to(RESULTS_ROOT).as_posix(),
+            "record_extra": record_extra or {},
             "audit_max_turns": config.audit_max_turns,
             "protocol_fingerprint": protocol_fingerprint(),
         }
@@ -278,7 +298,7 @@ async def audit_seed(
         )
 
         cuts: dict[str, dict[str, object]] = {}
-        for multiplier in budget_cut_multipliers(arm.budget_units):
+        for multiplier in cut_multipliers:
             cut_text = cut_artifacts[f"{multiplier}x"]
             if cut_text is None:
                 cuts[f"{multiplier}x"] = {
@@ -309,33 +329,31 @@ async def audit_seed(
             }
 
         checkpoint.prepare_completion(
-            (output_dir / SEED_AUDIT_FILENAME)
-            .relative_to(RESULTS_ROOT)
-            .as_posix()
+            (output_dir / SEED_AUDIT_FILENAME).relative_to(RESULTS_ROOT).as_posix()
         )
         archive_audit_scratches(output_dir, scratch_paths)
-        write_seed_audit(
-            output_dir,
-            {
-                "problem_id": problem.problem_id,
-                "arm": arm.name,
-                "seed": seed,
-                "solver_model": config.model,
-                "audit_model": config.audit_model,
-                "audit_score": verdict["score"],
-                "note": verdict["note"],
-                "session_reconnect_count": len(full_reconnects),
-                "session_reconnects": [
-                    dataclasses.asdict(event) for event in full_reconnects
-                ],
-                "provider_session_ids": checkpoint.session_ids(),
-                "process_resume_count": sum(
-                    int(record.get("process_resume_count", 0))
-                    for record in checkpoint.data().get("calls", {}).values()
-                ),
-                "budget_cuts": cuts,
-            },
-        )
+        audit_record: dict[str, object] = {
+            "problem_id": problem.problem_id,
+            "arm": arm.name,
+            "seed": seed,
+            "solver_model": config.model,
+            "audit_model": config.audit_model,
+            "audit_score": verdict["score"],
+            "note": verdict["note"],
+            "session_reconnect_count": len(full_reconnects),
+            "session_reconnects": [
+                dataclasses.asdict(event) for event in full_reconnects
+            ],
+            "provider_session_ids": checkpoint.session_ids(),
+            "process_resume_count": sum(
+                int(record.get("process_resume_count", 0))
+                for record in checkpoint.data().get("calls", {}).values()
+            ),
+            "budget_cuts": cuts,
+        }
+        if record_extra:
+            audit_record.update(record_extra)
+        write_seed_audit(output_dir, audit_record)
         log.info(
             "%s/%s seed %d: score %s (%d cut snapshots graded)",
             arm.name,
@@ -347,6 +365,124 @@ async def audit_seed(
         checkpoint.complete()
     finally:
         checkpoint.close()
+
+
+async def audit_uniform_strategy_bank(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    pool: TokenPool,
+) -> None:
+    """Audit all eight executor candidates and compile one bank verdict."""
+    bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+    strategy_record = json.loads(
+        (bank_dir / UNIFORM_STRATEGIES_FILENAME).read_text(encoding="utf-8")
+    )
+    assignments = [int(value) for value in strategy_record["branch_strategy_indices"]]
+    strategies = strategy_record["strategies"]
+    if not isinstance(strategies, list):
+        raise ValueError("Uniform Strategy bank strategies must be a list")
+    if not strategies:
+        bank_meta = json.loads((bank_dir / META_FILENAME).read_text(encoding="utf-8"))
+        failure = str(bank_meta.get("planner_failure", "no eligible strategy set"))
+        write_seed_audit(
+            bank_dir,
+            {
+                "problem_id": problem.problem_id,
+                "arm": arm.name,
+                "seed": seed,
+                "solver_model": config.model,
+                "audit_model": config.audit_model,
+                "audit_score": 0,
+                "note": f"Uniform Strategy planner failure: {failure}",
+                "candidate_pass_count": 0,
+                "candidate_count": 0,
+                "strategy_count": 0,
+                "branch_strategy_indices": [],
+                "branches": [],
+                "budget_cuts": {},
+            },
+        )
+        log.info(
+            "%s/%s seed %d: planner failure (no candidates)",
+            arm.name,
+            problem.problem_id,
+            seed,
+        )
+        return
+    if len(assignments) != config.uniform_strategy_branches or any(
+        index < 1 or index > len(strategies) for index in assignments
+    ):
+        raise ValueError("Uniform Strategy bank has invalid branch assignments")
+    tasks = []
+    for branch, strategy_index in enumerate(assignments, start=1):
+        branch_dir = uniform_branch_output_dir(bank_dir, branch)
+        if seed_audited(branch_dir):
+            continue
+        tasks.append(
+            lambda b=branch, i=strategy_index, d=branch_dir: audit_seed(
+                config,
+                arm,
+                problem,
+                seed,
+                pool,
+                output_dir_override=d,
+                record_extra={
+                    "uniform_strategy_bank_seed": seed,
+                    "uniform_strategy_branch": b,
+                    "uniform_strategy_index": i,
+                },
+            )
+        )
+    await run_all(tasks, min(config.max_concurrency, len(assignments)))
+
+    branches = []
+    for branch, strategy_index in enumerate(assignments, start=1):
+        branch_dir = uniform_branch_output_dir(bank_dir, branch)
+        record = json.loads(
+            (branch_dir / SEED_AUDIT_FILENAME).read_text(encoding="utf-8")
+        )
+        branches.append(
+            {
+                "branch": branch,
+                "strategy_index": strategy_index,
+                "audit_score": int(record["audit_score"]),
+                "note": str(record["note"]),
+            }
+        )
+    best_score = max(int(record["audit_score"]) for record in branches)
+    pass_count = sum(int(record["audit_score"]) >= 5 for record in branches)
+    write_seed_audit(
+        bank_dir,
+        {
+            "problem_id": problem.problem_id,
+            "arm": arm.name,
+            "seed": seed,
+            "solver_model": config.model,
+            "audit_model": config.audit_model,
+            "audit_score": best_score,
+            "note": (
+                f"Audited candidate coverage: {pass_count}/"
+                f"{len(branches)} executor proofs scored at least 5."
+            ),
+            "candidate_pass_count": pass_count,
+            "candidate_count": len(branches),
+            "strategy_count": len(strategies),
+            "branch_strategy_indices": assignments,
+            "branches": branches,
+            "budget_cuts": {},
+        },
+    )
+    log.info(
+        "%s/%s seed %d: candidate coverage %d/%d (best score %d)",
+        arm.name,
+        problem.problem_id,
+        seed,
+        pass_count,
+        len(branches),
+        best_score,
+    )
 
 
 async def main() -> None:
@@ -415,7 +551,10 @@ async def main() -> None:
         lambda p=problem, s=seed: audit_seed(config, arm, p, s, pool)
         for problem, seed in pending
     ]
-    await run_all(tasks, config.max_concurrency)
+    # A Uniform Strategy bank audits up to eight executor candidates in
+    # parallel. One bank controller at a time preserves the global cap.
+    outer_limit = 1 if arm.mode == MODE_UNIFORM_STRATEGY else config.max_concurrency
+    await run_all(tasks, outer_limit)
 
     path, count = compile_arm_audit(config, arm)
     log.info("Compiled %d verdicts -> %s", count, path)

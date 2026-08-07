@@ -18,7 +18,12 @@ from claude_agent_sdk import (
 
 from src.concurrency import run_all
 from src.config import load_config
-from src.constants import CONFIG_PATH, OAUTH_TOKEN_ENV, SESSION_RECOVERY_PROMPT
+from src.constants import (
+    CONFIG_PATH,
+    MAX_OUTPUT_TOKENS_ENV,
+    OAUTH_TOKEN_ENV,
+    SESSION_RECOVERY_PROMPT,
+)
 from src.solver import (
     BudgetTracker,
     ResumableClaudeSession,
@@ -305,6 +310,28 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(baseline) & set(extension), set())
         self.assertEqual(sorted(baseline + extension), list(range(1, 9)))
 
+        hint = config.arms["hint"].seeds
+        hint_extension = config.arms["hint-parallel"].seeds
+        self.assertEqual(set(hint) & set(hint_extension), set())
+        self.assertEqual(sorted(hint + hint_extension), list(range(1, 9)))
+
+    def test_uniform_strategy_bank_is_exactly_budget_matched(self) -> None:
+        config = load_config(CONFIG_PATH)
+        arm = config.arms["baseline-uniform-strategy"]
+        total = config.budget_tokens(arm)
+        executor = (
+            total - config.uniform_strategy_plan_tokens
+        ) // config.uniform_strategy_branches
+        self.assertEqual(arm.seeds, [1, 2, 3])
+        self.assertEqual(config.uniform_strategy_branches, 8)
+        self.assertEqual(config.uniform_strategy_plan_tokens, 80_000)
+        self.assertEqual(executor, 190_000)
+        self.assertEqual(
+            config.uniform_strategy_plan_tokens
+            + config.uniform_strategy_branches * executor,
+            total,
+        )
+
     def test_provider_task_budget_respects_twenty_thousand_minimum(self) -> None:
         config = load_config(CONFIG_PATH)
         with tempfile.TemporaryDirectory() as scratch:
@@ -317,6 +344,27 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 session_id="00000000-0000-0000-0000-000000000000",
             )
         self.assertEqual(options.task_budget, {"total": 20_000})
+
+    def test_wrap_options_are_one_turn_tool_free_and_capped_at_twenty_k(
+        self,
+    ) -> None:
+        config = load_config(CONFIG_PATH)
+        with tempfile.TemporaryDirectory() as scratch:
+            options = build_options(
+                config,
+                scratch,
+                20_000,
+                "test-token",
+                StderrTail(),
+                session_id="00000000-0000-0000-0000-000000000000",
+                max_output_tokens_per_response=20_000,
+                max_turns=1,
+                tools_enabled=False,
+            )
+        self.assertEqual(options.task_budget, {"total": 20_000})
+        self.assertEqual(options.env[MAX_OUTPUT_TOKENS_ENV], "20000")
+        self.assertEqual(options.max_turns, 1)
+        self.assertEqual(options.allowed_tools, [])
 
     def test_budget_tracker_handles_missing_ids_and_cross_phase_replay(self) -> None:
         anonymous = BudgetTracker(100, 0)
@@ -399,6 +447,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(phase.text, "## Final Solution\nRecovered proof.")
         self.assertEqual(phase.output_tokens, 8)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,1 @@
+You have only about {{tokens_left}} eligible output tokens remaining. Tools are disabled for this one final response. Stop exploring and commit between 1 and {{max_strategies}} distinct strategies now. End with `## Strategy Set`, followed only by one `<strategy>...</strategy>` tag pair per standalone strategy. Do not write the final proof.

@@ -32,6 +32,8 @@ SOLUTION_CUT_FILENAME_FORMAT: str = "solution_{multiplier}x.md"
 META_FILENAME: str = "meta.json"
 SCRATCH_SUBDIR: str = "scratch"
 PLAN_SCRATCH_SUBDIR: str = "plan_scratch"
+UNIFORM_STRATEGIES_FILENAME: str = "strategies.json"
+UNIFORM_BRANCH_DIR_FORMAT: str = "branch_{branch}"
 ZSTD_LEVEL: int = 9
 
 # --- Audit ----------------------------------------------------------------
@@ -52,9 +54,9 @@ HINT_PROMPT_FILE: str = "hint.md"
 CRITIQUE_PROMPT_FILE: str = "critique.md"
 REVISE_PROMPT_FILE: str = "revise.md"
 WRAP_UP_PROMPT_FILE: str = "wrap_up.md"
-IDEASEARCH_PLAN_PROMPT_FILE: str = "ideasearch_plan.md"
-IDEASEARCH_PLAN_WRAP_UP_PROMPT_FILE: str = "ideasearch_plan_wrap_up.md"
-IDEASEARCH_EXECUTE_PROMPT_FILE: str = "ideasearch_execute.md"
+UNIFORM_STRATEGY_PLAN_PROMPT_FILE: str = "uniform_strategy_plan.md"
+UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE: str = "uniform_strategy_plan_wrap_up.md"
+UNIFORM_STRATEGY_EXECUTE_PROMPT_FILE: str = "uniform_strategy_execute.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
 
 # --- Problem/hint data sources -------------------------------------------
@@ -81,8 +83,8 @@ HINT_H3: str = "h3"
 HINT_KINDS: frozenset[str] = frozenset({HINT_NONE, HINT_H1, HINT_H2, HINT_H3})
 MODE_SINGLE: str = "single"
 MODE_SEQUENTIAL: str = "sequential"
-MODE_IDEASEARCH: str = "ideasearch"
-MODES: frozenset[str] = frozenset({MODE_SINGLE, MODE_SEQUENTIAL, MODE_IDEASEARCH})
+MODE_UNIFORM_STRATEGY: str = "uniform_strategy"
+MODES: frozenset[str] = frozenset({MODE_SINGLE, MODE_SEQUENTIAL, MODE_UNIFORM_STRATEGY})
 
 # --- Phase labels ---------------------------------------------------------
 PHASE_SOLVE: str = "solve"
@@ -101,9 +103,7 @@ SEQUENTIAL_NO_GAP_STREAK_TO_STOP: int = 2
 # Mechanical recovery instruction used only after the provider rejects a
 # live request for quota/spend reasons. Keeping it fixed makes reconnects an
 # auditable transport intervention rather than a problem-specific hint.
-SESSION_RECOVERY_PROMPT: str = (
-    "Continue from exactly where you were interrupted."
-)
+SESSION_RECOVERY_PROMPT: str = "Continue from exactly where you were interrupted."
 # Used only when the local harness process died mid-response.  Unlike a live
 # credential handoff, an abruptly terminated CLI may not have committed the
 # partial assistant turn to its transcript, so continuation could silently

@@ -5,7 +5,9 @@ Per-seed output layout (nothing mixed):
         logs.jsonl.zst   one JSON line per phase: prompt, text, tool calls, usage
         solution.md      the graded final write-up (last proof phase)
         scratch/         copy of the proof executor's scratch dir
-        plan_scratch/    IdeaSearch only: copy of the isolated planner scratch
+        plan_scratch/    Uniform Strategy planner scratch
+        strategies.json  parsed strategy set and branch allocation
+        branch_<k>/      one fresh proof executor's normal attempt artifacts
         meta.json        attempt metadata; written LAST = completion marker
 """
 
@@ -27,8 +29,8 @@ from src.constants import (
     HINTS_URL,
     LOGS_FILENAME,
     META_FILENAME,
-    MODE_IDEASEARCH,
     MODE_SEQUENTIAL,
+    MODE_UNIFORM_STRATEGY,
     OUTLINES_FILE_ENV,
     OUTLINES_URL,
     PHASE_CRITIQUE,
@@ -43,6 +45,8 @@ from src.constants import (
     SEED_AUDIT_FILENAME,
     SOLUTION_CUT_FILENAME_FORMAT,
     SOLUTION_FILENAME,
+    UNIFORM_BRANCH_DIR_FORMAT,
+    UNIFORM_STRATEGIES_FILENAME,
     ZSTD_LEVEL,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
@@ -82,9 +86,7 @@ def load_problems() -> list[Problem]:
     the hints file's scalar 'hint' field, h3 = strategy outline (numbered
     steps; used by the outline arms).
     """
-    hints_by_id = {
-        r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)
-    }
+    hints_by_id = {r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)}
     steps_by_id = {
         r["problem_id"]: r["steps"]
         for r in _fetch_jsonl(OUTLINES_FILE_ENV, OUTLINES_URL)
@@ -118,6 +120,13 @@ def seed_output_dir(
 ) -> Path:
     """Result directory for one (model, arm, problem, seed) attempt."""
     return RESULTS_ROOT / config.model_dirname / arm.name / problem_id / f"seed_{seed}"
+
+
+def uniform_branch_output_dir(bank_dir: Path, branch: int) -> Path:
+    """Result directory for one executor inside a Uniform Strategy bank."""
+    if branch < 1:
+        raise ValueError("Uniform Strategy branch numbers start at 1")
+    return bank_dir / UNIFORM_BRANCH_DIR_FORMAT.format(branch=branch)
 
 
 def seed_done(output_dir: Path) -> bool:
@@ -179,27 +188,23 @@ def _phase_record(phase: PhaseResult) -> dict[str, object]:
     }
 
 
-def final_solution_text(phases: list[PhaseResult]) -> str:
-    """The graded write-up: last COMPLETE proof-producing phase's text.
+def final_solution_text(phases: list[PhaseResult], budget_tokens: int) -> str:
+    """Last complete proof-producing phase ending within the hard tier.
 
-    Same convention as the budget-cut snapshots — an interrupted phase's text
-    is partial commentary, not a final message, and grading it would let the
-    full-budget point score below a lower cut (artifactual non-monotonicity).
-    Planner and critique phases are never gradeable. Falls back to the last
-    proof-producing phase only when no such phase completed cleanly.
+    Interrupted or over-budget phases remain in the logs but are ineligible:
+    no response produced after the tier may affect the reported success.
+    Planner and critique phases are never gradeable.
     """
     excluded = {PHASE_CRITIQUE, PHASE_PLAN, PHASE_PLAN_WRAP_UP}
     for phase in reversed(phases):
         if (
             phase.label not in excluded
             and not phase.budget_exhausted
+            and phase.cumulative_output_tokens <= budget_tokens
             and phase.text.strip()
         ):
             return phase.text
-    for phase in reversed(phases):
-        if phase.label not in excluded and phase.text.strip():
-            return phase.text
-    raise ValueError("Attempt has no nonempty solve/revise phase to grade")
+    raise ValueError("Attempt has no complete within-budget solve/revise phase")
 
 
 def budget_cut_multipliers(budget_units: int) -> list[int]:
@@ -255,13 +260,17 @@ def write_seed_outputs(
     plan_scratch_path: Path | None = None,
     termination_reason: str | None = None,
     provider_session_ids: dict[str, str] | None = None,
+    output_dir_override: Path | None = None,
+    meta_extra: dict[str, object] | None = None,
 ) -> Path:
     """Write logs.jsonl.zst, solution.md, scratch/ copy, then meta.json (marker).
 
     meta.json is written last so an interrupted write never masquerades as a
     completed attempt on resume. Returns the seed output dir.
     """
-    output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+    output_dir = output_dir_override or seed_output_dir(
+        config, arm, problem.problem_id, seed
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # default=str so a non-serializable tool_input value can never crash the
@@ -275,7 +284,7 @@ def write_seed_outputs(
     _atomic_write_bytes(output_dir / LOGS_FILENAME, compressed)
 
     try:
-        solution_text = final_solution_text(phases).strip()
+        solution_text = final_solution_text(phases, budget_tokens).strip()
     except ValueError:
         # Producing no gradeable response within the budget is an experimental
         # failure, not an infrastructure exception.  Persist an empty artifact
@@ -331,6 +340,7 @@ def write_seed_outputs(
         )
 
     process_resume_count = sum(p.process_resume_count for p in phases)
+    output_tokens_spent = sum(p.output_tokens for p in phases)
     meta = {
         "problem_id": problem.problem_id,
         "arm": arm.name,
@@ -341,7 +351,9 @@ def write_seed_outputs(
         "seed": seed,
         "scratch_dir_name": scratch_path.name,
         "budget_output_tokens": budget_tokens,
-        "output_tokens_spent": sum(p.output_tokens for p in phases),
+        "output_tokens_spent": output_tokens_spent,
+        "output_tokens_over_budget": max(0, output_tokens_spent - budget_tokens),
+        "within_budget_artifact_emitted": bool(solution_text),
         "budget_exhausted": any(p.budget_exhausted for p in phases),
         "gradeable_solution_emitted": bool(solution_text),
         "num_phases": len(phases),
@@ -365,27 +377,190 @@ def write_seed_outputs(
         meta["plan_scratch_dir_name"] = plan_scratch_path.name
     if termination_reason is not None:
         meta["termination_reason"] = termination_reason
-    if arm.mode == MODE_IDEASEARCH:
-        plan_labels = {PHASE_PLAN, PHASE_PLAN_WRAP_UP}
-        meta.update(
-            {
-                "ideasearch_plan_budget_output_tokens": config.ideasearch_plan_tokens,
-                "ideasearch_proof_budget_output_tokens": (
-                    config.unit_output_tokens - config.ideasearch_plan_tokens
-                ),
-                "ideasearch_plan_output_tokens_spent": sum(
-                    p.output_tokens for p in phases if p.label in plan_labels
-                ),
-                "ideasearch_proof_output_tokens_spent": sum(
-                    p.output_tokens for p in phases if p.label not in plan_labels
-                ),
-            }
-        )
+    if meta_extra:
+        meta.update(meta_extra)
     _atomic_write_bytes(
         output_dir / META_FILENAME,
         (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
     return output_dir
+
+
+def write_uniform_strategy_plan_artifacts(
+    bank_dir: Path,
+    phases: list[PhaseResult],
+    strategies: list[str],
+    assignments: list[int],
+    plan_scratch_path: Path,
+) -> None:
+    """Persist the shared planner output after every executor has finished.
+
+    The bank-level meta.json remains reserved as the completion marker and is
+    written only after every branch has completed.
+    """
+    bank_dir.mkdir(parents=True, exist_ok=True)
+    log_lines = "\n".join(
+        json.dumps(_phase_record(p), ensure_ascii=False, default=str) for p in phases
+    )
+    compressed = zstandard.ZstdCompressor(level=ZSTD_LEVEL).compress(
+        (log_lines + "\n").encode("utf-8")
+    )
+    _atomic_write_bytes(bank_dir / LOGS_FILENAME, compressed)
+    _atomic_write_bytes(
+        bank_dir / UNIFORM_STRATEGIES_FILENAME,
+        (
+            json.dumps(
+                {"strategies": strategies, "branch_strategy_indices": assignments},
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8"),
+    )
+    destination = bank_dir / PLAN_SCRATCH_SUBDIR
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(
+        plan_scratch_path,
+        destination,
+        ignore=shutil.ignore_patterns(SESSION_STATE_SUBDIR),
+    )
+
+
+def write_uniform_strategy_bank_meta(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    bank_dir: Path,
+    plan_phases: list[PhaseResult],
+    strategy_count: int,
+    assignments: list[int],
+    executor_budget: int,
+    provider_session_ids: dict[str, str],
+) -> None:
+    """Write the bank completion marker after all executor metas are durable."""
+    if len(assignments) != config.uniform_strategy_branches:
+        raise ValueError("Uniform Strategy bank must assign every executor branch")
+    if strategy_count < 1 or any(
+        index < 1 or index > strategy_count for index in assignments
+    ):
+        raise ValueError("Uniform Strategy bank contains an invalid strategy index")
+    branch_metas = []
+    for branch in range(1, config.uniform_strategy_branches + 1):
+        path = uniform_branch_output_dir(bank_dir, branch) / META_FILENAME
+        branch_metas.append(json.loads(path.read_text(encoding="utf-8")))
+    plan_spent = sum(phase.output_tokens for phase in plan_phases)
+    branch_spent = sum(int(meta["output_tokens_spent"]) for meta in branch_metas)
+    total_budget = config.budget_tokens(arm)
+    allocated = (
+        config.uniform_strategy_plan_tokens
+        + config.uniform_strategy_branches * executor_budget
+    )
+    if allocated != total_budget:
+        raise AssertionError(
+            f"Uniform Strategy allocation {allocated} != bank budget {total_budget}"
+        )
+    process_resume_count = sum(p.process_resume_count for p in plan_phases) + sum(
+        int(meta.get("process_resume_count", 0)) for meta in branch_metas
+    )
+    output_tokens_spent = plan_spent + branch_spent
+    meta = {
+        "problem_id": problem.problem_id,
+        "arm": arm.name,
+        "mode": MODE_UNIFORM_STRATEGY,
+        "hint": arm.hint,
+        "model": config.model,
+        "effort": config.effort,
+        "seed": seed,
+        "budget_output_tokens": total_budget,
+        "output_tokens_spent": output_tokens_spent,
+        "output_tokens_over_budget": max(0, output_tokens_spent - total_budget),
+        "uniform_strategy_plan_budget_output_tokens": (
+            config.uniform_strategy_plan_tokens
+        ),
+        "uniform_strategy_plan_output_tokens_spent": plan_spent,
+        "uniform_strategy_executor_count": config.uniform_strategy_branches,
+        "uniform_strategy_executor_budget_output_tokens_each": executor_budget,
+        "uniform_strategy_executor_output_tokens_spent": branch_spent,
+        "strategy_count": strategy_count,
+        "branch_strategy_indices": assignments,
+        "provider_session_ids": dict(sorted(provider_session_ids.items())),
+        "branch_provider_session_ids": {
+            str(i): meta.get("provider_session_ids", {})
+            for i, meta in enumerate(branch_metas, start=1)
+        },
+        "process_resume_count": process_resume_count,
+        "token_accounting_status": (
+            "provider_reported_complete"
+            if process_resume_count == 0
+            else "process_recovered_unreported_suffix_possible"
+        ),
+        "gradeable_solution_emitted": any(
+            bool(meta.get("gradeable_solution_emitted")) for meta in branch_metas
+        ),
+    }
+    # run.sh distinguishes newly completed staged attempts from pre-seeded
+    # resume markers by requiring solution.md beside the last-written meta.json.
+    # The bank is graded from branch_<k>/solution.md; this top-level file is an
+    # explicit manifest, never a proof candidate.
+    _atomic_write_bytes(
+        bank_dir / SOLUTION_FILENAME,
+        (
+            "Uniform Strategy Search bank. Grade the executor candidates in "
+            "branch_1 through branch_"
+            f"{config.uniform_strategy_branches}; this file is not a candidate proof.\n"
+        ).encode("utf-8"),
+    )
+    _atomic_write_bytes(
+        bank_dir / META_FILENAME,
+        (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+
+
+def write_uniform_strategy_planner_failure(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    bank_dir: Path,
+    plan_phases: list[PhaseResult],
+    provider_session_ids: dict[str, str],
+    reason: str,
+) -> None:
+    """Complete a bank as a scoreable failure when no eligible plan exists."""
+    plan_spent = sum(phase.output_tokens for phase in plan_phases)
+    total_budget = config.budget_tokens(arm)
+    meta = {
+        "problem_id": problem.problem_id,
+        "arm": arm.name,
+        "mode": MODE_UNIFORM_STRATEGY,
+        "hint": arm.hint,
+        "model": config.model,
+        "effort": config.effort,
+        "seed": seed,
+        "budget_output_tokens": total_budget,
+        "output_tokens_spent": plan_spent,
+        "output_tokens_over_budget": max(
+            0, plan_spent - config.uniform_strategy_plan_tokens
+        ),
+        "uniform_strategy_plan_budget_output_tokens": (
+            config.uniform_strategy_plan_tokens
+        ),
+        "uniform_strategy_plan_output_tokens_spent": plan_spent,
+        "uniform_strategy_executor_count": 0,
+        "strategy_count": 0,
+        "branch_strategy_indices": [],
+        "provider_session_ids": dict(sorted(provider_session_ids.items())),
+        "planner_failure": reason,
+        "gradeable_solution_emitted": False,
+        "within_budget_artifact_emitted": False,
+    }
+    _atomic_write_bytes(bank_dir / SOLUTION_FILENAME, b"")
+    _atomic_write_bytes(
+        bank_dir / META_FILENAME,
+        (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
 
 
 def seed_solution_text(output_dir: Path) -> str:
@@ -406,9 +581,7 @@ def write_seed_audit(output_dir: Path, record: dict[str, object]) -> None:
     )
 
 
-def archive_audit_scratches(
-    output_dir: Path, scratch_paths: dict[str, Path]
-) -> None:
+def archive_audit_scratches(output_dir: Path, scratch_paths: dict[str, Path]) -> None:
     """Archive each isolated judge call's visible scratch beside the attempt.
 
     Keeps the audit auditable: any computation the judge ran while grading is

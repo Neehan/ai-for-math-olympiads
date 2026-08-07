@@ -88,9 +88,7 @@ class StderrTail:
             raise TokenSpendLimit("\n".join(self.lines[-2:]))
 
 
-OptionsFactory = Callable[
-    [str, str | None, str | None, StderrTail], ClaudeAgentOptions
-]
+OptionsFactory = Callable[[str, str | None, str | None, StderrTail], ClaudeAgentOptions]
 
 
 class ResumableClaudeSession:
@@ -178,8 +176,7 @@ class ResumableClaudeSession:
                     await self._pool.mark_dead(token)
                     await self._pool.release(token)
                     log.warning(
-                        "%s was unusable at session startup; trying another "
-                        "credential",
+                        "%s was unusable at session startup; trying another credential",
                         self._pool.credential_label(token),
                     )
                     continue
@@ -376,9 +373,7 @@ class BudgetTracker:
         """Output tokens left before the hard budget."""
         return max(0, self.budget_tokens - self.spent)
 
-    def phase_cost_delta(
-        self, session_cost_usd: float, connection_id: str
-    ) -> float:
+    def phase_cost_delta(self, session_cost_usd: float, connection_id: str) -> float:
         """This phase's cost from a CLI-process-cumulative cost figure.
 
         The CLI counter accumulates across queries in one live process but
@@ -417,20 +412,18 @@ class BudgetTracker:
         """Restore a tracker, rejecting a checkpoint for a different budget."""
         tracker = cls(budget_tokens, wrap_up_reserve_tokens)
         expected_soft = budget_tokens - wrap_up_reserve_tokens
-        if int(str(snapshot["budget_tokens"])) != budget_tokens or int(
-            str(snapshot["soft_limit_tokens"])
-        ) != expected_soft:
+        if (
+            int(str(snapshot["budget_tokens"])) != budget_tokens
+            or int(str(snapshot["soft_limit_tokens"])) != expected_soft
+        ):
             raise ValueError("Checkpoint token budget does not match this invocation")
         tracker.spent = int(str(snapshot["spent"]))
-        tracker._completed_phases_tokens = int(
-            str(snapshot["completed_phases_tokens"])
-        )
+        tracker._completed_phases_tokens = int(str(snapshot["completed_phases_tokens"]))
         raw_messages = snapshot.get("message_tokens", {})
         if not isinstance(raw_messages, dict):
             raise TypeError("Checkpoint message_tokens must be an object")
         tracker._message_tokens = {
-            str(message_id): int(tokens)
-            for message_id, tokens in raw_messages.items()
+            str(message_id): int(tokens) for message_id, tokens in raw_messages.items()
         }
         tracker._current_phase_streamed_tokens = int(
             str(snapshot["current_phase_streamed_tokens"])
@@ -441,8 +434,7 @@ class BudgetTracker:
             str(raw_connection_id) if raw_connection_id else None
         )
         if tracker.spent != (
-            tracker._completed_phases_tokens
-            + tracker._current_phase_streamed_tokens
+            tracker._completed_phases_tokens + tracker._current_phase_streamed_tokens
         ):
             raise ValueError("Checkpoint BudgetTracker counters are inconsistent")
         return tracker
@@ -458,9 +450,13 @@ def token_env_name(model: str) -> str:
     return OPENROUTER_KEY_ENV if uses_openrouter(model) else OAUTH_TOKEN_ENV
 
 
-def provider_env(model: str, api_key: str) -> dict[str, str]:
-    """Per-session env: provider auth plus the raised per-response output cap."""
-    cap = {MAX_OUTPUT_TOKENS_ENV: str(MAX_OUTPUT_TOKENS_PER_RESPONSE)}
+def provider_env(
+    model: str,
+    api_key: str,
+    max_output_tokens_per_response: int = MAX_OUTPUT_TOKENS_PER_RESPONSE,
+) -> dict[str, str]:
+    """Per-session provider auth and an explicit per-response output cap."""
+    cap = {MAX_OUTPUT_TOKENS_ENV: str(max_output_tokens_per_response)}
     if uses_openrouter(model):
         return {
             ANTHROPIC_BASE_URL_ENV: OPENROUTER_BASE_URL,
@@ -471,10 +467,15 @@ def provider_env(model: str, api_key: str) -> dict[str, str]:
     return {OAUTH_TOKEN_ENV: api_key, **cap}
 
 
-def isolated_session_env(model: str, api_key: str, scratch_dir: str) -> dict[str, str]:
+def isolated_session_env(
+    model: str,
+    api_key: str,
+    scratch_dir: str,
+    max_output_tokens_per_response: int = MAX_OUTPUT_TOKENS_PER_RESPONSE,
+) -> dict[str, str]:
     """Provider auth plus a transcript store private to this attempt."""
     return {
-        **provider_env(model, api_key),
+        **provider_env(model, api_key, max_output_tokens_per_response),
         CLAUDE_CONFIG_DIR_ENV: os.path.join(scratch_dir, SESSION_STATE_SUBDIR),
     }
 
@@ -488,6 +489,9 @@ def build_options(
     *,
     session_id: str | None = None,
     resume_session_id: str | None = None,
+    max_output_tokens_per_response: int = MAX_OUTPUT_TOKENS_PER_RESPONSE,
+    max_turns: int | None = None,
+    tools_enabled: bool = True,
 ) -> ClaudeAgentOptions:
     """Construct agent options for one attempt.
 
@@ -502,22 +506,29 @@ def build_options(
     return ClaudeAgentOptions(
         model=config.model,
         cli_path=os.environ.get(CLI_PATH_ENV),
-        env=isolated_session_env(config.model, oauth_token, scratch_dir),
+        env=isolated_session_env(
+            config.model,
+            oauth_token,
+            scratch_dir,
+            max_output_tokens_per_response,
+        ),
         effort=config.effort,  # type: ignore[arg-type]
         stderr=stderr_tail,
         system_prompt=system_prompt(),
-        allowed_tools=list(ALLOWED_TOOLS),
-        disallowed_tools=list(DISALLOWED_TOOLS),
+        allowed_tools=list(ALLOWED_TOOLS) if tools_enabled else [],
+        disallowed_tools=(
+            list(DISALLOWED_TOOLS)
+            if tools_enabled
+            else sorted(set(DISALLOWED_TOOLS) | set(ALLOWED_TOOLS))
+        ),
         settings=str(AGENT_SETTINGS_PATH),
         extra_args={"setting-sources": ""},
         permission_mode=PERMISSION_MODE,
-        max_turns=config.max_turns_per_phase,
+        max_turns=max_turns if max_turns is not None else config.max_turns_per_phase,
         # The provider rejects task budgets below 20k.  This is only its
         # pacing envelope: run_phase still interrupts at the exact local
         # stop_at_tokens cutoff, and wrap-up prompts state the true remainder.
-        task_budget={
-            "total": max(PROVIDER_MIN_TASK_BUDGET_TOKENS, budget_tokens)
-        },
+        task_budget={"total": max(PROVIDER_MIN_TASK_BUDGET_TOKENS, budget_tokens)},
         include_partial_messages=True,
         cwd=scratch_dir,
         session_id=session_id,
@@ -630,11 +641,7 @@ async def run_phase(
                     for block in message.content
                     if isinstance(block, TextBlock)
                 ),
-                *(
-                    "".join(parts)
-                    for parts in streamed_text.values()
-                    if parts
-                ),
+                *("".join(parts) for parts in streamed_text.values() if parts),
             ],
             "seen_assistant_ids": sorted(seen_assistant_ids),
             "current_stream_id": current_stream_id,

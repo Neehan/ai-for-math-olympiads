@@ -4,7 +4,13 @@ import dataclasses
 import json
 from pathlib import Path
 
-from src.constants import HINT_KINDS, HINT_NONE, MODE_IDEASEARCH, MODE_SINGLE, MODES
+from src.constants import (
+    HINT_KINDS,
+    HINT_NONE,
+    MODE_SINGLE,
+    MODE_UNIFORM_STRATEGY,
+    MODES,
+)
 from src.models import ArmConfig, ExperimentConfig
 
 _VALID_EFFORTS: frozenset[str] = frozenset({"low", "medium", "high", "max"})
@@ -16,8 +22,9 @@ _REQUIRED_TOP_KEYS: frozenset[str] = frozenset(
         "effort",
         "unit_output_tokens",
         "wrap_up_reserve_tokens",
-        "ideasearch_plan_tokens",
-        "ideasearch_plan_wrap_up_reserve_tokens",
+        "uniform_strategy_plan_tokens",
+        "uniform_strategy_plan_wrap_up_reserve_tokens",
+        "uniform_strategy_branches",
         "max_turns_per_phase",
         "audit_max_turns",
         "max_concurrency",
@@ -29,7 +36,9 @@ _REQUIRED_ARM_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _validate_keys(raw: dict[str, object], required: frozenset[str], where: str) -> None:
+def _validate_keys(
+    raw: dict[str, object], required: frozenset[str], where: str
+) -> None:
     """Fail fast on missing or unknown keys."""
     keys = set(raw)
     if keys != required:
@@ -53,7 +62,9 @@ def _parse_arm(name: str, raw: dict[str, object]) -> ArmConfig:
         raise ValueError(f"arm '{name}': budget_units must be >= 1")
     if not seeds or len(seeds) != len(set(seeds)):
         raise ValueError(f"arm '{name}': seeds must be non-empty and unique")
-    return ArmConfig(name=name, hint=hint, mode=mode, budget_units=budget_units, seeds=seeds)
+    return ArmConfig(
+        name=name, hint=hint, mode=mode, budget_units=budget_units, seeds=seeds
+    )
 
 
 def load_config(path: Path) -> ExperimentConfig:
@@ -70,10 +81,11 @@ def load_config(path: Path) -> ExperimentConfig:
         effort=str(raw["effort"]),
         unit_output_tokens=int(raw["unit_output_tokens"]),
         wrap_up_reserve_tokens=int(raw["wrap_up_reserve_tokens"]),
-        ideasearch_plan_tokens=int(raw["ideasearch_plan_tokens"]),
-        ideasearch_plan_wrap_up_reserve_tokens=int(
-            raw["ideasearch_plan_wrap_up_reserve_tokens"]
+        uniform_strategy_plan_tokens=int(raw["uniform_strategy_plan_tokens"]),
+        uniform_strategy_plan_wrap_up_reserve_tokens=int(
+            raw["uniform_strategy_plan_wrap_up_reserve_tokens"]
         ),
+        uniform_strategy_branches=int(raw["uniform_strategy_branches"]),
         max_turns_per_phase=int(raw["max_turns_per_phase"]),
         audit_max_turns=int(raw["audit_max_turns"]),
         max_concurrency=int(raw["max_concurrency"]),
@@ -90,60 +102,77 @@ def load_config(path: Path) -> ExperimentConfig:
             f"{path}: wrap_up_reserve_tokens must be positive and below "
             f"unit_output_tokens"
         )
-    if not 0 < config.ideasearch_plan_tokens < config.unit_output_tokens:
+    if not 0 < config.uniform_strategy_plan_tokens < config.unit_output_tokens:
         raise ValueError(
-            f"{path}: ideasearch_plan_tokens must be positive and below "
+            f"{path}: uniform_strategy_plan_tokens must be positive and below "
             f"unit_output_tokens"
         )
     if not (
         0
-        < config.ideasearch_plan_wrap_up_reserve_tokens
-        < config.ideasearch_plan_tokens
+        < config.uniform_strategy_plan_wrap_up_reserve_tokens
+        < config.uniform_strategy_plan_tokens
     ):
         raise ValueError(
-            f"{path}: ideasearch_plan_wrap_up_reserve_tokens must be positive "
-            f"and below ideasearch_plan_tokens"
+            f"{path}: uniform_strategy_plan_wrap_up_reserve_tokens must be "
+            "positive and below uniform_strategy_plan_tokens"
         )
-    ideasearch_proof_tokens = (
-        config.unit_output_tokens - config.ideasearch_plan_tokens
-    )
-    if config.wrap_up_reserve_tokens >= ideasearch_proof_tokens:
-        raise ValueError(
-            f"{path}: wrap_up_reserve_tokens must be below the IdeaSearch proof "
-            f"budget ({ideasearch_proof_tokens})"
-        )
+    if config.uniform_strategy_branches < 1:
+        raise ValueError(f"{path}: uniform_strategy_branches must be positive")
     for arm in config.arms.values():
-        if arm.mode != MODE_IDEASEARCH:
+        if arm.mode != MODE_UNIFORM_STRATEGY:
             continue
-        if (
-            arm.hint != HINT_NONE
-            or arm.budget_units != 1
-            or arm.seeds != list(range(1, 9))
-        ):
+        total_budget = config.budget_tokens(arm)
+        executor_pool = total_budget - config.uniform_strategy_plan_tokens
+        if executor_pool <= 0 or executor_pool % config.uniform_strategy_branches:
             raise ValueError(
-                f"{path}: IdeaSearch arm '{arm.name}' must use hint='none', "
-                f"budget_units=1, and seeds [1, ..., 8]"
+                f"{path}: Uniform Strategy arm '{arm.name}' must leave a positive "
+                "executor budget divisible by uniform_strategy_branches"
+            )
+        executor_budget = executor_pool // config.uniform_strategy_branches
+        if arm.hint != HINT_NONE or arm.budget_units != 8 or arm.seeds != [1, 2, 3]:
+            raise ValueError(
+                f"{path}: Uniform Strategy arm '{arm.name}' must use hint='none', "
+                "budget_units=8, and seeds [1, 2, 3]"
+            )
+        if config.wrap_up_reserve_tokens >= executor_budget:
+            raise ValueError(
+                f"{path}: wrap_up_reserve_tokens must be below each Uniform "
+                f"Strategy executor budget ({executor_budget})"
             )
     baseline = config.arms.get("baseline")
     parallel = config.arms.get("baseline-parallel")
     if baseline is None or parallel is None:
         raise ValueError(f"{path}: baseline and baseline-parallel arms are required")
     if any(
-        arm.hint != HINT_NONE
-        or arm.mode != MODE_SINGLE
-        or arm.budget_units != 1
+        arm.hint != HINT_NONE or arm.mode != MODE_SINGLE or arm.budget_units != 1
         for arm in (baseline, parallel)
     ):
         raise ValueError(
             f"{path}: baseline and baseline-parallel must be no-hint single 1x arms"
         )
-    if (
-        set(baseline.seeds) & set(parallel.seeds)
-        or sorted(baseline.seeds + parallel.seeds) != list(range(1, 9))
-    ):
+    if set(baseline.seeds) & set(parallel.seeds) or sorted(
+        baseline.seeds + parallel.seeds
+    ) != list(range(1, 9)):
         raise ValueError(
             f"{path}: baseline plus baseline-parallel must define each seed 1..8 "
             "exactly once"
+        )
+    hint = config.arms.get("hint")
+    hint_parallel = config.arms.get("hint-parallel")
+    if hint is None or hint_parallel is None:
+        raise ValueError(f"{path}: hint and hint-parallel arms are required")
+    if any(
+        arm.hint != hint.hint or arm.mode != MODE_SINGLE or arm.budget_units != 1
+        for arm in (hint, hint_parallel)
+    ):
+        raise ValueError(
+            f"{path}: hint and hint-parallel must be matched single 1x arms"
+        )
+    if set(hint.seeds) & set(hint_parallel.seeds) or sorted(
+        hint.seeds + hint_parallel.seeds
+    ) != list(range(1, 9)):
+        raise ValueError(
+            f"{path}: hint plus hint-parallel must define each seed 1..8 exactly once"
         )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")
