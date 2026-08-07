@@ -1,6 +1,7 @@
 """Deterministic recovery tests; no provider calls or credentials required."""
 
 import time
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ from src.solver import (
     BudgetTracker,
     ResumableClaudeSession,
     StderrTail,
+    build_options,
     run_phase,
 )
 from src.token_pool import TokenPool
@@ -303,6 +305,19 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(baseline) & set(extension), set())
         self.assertEqual(sorted(baseline + extension), list(range(1, 9)))
 
+    def test_provider_task_budget_respects_twenty_thousand_minimum(self) -> None:
+        config = load_config(CONFIG_PATH)
+        with tempfile.TemporaryDirectory() as scratch:
+            options = build_options(
+                config,
+                scratch,
+                6_748,
+                "test-token",
+                StderrTail(),
+                session_id="00000000-0000-0000-0000-000000000000",
+            )
+        self.assertEqual(options.task_budget, {"total": 20_000})
+
     def test_budget_tracker_handles_missing_ids_and_cross_phase_replay(self) -> None:
         anonymous = BudgetTracker(100, 0)
         anonymous.add(None, {"output_tokens": 5})
@@ -327,11 +342,63 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         # cannot identify this boundary.
         self.assertAlmostEqual(tracker.phase_cost_delta(0.200, "cli-b"), 0.200)
         self.assertAlmostEqual(tracker.phase_cost_delta(0.230, "cli-b"), 0.030)
-
         restored = BudgetTracker.restore(tracker.snapshot(), 100, 0)
         self.assertAlmostEqual(restored.phase_cost_delta(0.250, "cli-b"), 0.020)
         self.assertAlmostEqual(restored.phase_cost_delta(0.010, "cli-c"), 0.010)
 
+    async def test_empty_sdk_result_preserves_streamed_final_text(self) -> None:
+        class StreamOnlySession:
+            reconnect_count = 0
+            reconnect_events: list[object] = []
+            connection_id = "stream-only"
+
+            async def query(self, prompt: str) -> None:
+                self.prompt = prompt
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                yield StreamEvent(
+                    uuid="start",
+                    session_id="session",
+                    event={"type": "message_start", "message": {"id": "final"}},
+                )
+                yield StreamEvent(
+                    uuid="text",
+                    session_id="session",
+                    event={
+                        "type": "content_block_delta",
+                        "delta": {
+                            "type": "text_delta",
+                            "text": "## Final Solution\nRecovered proof.",
+                        },
+                    },
+                )
+                yield StreamEvent(
+                    uuid="usage",
+                    session_id="session",
+                    event={"type": "message_delta", "usage": {"output_tokens": 8}},
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="session",
+                    stop_reason="end_turn",
+                    total_cost_usd=0.0,
+                    usage={"output_tokens": 8},
+                    result="",
+                )
+
+        tracker = BudgetTracker(100, 0)
+        phase = await run_phase(  # type: ignore[arg-type]
+            StreamOnlySession(), "solve", "solve", tracker, 100
+        )
+        self.assertEqual(phase.text, "## Final Solution\nRecovered proof.")
+        self.assertEqual(phase.output_tokens, 8)
 
 if __name__ == "__main__":
     unittest.main()

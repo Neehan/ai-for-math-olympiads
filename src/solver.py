@@ -39,6 +39,7 @@ from src.constants import (
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
     PERMISSION_MODE,
+    PROVIDER_MIN_TASK_BUDGET_TOKENS,
     PROCESS_RECOVERY_PROMPT,
     SESSION_RECOVERY_PROMPT,
     SESSION_STATE_SUBDIR,
@@ -511,7 +512,12 @@ def build_options(
         extra_args={"setting-sources": ""},
         permission_mode=PERMISSION_MODE,
         max_turns=config.max_turns_per_phase,
-        task_budget={"total": budget_tokens},
+        # The provider rejects task budgets below 20k.  This is only its
+        # pacing envelope: run_phase still interrupts at the exact local
+        # stop_at_tokens cutoff, and wrap-up prompts state the true remainder.
+        task_budget={
+            "total": max(PROVIDER_MIN_TASK_BUDGET_TOKENS, budget_tokens)
+        },
         include_partial_messages=True,
         cwd=scratch_dir,
         session_id=session_id,
@@ -739,8 +745,24 @@ async def run_phase(
 
     reconnects = client.reconnect_events[reconnect_start:]
     text = _collect_text(assistant_messages)
-    if result_message.result is not None and not interrupted and not reconnects:
-        text = result_message.result
+    # Some Claude CLI/SDK versions persist the final assistant text to the raw
+    # transcript and emit it as stream deltas, but return result="" and no
+    # TextBlock envelope.  Never let that empty aggregate erase real output.
+    # Residual streamed text is safe to append: completed AssistantMessage ids
+    # are removed from streamed_text above.
+    residual_streamed_text = [
+        "".join(parts) for parts in streamed_text.values() if "".join(parts).strip()
+    ]
+    if residual_streamed_text:
+        text = "\n".join(part for part in [text, *residual_streamed_text] if part)
+    result_text = result_message.result
+    if (
+        isinstance(result_text, str)
+        and result_text.strip()
+        and not interrupted
+        and not reconnects
+    ):
+        text = result_text
 
     result_usage = result_message.usage or {}
     result_tokens = result_usage.get("output_tokens")

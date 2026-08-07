@@ -274,9 +274,17 @@ def write_seed_outputs(
     )
     _atomic_write_bytes(output_dir / LOGS_FILENAME, compressed)
 
+    try:
+        solution_text = final_solution_text(phases).strip()
+    except ValueError:
+        # Producing no gradeable response within the budget is an experimental
+        # failure, not an infrastructure exception.  Persist an empty artifact
+        # so the audit stage can assign the pre-registered score 0 without
+        # giving the solver another stochastic attempt.
+        solution_text = ""
     _atomic_write_bytes(
         output_dir / SOLUTION_FILENAME,
-        (final_solution_text(phases).strip() + "\n").encode("utf-8"),
+        ((solution_text + "\n") if solution_text else "").encode("utf-8"),
     )
 
     # Sequential arms: snapshot the solution at each lower budget cut so the
@@ -335,6 +343,7 @@ def write_seed_outputs(
         "budget_output_tokens": budget_tokens,
         "output_tokens_spent": sum(p.output_tokens for p in phases),
         "budget_exhausted": any(p.budget_exhausted for p in phases),
+        "gradeable_solution_emitted": bool(solution_text),
         "num_phases": len(phases),
         "phase_labels": [p.label for p in phases],
         "total_cost_usd": sum(p.total_cost_usd for p in phases),

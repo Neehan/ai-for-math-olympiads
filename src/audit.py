@@ -214,6 +214,40 @@ async def audit_seed(
         )
         for multiplier in budget_cut_multipliers(arm.budget_units)
     }
+    if not solution.strip():
+        cuts = {
+            f"{multiplier}x": {
+                "audit_score": AUDIT_SCORE_INVALID,
+                "note": "No complete write-up was emitted within this budget cut.",
+                "session_reconnect_count": 0,
+                "session_reconnects": [],
+            }
+            for multiplier in budget_cut_multipliers(arm.budget_units)
+        }
+        write_seed_audit(
+            output_dir,
+            {
+                "problem_id": problem.problem_id,
+                "arm": arm.name,
+                "seed": seed,
+                "solver_model": config.model,
+                "audit_model": config.audit_model,
+                "audit_score": AUDIT_SCORE_INVALID,
+                "note": "No complete write-up was emitted within the attempt budget.",
+                "session_reconnect_count": 0,
+                "session_reconnects": [],
+                "provider_session_ids": {},
+                "process_resume_count": 0,
+                "budget_cuts": cuts,
+            },
+        )
+        log.info(
+            "%s/%s seed %d: score 0 (no gradeable write-up)",
+            arm.name,
+            problem.problem_id,
+            seed,
+        )
+        return
     checkpoint = AttemptCheckpoint(
         {
             "stage": "audit",

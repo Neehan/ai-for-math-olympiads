@@ -173,6 +173,11 @@ PERMISSION_MODE: PermissionMode = "bypassPermissions"
 # thinking turns); the attempt budget is enforced by BudgetTracker, not this.
 MAX_OUTPUT_TOKENS_ENV: str = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 MAX_OUTPUT_TOKENS_PER_RESPONSE: int = 64000
+# Claude's task-budget API rejects smaller values for current frontier models.
+# A late wrap-up may have fewer experiment tokens remaining; in that case the
+# provider receives this minimum while BudgetTracker still enforces the exact
+# local attempt cutoff and the prompt states the true remaining budget.
+PROVIDER_MIN_TASK_BUDGET_TOKENS: int = 20000
 # Docker sets this to the pinned npm CLI (the SDK-bundled CLI ignores the
 # output cap on Opus); unset = the SDK's bundled CLI (dev host runs).
 CLI_PATH_ENV: str = "HARNESS_CLI_PATH"
