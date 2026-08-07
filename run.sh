@@ -136,9 +136,11 @@ if [ "$1" = "run" ]; then
     checkpoint_args=(-e HARNESS_DEFER_CHECKPOINT_CLEANUP=1)
 fi
 
+# Bash 3.2 + nounset rejects "${empty_array[@]}"; the guarded form emits zero
+# arguments when an optional array is empty.
 docker run --rm --cap-add=NET_ADMIN \
-    "${token_args[@]}" \
-    "${checkpoint_args[@]}" \
+    ${token_args[@]+"${token_args[@]}"} \
+    ${checkpoint_args[@]+"${checkpoint_args[@]}"} \
     -v "$PWD/prompts:/app/prompts:ro" \
     -v "$PWD/config.json:/app/config.json:ro" \
     -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
