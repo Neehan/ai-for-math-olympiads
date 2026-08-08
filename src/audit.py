@@ -167,16 +167,18 @@ async def _judge(
         reconnects=checkpoint.reconnects(role),
     ) as session:
         checkpoint.save_session(role, session.session_id, session.reconnect_events)
-        await session.query(
-            process_recovery_prompt(str(active["prompt"]))
-            if process_recovery
-            else prompt
-        )
-        async for message in session.receive_response():
-            if isinstance(message, ResultMessage):
-                result = message
-        reconnects = session.reconnect_events
-        checkpoint.save_session(role, session.session_id, reconnects)
+        try:
+            await session.query(
+                process_recovery_prompt(str(active["prompt"]))
+                if process_recovery
+                else prompt
+            )
+            async for message in session.receive_response():
+                if isinstance(message, ResultMessage):
+                    result = message
+        finally:
+            reconnects = session.reconnect_events
+            checkpoint.save_session(role, session.session_id, reconnects)
     if result is None or result.is_error:
         raise RuntimeError(f"Judge call failed: {result and result.errors}")
     if not isinstance(result.structured_output, dict):

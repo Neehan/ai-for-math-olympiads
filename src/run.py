@@ -68,6 +68,7 @@ from src.solver import (
     run_phase,
     token_env_name,
     uses_litellm,
+    uses_vllm,
 )
 from src.storage import (
     load_problems,
@@ -181,26 +182,34 @@ async def _checkpointed_phase(
             client.reconnect_events,
         )
 
-    return await run_phase(
-        client,
-        original_prompt,
-        label,
-        tracker,
-        stop_at,
-        query_prompt=(
-            process_recovery_prompt(original_prompt)
-            if process_recovery
-            else original_prompt
-        ),
-        process_resume_count=int(active.get("process_resume_count", 0)),
-        discarded_output_text=str(active.get("discarded_output_text", "")),
-        discarded_tool_calls=tool_calls_from_records(
-            active.get("discarded_tool_calls", [])
-        ),
-        reconnect_start=int(active.get("reconnect_start", 0)),
-        on_progress=save_progress,
-        on_complete=finish,
-    )
+    try:
+        return await run_phase(
+            client,
+            original_prompt,
+            label,
+            tracker,
+            stop_at,
+            query_prompt=(
+                process_recovery_prompt(original_prompt)
+                if process_recovery
+                else original_prompt
+            ),
+            process_resume_count=int(active.get("process_resume_count", 0)),
+            discarded_output_text=str(active.get("discarded_output_text", "")),
+            discarded_tool_calls=tool_calls_from_records(
+                active.get("discarded_tool_calls", [])
+            ),
+            reconnect_start=int(active.get("reconnect_start", 0)),
+            on_progress=save_progress,
+            on_complete=finish,
+        )
+    finally:
+        # Also persist reconnects when every bounded transport retry fails
+        # before another stream event arrives.  A later invocation can still
+        # resume the stable transcript instead of resetting paid work.
+        checkpoint.save_session(
+            role, client.session_id, client.reconnect_events
+        )
 
 
 async def _run_strict_wrap_phase(
@@ -667,10 +676,10 @@ def run_checkpoint_identity(
         "max_turns_per_phase": config.max_turns_per_phase,
         "protocol_fingerprint": protocol_fingerprint(),
     }
-    # The LiteLLM/ChatGPT route has explicit transport controls that materially
-    # changed after pilot timeout failures. Version only that route so existing
-    # Anthropic/OpenRouter checkpoints retain their original identities.
-    if uses_litellm(config.model):
+    # Local proxy/server routes have explicit transport controls. Version only
+    # those routes so existing Anthropic/OpenRouter checkpoints retain their
+    # original identities.
+    if uses_litellm(config.model) or uses_vllm(config.model):
         identity["provider_transport_policy"] = provider_transport_policy(
             config.model
         )

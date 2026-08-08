@@ -190,6 +190,9 @@ OPENROUTER_KEY_ENV: str = "OPENROUTER_API_KEY"
 LITELLM_MODEL_PREFIX: str = "litellm/"
 LITELLM_BASE_URL_ENV: str = "LITELLM_BASE_URL"
 LITELLM_API_KEY_ENV: str = "LITELLM_API_KEY"
+VLLM_MODEL_PREFIX: str = "vllm/"
+VLLM_BASE_URL_ENV: str = "VLLM_BASE_URL"
+VLLM_API_KEY_ENV: str = "VLLM_API_KEY"
 ANTHROPIC_BASE_URL_ENV: str = "ANTHROPIC_BASE_URL"
 ANTHROPIC_AUTH_TOKEN_ENV: str = "ANTHROPIC_AUTH_TOKEN"
 ANTHROPIC_API_KEY_ENV: str = "ANTHROPIC_API_KEY"
@@ -212,6 +215,14 @@ CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV: str = (
 # token-matched runs must not transparently spend another request.
 CLAUDE_MAX_API_RETRIES_ENV: str = "CLAUDE_CODE_MAX_RETRIES"
 CLAUDE_MAX_API_RETRIES: int = 0
+# The proxy must not blindly replay a request after an interrupted stream: it
+# cannot know which assistant/tool events the local transcript committed.  The
+# harness instead reopens that exact transcript and asks it to continue.  Keep
+# retries bounded so a persistent provider outage remains an infrastructure
+# failure rather than an indefinitely running benchmark attempt.
+TRANSPORT_RECOVERY_MAX_RETRIES: int = 6
+TRANSPORT_RECOVERY_BASE_DELAY_SECONDS: float = 2.0
+TRANSPORT_RECOVERY_MAX_DELAY_SECONDS: float = 30.0
 
 # --- Auth / resume --------------------------------------------------------
 OAUTH_TOKEN_ENV: str = "CLAUDE_CODE_OAUTH_TOKEN"

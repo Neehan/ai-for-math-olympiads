@@ -82,6 +82,19 @@ else
 fi
 network_args=()
 case "$ACTIVE_MODEL" in
+    vllm/*)
+        if [ -z "${VLLM_API_KEY:-}" ] || [ -z "${VLLM_BASE_URL:-}" ]; then
+            echo "ERROR: $ACTIVE_MODEL requires VLLM_API_KEY and VLLM_BASE_URL in .env." >&2
+            exit 1
+        fi
+        # Docker Desktop defines this name itself; overriding it on macOS
+        # breaks the Desktop VM route. Native Linux needs the explicit alias.
+        if [ "$(uname -s)" != "Darwin" ]; then
+            network_args=(--add-host host.docker.internal:host-gateway)
+        fi
+        TOKEN_PATTERN='^(VLLM_API_KEY|VLLM_BASE_URL(_[0-9]+)?)$'
+        PROVIDER_KIND=vllm
+        ;;
     litellm/*)
         if [ -z "${LITELLM_API_KEY:-}" ] || [ -z "${LITELLM_BASE_URL:-}" ]; then
             echo "ERROR: $ACTIVE_MODEL requires LITELLM_API_KEY and LITELLM_BASE_URL in .env." >&2
@@ -121,7 +134,7 @@ CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$CHECKPOINT_NAMESPACE"
 mkdir -p "$CHECKPOINT_MOUNT"
 chmod 700 .session-checkpoints .session-checkpoints/runtime "$CHECKPOINT_MOUNT"
 
-# Pass every provider key var through (round-robin token pools).
+# Pass every provider key/endpoint var through (round-robin token pools).
 token_args=()
 while IFS= read -r name; do
     token_args+=(-e "$name")

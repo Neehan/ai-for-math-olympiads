@@ -2,8 +2,8 @@
 
 import unittest
 
-from src.models import PhaseResult
-from src.storage import _phase_at_cut, final_solution_text
+from src.models import PhaseResult, ReconnectEvent
+from src.storage import _phase_at_cut, _token_accounting_status, final_solution_text
 
 
 def _phase(
@@ -31,6 +31,20 @@ def _phase(
 
 
 class StorageSelectionTests(unittest.TestCase):
+    def test_transport_recovery_is_disclosed_in_token_status(self) -> None:
+        phase = _phase("solve", "proof", 100)
+        phase.reconnects.append(
+            ReconnectEvent("transport", None, "credential_1", "credential_1")
+        )
+        self.assertEqual(
+            _token_accounting_status([phase], 0),
+            "transport_recovered_unreported_suffix_possible",
+        )
+        self.assertEqual(
+            _token_accounting_status([phase], 1),
+            "process_and_transport_recovered_unreported_suffix_possible",
+        )
+
     def test_full_solution_skips_empty_terminal_revision(self) -> None:
         phases = [
             _phase("solve", "first proof", 100),

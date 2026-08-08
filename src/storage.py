@@ -50,7 +50,7 @@ from src.constants import (
     ZSTD_LEVEL,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
-from src.solver import provider_transport_policy
+from src.solver import provider_transport_policy, session_recovery_policy
 
 _PROVIDER_USAGE_TOKEN_FIELDS = (
     "input_tokens",
@@ -81,6 +81,22 @@ def _merge_provider_usage_totals(destination: dict[str, int], source: object) ->
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         destination[field] = destination.get(field, 0) + int(value)
+
+
+def _token_accounting_status(
+    phases: list[PhaseResult], process_resume_count: int
+) -> str:
+    """Conservatively disclose paths that can lose an unreported token suffix."""
+    transport_recovered = any(
+        event.reason == "transport" for phase in phases for event in phase.reconnects
+    )
+    if process_resume_count and transport_recovered:
+        return "process_and_transport_recovered_unreported_suffix_possible"
+    if process_resume_count:
+        return "process_recovered_unreported_suffix_possible"
+    if transport_recovered:
+        return "transport_recovered_unreported_suffix_possible"
+    return "provider_reported_complete"
 
 
 def _fetch_jsonl(env_name: str, url: str) -> list[dict[str, Any]]:
@@ -380,6 +396,7 @@ def write_seed_outputs(
         "hint": arm.hint,
         "model": config.model,
         "provider_transport_policy": provider_transport_policy(config.model),
+        "session_recovery_policy": session_recovery_policy(),
         "effort": config.effort,
         "seed": seed,
         "scratch_dir_name": scratch_path.name,
@@ -399,10 +416,8 @@ def write_seed_outputs(
         ],
         "budget_cuts": budget_cuts,
         "process_resume_count": process_resume_count,
-        "token_accounting_status": (
-            "provider_reported_complete"
-            if process_resume_count == 0
-            else "process_recovered_unreported_suffix_possible"
+        "token_accounting_status": _token_accounting_status(
+            phases, process_resume_count
         ),
     }
     if provider_session_ids:
@@ -498,6 +513,15 @@ def write_uniform_strategy_bank_meta(
     process_resume_count = sum(p.process_resume_count for p in plan_phases) + sum(
         int(meta.get("process_resume_count", 0)) for meta in branch_metas
     )
+    plan_reconnects = [
+        event for phase in plan_phases for event in phase.reconnects
+    ]
+    branch_reconnects = [
+        event
+        for meta in branch_metas
+        for event in meta.get("session_reconnects", [])
+        if isinstance(event, dict)
+    ]
     output_tokens_spent = plan_spent + branch_spent
     provider_usage_totals = _provider_usage_totals(plan_phases)
     for branch_meta in branch_metas:
@@ -511,6 +535,7 @@ def write_uniform_strategy_bank_meta(
         "hint": arm.hint,
         "model": config.model,
         "provider_transport_policy": provider_transport_policy(config.model),
+        "session_recovery_policy": session_recovery_policy(),
         "effort": config.effort,
         "seed": seed,
         "budget_output_tokens": total_budget,
@@ -532,10 +557,26 @@ def write_uniform_strategy_bank_meta(
             for i, meta in enumerate(branch_metas, start=1)
         },
         "process_resume_count": process_resume_count,
+        "session_reconnect_count": len(plan_reconnects) + len(branch_reconnects),
+        "session_reconnects": [
+            *[asdict(event) for event in plan_reconnects],
+            *branch_reconnects,
+        ],
         "token_accounting_status": (
-            "provider_reported_complete"
-            if process_resume_count == 0
+            "process_and_transport_recovered_unreported_suffix_possible"
+            if process_resume_count
+            and (
+                any(event.reason == "transport" for event in plan_reconnects)
+                or any(event.get("reason") == "transport" for event in branch_reconnects)
+            )
             else "process_recovered_unreported_suffix_possible"
+            if process_resume_count
+            else "transport_recovered_unreported_suffix_possible"
+            if (
+                any(event.reason == "transport" for event in plan_reconnects)
+                or any(event.get("reason") == "transport" for event in branch_reconnects)
+            )
+            else "provider_reported_complete"
         ),
         "gradeable_solution_emitted": any(
             bool(meta.get("gradeable_solution_emitted")) for meta in branch_metas
@@ -579,6 +620,7 @@ def write_uniform_strategy_planner_failure(
         "hint": arm.hint,
         "model": config.model,
         "provider_transport_policy": provider_transport_policy(config.model),
+        "session_recovery_policy": session_recovery_policy(),
         "effort": config.effort,
         "seed": seed,
         "budget_output_tokens": total_budget,
@@ -595,6 +637,19 @@ def write_uniform_strategy_planner_failure(
         "strategy_count": 0,
         "branch_strategy_indices": [],
         "provider_session_ids": dict(sorted(provider_session_ids.items())),
+        "session_reconnect_count": sum(
+            len(phase.reconnects) for phase in plan_phases
+        ),
+        "session_reconnects": [
+            asdict(event) for phase in plan_phases for event in phase.reconnects
+        ],
+        "process_resume_count": sum(
+            phase.process_resume_count for phase in plan_phases
+        ),
+        "token_accounting_status": _token_accounting_status(
+            plan_phases,
+            sum(phase.process_resume_count for phase in plan_phases),
+        ),
         "planner_failure": reason,
         "gradeable_solution_emitted": False,
         "within_budget_artifact_emitted": False,

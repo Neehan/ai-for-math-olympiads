@@ -11,6 +11,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Callable
 
+import anyio
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -55,6 +56,12 @@ from src.constants import (
     SESSION_RECOVERY_PROMPT,
     SESSION_STATE_SUBDIR,
     SPEND_LIMIT_MARKERS,
+    TRANSPORT_RECOVERY_BASE_DELAY_SECONDS,
+    TRANSPORT_RECOVERY_MAX_DELAY_SECONDS,
+    TRANSPORT_RECOVERY_MAX_RETRIES,
+    VLLM_API_KEY_ENV,
+    VLLM_BASE_URL_ENV,
+    VLLM_MODEL_PREFIX,
 )
 from src.models import (
     ExperimentConfig,
@@ -69,6 +76,54 @@ from src.token_pool import TokenPool
 log = logging.getLogger("solver")
 
 STOP_BUDGET_EXHAUSTED: str = "budget_exhausted"
+
+_RETRYABLE_TRANSPORT_MARKERS: tuple[str, ...] = (
+    "stream ended without receiving any events",
+    "stream idle timeout - no chunks received",
+    "peer closed connection",
+    "incomplete chunked read",
+    "remoteprotocolerror",
+    "connection reset",
+    "connection terminated",
+    "disconnect/reset before headers",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "api error: 502",
+    "api error: 503",
+    "api error: 504",
+    "status code: 502",
+    "status code: 503",
+    "status code: 504",
+)
+
+
+def is_retryable_transport_error(value: object) -> bool:
+    """True only for transient stream/proxy failures safe to transcript-resume."""
+    text = str(value).lower()
+    return any(marker in text for marker in _RETRYABLE_TRANSPORT_MARKERS)
+
+
+def _assistant_transport_error(message: AssistantMessage) -> str | None:
+    """Return a synthetic CLI API-error block, never normal model prose."""
+    text = "\n".join(
+        block.text for block in message.content if isinstance(block, TextBlock)
+    ).strip()
+    if text.lower().startswith("api error:") and is_retryable_transport_error(text):
+        return text
+    return None
+
+
+def session_recovery_policy() -> dict[str, object]:
+    """Non-secret live recovery controls recorded with every result."""
+    return {
+        "transport_recovery": "same_transcript_continue_v1",
+        "transport_recovery_max_retries": TRANSPORT_RECOVERY_MAX_RETRIES,
+        "transport_recovery_base_delay_seconds": (
+            TRANSPORT_RECOVERY_BASE_DELAY_SECONDS
+        ),
+        "transport_recovery_max_delay_seconds": TRANSPORT_RECOVERY_MAX_DELAY_SECONDS,
+    }
 
 
 def process_recovery_prompt(pending_prompt: str) -> str:
@@ -226,6 +281,11 @@ class ResumableClaudeSession:
             await self._pool.mark_rate_limited(old_token, resets_at or 0)
         elif reason == "spend_limit":
             await self._pool.mark_dead(old_token)
+        elif reason == "transport":
+            # The credential/sidecar itself is not known to be exhausted.  A
+            # reconnect may therefore reuse it (or round-robin to another
+            # configured sidecar) without changing pool eligibility.
+            pass
         else:
             raise ValueError(f"Unknown recovery reason: {reason}")
 
@@ -258,12 +318,14 @@ class ResumableClaudeSession:
         await self._client.query(prompt)
 
     async def receive_response(self) -> AsyncIterator[object]:
-        """Stream one response, transparently reconnecting after quota rejection."""
+        """Stream one response with bounded, same-transcript live recovery."""
+        transport_retries = 0
         while True:
             if self._client is None or self._stderr_tail is None:
                 raise RuntimeError("Session is not open")
             rate_limit_reset: int | None = None
             spend_limited = False
+            transport_failure: str | None = None
             try:
                 async for message in self._client.receive_response():
                     message_session_id = getattr(message, "session_id", None)
@@ -276,23 +338,75 @@ class ResumableClaudeSession:
                                 info.resets_at if info.resets_at is not None else 0
                             )
                         continue
+                    if isinstance(message, AssistantMessage):
+                        assistant_error = _assistant_transport_error(message)
+                        if assistant_error is not None:
+                            transport_failure = assistant_error
+                            continue
+                    if isinstance(message, ResultMessage) and (
+                        message.is_error
+                        and is_retryable_transport_error(
+                            "\n".join(
+                                str(part)
+                                for part in (message.result, message.errors)
+                                if part is not None
+                            )
+                        )
+                    ):
+                        transport_failure = str(message.result or message.errors)
+                        # Never expose an infrastructure error as the terminal
+                        # ResultMessage of an experimental phase.
+                        continue
                     # Once rejected, drain the dying CLI without exposing its
                     # error ResultMessage as a completed experimental phase.
-                    if rate_limit_reset is None:
+                    if rate_limit_reset is None and transport_failure is None:
                         yield message
-            except Exception:
+            except Exception as exc:
                 if rate_limit_reset is None:
                     try:
                         self._stderr_tail.raise_if_spend_limit()
                     except TokenSpendLimit:
                         spend_limited = True
-                    if not spend_limited:
+                    diagnostic = "\n".join(
+                        [str(exc), *self._stderr_tail.lines[-8:]]
+                    )
+                    if not spend_limited and is_retryable_transport_error(diagnostic):
+                        transport_failure = diagnostic
+                    elif not spend_limited:
                         raise
 
             if rate_limit_reset is not None:
                 await self._recover("rate_limit", rate_limit_reset)
             elif spend_limited:
                 await self._recover("spend_limit", None)
+            elif transport_failure is not None:
+                if transport_retries >= TRANSPORT_RECOVERY_MAX_RETRIES:
+                    raise RuntimeError(
+                        "Transient provider transport failure persisted after "
+                        f"{TRANSPORT_RECOVERY_MAX_RETRIES} same-transcript "
+                        f"retries: {transport_failure}"
+                    )
+                transport_retries += 1
+                delay = min(
+                    TRANSPORT_RECOVERY_MAX_DELAY_SECONDS,
+                    TRANSPORT_RECOVERY_BASE_DELAY_SECONDS
+                    * (2 ** (transport_retries - 1)),
+                )
+                # Stable per-session jitter prevents eight simultaneous
+                # benchmark attempts from retrying the proxy in lockstep.
+                jitter = int(self._session_id.replace("-", "")[:4], 16) / 65_535
+                delay += jitter
+                log.warning(
+                    "Session %s hit transient transport failure; retrying same "
+                    "transcript in %.1f s (%d/%d): %s",
+                    self._session_id,
+                    delay,
+                    transport_retries,
+                    TRANSPORT_RECOVERY_MAX_RETRIES,
+                    transport_failure,
+                )
+                await anyio.sleep(delay)
+                await self._recover("transport", None)
             else:
                 return
 
@@ -453,12 +567,17 @@ class BudgetTracker:
 
 def uses_openrouter(model: str) -> bool:
     """True for 'vendor/model' ids, which route through OpenRouter."""
-    return "/" in model and not uses_litellm(model)
+    return "/" in model and not uses_litellm(model) and not uses_vllm(model)
 
 
 def uses_litellm(model: str) -> bool:
     """True for models routed to the local Codex-subscription sidecar pool."""
     return model.startswith(LITELLM_MODEL_PREFIX)
+
+
+def uses_vllm(model: str) -> bool:
+    """True for models served by a tunneled native Anthropic vLLM endpoint."""
+    return model.startswith(VLLM_MODEL_PREFIX)
 
 
 def provider_model_name(model: str) -> str:
@@ -468,6 +587,11 @@ def provider_model_name(model: str) -> str:
         if not provider_model:
             raise ValueError("LiteLLM model id must include a model after 'litellm/'")
         return provider_model
+    if uses_vllm(model):
+        provider_model = model.removeprefix(VLLM_MODEL_PREFIX)
+        if not provider_model:
+            raise ValueError("vLLM model id must include a model after 'vllm/'")
+        return provider_model
     return model
 
 
@@ -476,11 +600,24 @@ def token_env_name(model: str) -> str:
     if uses_litellm(model):
         # Pool entries are isolated sidecar URLs rather than bearer secrets.
         return LITELLM_BASE_URL_ENV
+    if uses_vllm(model):
+        # Pool entries are native Anthropic endpoint URLs. One vLLM server may
+        # internally data-parallelize across several GPUs.
+        return VLLM_BASE_URL_ENV
     return OPENROUTER_KEY_ENV if uses_openrouter(model) else OAUTH_TOKEN_ENV
 
 
 def provider_transport_policy(model: str) -> dict[str, object]:
     """Non-secret transport controls that define a reproducible attempt."""
+    if uses_vllm(model):
+        return {
+            "policy": "vllm_native_anthropic_stream_v1",
+            "api_timeout_ms": CLAUDE_API_TIMEOUT_MS,
+            "stream_watchdog_enabled": True,
+            "stream_idle_timeout_ms": CLAUDE_STREAM_IDLE_TIMEOUT_MS,
+            "nonstreaming_fallback_enabled": False,
+            "automatic_api_retries": CLAUDE_MAX_API_RETRIES,
+        }
     if not uses_litellm(model):
         return {"policy": "provider_default_v1"}
     return {
@@ -511,6 +648,21 @@ def provider_env(
         return {
             ANTHROPIC_BASE_URL_ENV: api_key.rstrip("/"),
             ANTHROPIC_AUTH_TOKEN_ENV: proxy_key,
+            ANTHROPIC_API_KEY_ENV: "",
+            CLAUDE_API_TIMEOUT_ENV: str(CLAUDE_API_TIMEOUT_MS),
+            CLAUDE_ENABLE_STREAM_WATCHDOG_ENV: "1",
+            CLAUDE_STREAM_IDLE_TIMEOUT_ENV: str(CLAUDE_STREAM_IDLE_TIMEOUT_MS),
+            CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV: "1",
+            CLAUDE_MAX_API_RETRIES_ENV: str(CLAUDE_MAX_API_RETRIES),
+            **cap,
+        }
+    if uses_vllm(model):
+        vllm_key = os.environ.get(VLLM_API_KEY_ENV, "").strip()
+        if not vllm_key:
+            raise ValueError(f"{VLLM_API_KEY_ENV} is required for {model}")
+        return {
+            ANTHROPIC_BASE_URL_ENV: api_key.rstrip("/"),
+            ANTHROPIC_AUTH_TOKEN_ENV: vllm_key,
             ANTHROPIC_API_KEY_ENV: "",
             CLAUDE_API_TIMEOUT_ENV: str(CLAUDE_API_TIMEOUT_MS),
             CLAUDE_ENABLE_STREAM_WATCHDOG_ENV: "1",

@@ -5,7 +5,7 @@ import time
 import tempfile
 import unittest
 from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import anyio
 from claude_agent_sdk import (
@@ -35,6 +35,8 @@ from src.constants import (
     MAX_OUTPUT_TOKENS_ENV,
     OAUTH_TOKEN_ENV,
     SESSION_RECOVERY_PROMPT,
+    VLLM_API_KEY_ENV,
+    VLLM_BASE_URL_ENV,
 )
 from src.solver import (
     BudgetTracker,
@@ -45,6 +47,7 @@ from src.solver import (
     provider_model_name,
     provider_transport_policy,
     run_phase,
+    session_recovery_policy,
     token_env_name,
 )
 from src.models import Problem
@@ -197,10 +200,246 @@ class FakeClaudeSDKClient:
         )
 
 
+class FakeTransportRecoverySDKClient:
+    """First CLI loses its stream; resumed CLI replays and completes it."""
+
+    instances: list["FakeTransportRecoverySDKClient"] = []
+    queries: list[str] = []
+
+    def __init__(self, options: ClaudeAgentOptions) -> None:
+        self.options = options
+        self.session_id = options.session_id or options.resume
+        if self.session_id is None:
+            raise AssertionError("test sessions must have an explicit id")
+        self.ordinal = len(self.instances) + 1
+        self.instances.append(self)
+
+    async def connect(self) -> None:
+        return None
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def query(self, prompt: str) -> None:
+        self.queries.append(prompt)
+
+    async def interrupt(self) -> None:
+        raise AssertionError("unexpected interrupt")
+
+    async def receive_response(self):  # type: ignore[no-untyped-def]
+        yield StreamEvent(
+            uuid=f"start-{self.ordinal}",
+            session_id=self.session_id,
+            event={"type": "message_start", "message": {"id": "message-a"}},
+        )
+        yield StreamEvent(
+            uuid=f"delta-{self.ordinal}",
+            session_id=self.session_id,
+            event={"type": "message_delta", "usage": {"output_tokens": 6}},
+        )
+        if self.ordinal == 1:
+            yield AssistantMessage(
+                content=[
+                    TextBlock("API Error: Stream ended without receiving any events")
+                ],
+                model="test-model",
+                usage={"output_tokens": 0},
+                message_id="synthetic-api-error",
+                session_id=self.session_id,
+                uuid="synthetic-api-error-envelope",
+            )
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=10,
+                duration_api_ms=5,
+                is_error=True,
+                num_turns=0,
+                session_id=self.session_id,
+                stop_reason=None,
+                total_cost_usd=0.0,
+                usage=None,
+                result="API Error: Stream ended without receiving any events",
+            )
+            return
+        yield AssistantMessage(
+            content=[TextBlock("partial proof")],
+            model="test-model",
+            usage={"output_tokens": 1},
+            message_id="message-a",
+            session_id=self.session_id,
+            uuid="assistant-a",
+        )
+        yield StreamEvent(
+            uuid="start-b",
+            session_id=self.session_id,
+            event={"type": "message_start", "message": {"id": "message-b"}},
+        )
+        yield StreamEvent(
+            uuid="delta-b",
+            session_id=self.session_id,
+            event={"type": "message_delta", "usage": {"output_tokens": 3}},
+        )
+        yield AssistantMessage(
+            content=[TextBlock("completed proof")],
+            model="test-model",
+            usage={"output_tokens": 1},
+            message_id="message-b",
+            session_id=self.session_id,
+            uuid="assistant-b",
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=20,
+            duration_api_ms=15,
+            is_error=False,
+            num_turns=1,
+            session_id=self.session_id,
+            stop_reason="end_turn",
+            total_cost_usd=0.01,
+            usage={"output_tokens": 3},
+            result="completed proof",
+        )
+
+
 class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         FakeClaudeSDKClient.instances.clear()
         FakeClaudeSDKClient.queries.clear()
+        FakeTransportRecoverySDKClient.instances.clear()
+        FakeTransportRecoverySDKClient.queries.clear()
+
+    async def test_transient_empty_stream_resumes_without_double_counting(
+        self,
+    ) -> None:
+        pool = TokenPool(["token-a"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+                task_budget={"total": max(1, tracker.remaining)},
+                include_partial_messages=True,
+            )
+
+        with (
+            patch("src.solver.ClaudeSDKClient", FakeTransportRecoverySDKClient),
+            patch("src.solver.anyio.sleep", new=AsyncMock()) as sleep,
+        ):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                result = await run_phase(session, "solve", "solve", tracker, 100)
+
+        self.assertEqual(result.output_tokens, 9)
+        self.assertEqual(result.text, "partial proof\ncompleted proof")
+        self.assertEqual(len(result.reconnects), 1)
+        self.assertEqual(result.reconnects[0].reason, "transport")
+        self.assertEqual(result.reconnects[0].from_credential, "credential_1")
+        self.assertEqual(result.reconnects[0].to_credential, "credential_1")
+        self.assertEqual(len(FakeTransportRecoverySDKClient.instances), 2)
+        self.assertIsNotNone(
+            FakeTransportRecoverySDKClient.instances[0].options.session_id
+        )
+        self.assertEqual(
+            FakeTransportRecoverySDKClient.instances[1].options.resume,
+            FakeTransportRecoverySDKClient.instances[0].options.session_id,
+        )
+        self.assertEqual(
+            FakeTransportRecoverySDKClient.queries,
+            [
+                "solve",
+                f"{SESSION_RECOVERY_PROMPT}\n\nPending request:\nsolve",
+            ],
+        )
+        sleep.assert_awaited_once()
+
+    async def test_nontransient_api_error_is_not_retried(self) -> None:
+        class FatalSDKClient(FakeTransportRecoverySDKClient):
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                yield ResultMessage(
+                    subtype="error",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=True,
+                    num_turns=0,
+                    session_id=self.session_id,
+                    stop_reason=None,
+                    total_cost_usd=0.0,
+                    usage=None,
+                    result="API Error: 401 Unauthorized",
+                )
+
+        pool = TokenPool(["token-a"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+            )
+
+        with patch("src.solver.ClaudeSDKClient", FatalSDKClient):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                with self.assertRaisesRegex(RuntimeError, "401 Unauthorized"):
+                    await run_phase(session, "solve", "solve", tracker, 100)
+        self.assertEqual(len(FatalSDKClient.instances), 1)
+
+    async def test_transient_recovery_is_bounded(self) -> None:
+        class PersistentTransientSDKClient(FakeTransportRecoverySDKClient):
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=True,
+                    num_turns=0,
+                    session_id=self.session_id,
+                    stop_reason=None,
+                    total_cost_usd=0.0,
+                    usage=None,
+                    result="API Error: Stream ended without receiving any events",
+                )
+
+        pool = TokenPool(["token-a"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+            )
+
+        with (
+            patch("src.solver.ClaudeSDKClient", PersistentTransientSDKClient),
+            patch("src.solver.anyio.sleep", new=AsyncMock()) as sleep,
+        ):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                with self.assertRaisesRegex(
+                    RuntimeError, "persisted after 6 same-transcript retries"
+                ):
+                    await run_phase(session, "solve", "solve", tracker, 100)
+        self.assertEqual(len(PersistentTransientSDKClient.instances), 7)
+        self.assertEqual(sleep.await_count, 6)
 
     async def test_mid_phase_rate_limit_resumes_and_preserves_budget(self) -> None:
         pool = TokenPool(["token-a", "token-b"], "TEST_TOKEN")
@@ -386,6 +625,15 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(
+            session_recovery_policy(),
+            {
+                "transport_recovery": "same_transcript_continue_v1",
+                "transport_recovery_max_retries": 6,
+                "transport_recovery_base_delay_seconds": 2.0,
+                "transport_recovery_max_delay_seconds": 30.0,
+            },
+        )
+        self.assertEqual(
             env,
             {
                 ANTHROPIC_BASE_URL_ENV: sidecar.rstrip("/"),
@@ -400,7 +648,39 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    def test_transport_policy_versions_only_litellm_checkpoint_identity(
+    def test_vllm_model_uses_native_anthropic_tunnel(self) -> None:
+        model = "vllm/qed-nano"
+        endpoint = "http://host.docker.internal:8000/"
+        with patch.dict(os.environ, {VLLM_API_KEY_ENV: "qed-local-key"}):
+            env = provider_env(model, endpoint)
+        self.assertEqual(provider_model_name(model), "qed-nano")
+        self.assertEqual(token_env_name(model), VLLM_BASE_URL_ENV)
+        self.assertEqual(
+            provider_transport_policy(model),
+            {
+                "policy": "vllm_native_anthropic_stream_v1",
+                "api_timeout_ms": 3_600_000,
+                "stream_watchdog_enabled": True,
+                "stream_idle_timeout_ms": 3_600_000,
+                "nonstreaming_fallback_enabled": False,
+                "automatic_api_retries": 0,
+            },
+        )
+        self.assertEqual(
+            env,
+            {
+                ANTHROPIC_BASE_URL_ENV: endpoint.rstrip("/"),
+                ANTHROPIC_AUTH_TOKEN_ENV: "qed-local-key",
+                ANTHROPIC_API_KEY_ENV: "",
+                CLAUDE_API_TIMEOUT_ENV: "3600000",
+                CLAUDE_ENABLE_STREAM_WATCHDOG_ENV: "1",
+                CLAUDE_STREAM_IDLE_TIMEOUT_ENV: "3600000",
+                CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV: "1",
+                CLAUDE_MAX_API_RETRIES_ENV: "0",
+                MAX_OUTPUT_TOKENS_ENV: "64000",
+            },
+        )
+    def test_transport_policy_versions_only_local_checkpoint_identity(
         self,
     ) -> None:
         config = load_config(CONFIG_PATH)
@@ -410,10 +690,17 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         litellm_identity = run_checkpoint_identity(
             replace(config, model="litellm/gpt-5.4"), arm, problem, 1
         )
+        vllm_identity = run_checkpoint_identity(
+            replace(config, model="vllm/qed-nano"), arm, problem, 1
+        )
         self.assertNotIn("provider_transport_policy", anthropic_identity)
         self.assertEqual(
             litellm_identity["provider_transport_policy"],
             provider_transport_policy("litellm/gpt-5.4"),
+        )
+        self.assertEqual(
+            vllm_identity["provider_transport_policy"],
+            provider_transport_policy("vllm/qed-nano"),
         )
 
     def test_wrap_options_are_one_turn_tool_free_and_capped_at_twenty_k(

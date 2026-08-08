@@ -10,8 +10,8 @@
 # loopback, DNS to the container's configured resolvers (on the default
 # bridge these are NOT loopback — blocking them breaks all resolution), and
 # TLS (443) only to the external provider endpoints plus explicitly configured
-# local LiteLLM sidecars; every other outbound packet is dropped. The firewall
-# is self-tested before any token is spent.
+# local LiteLLM/vLLM endpoints; every other outbound packet is dropped. The
+# firewall is self-tested before any token is spent.
 set -eu
 
 STAGE="${1:?usage: entrypoint.sh <run|audit> [args...]}"
@@ -50,6 +50,7 @@ case "$PROVIDER_KIND" in
     anthropic) API_HOSTS="api.anthropic.com claude.ai console.anthropic.com" ;;
     openrouter) API_HOSTS="openrouter.ai" ;;
     litellm) API_HOSTS="" ;;
+    vllm) API_HOSTS="" ;;
     *) echo "unknown HARNESS_PROVIDER_KIND '$PROVIDER_KIND'" >&2; exit 2 ;;
 esac
 
@@ -67,17 +68,16 @@ for host in $API_HOSTS; do
     done
 done
 
-# Local LiteLLM sidecars are permitted only when explicitly supplied by the
-# controller. Resolve them before locking DNS/egress, then allow only their
-# exact container IP and port. The dedicated Docker network contains no data
-# services or experiment artifacts.
-python - <<'PY' >/tmp/litellm-targets
+# Local LiteLLM sidecars and tunneled vLLM endpoints are permitted only when
+# explicitly supplied by the controller. Resolve them before locking
+# DNS/egress, then allow only their exact IP and port.
+python - <<'PY' >/tmp/local-provider-targets
 import os
 import re
 import socket
 from urllib.parse import urlparse
 
-pattern = re.compile(r"^LITELLM_BASE_URL(?:_\d+)?$")
+pattern = re.compile(r"^(?:LITELLM|VLLM)_BASE_URL(?:_\d+)?$")
 targets = set()
 for name, value in os.environ.items():
     if not pattern.fullmatch(name) or not value.strip():
@@ -96,7 +96,7 @@ PY
 while read -r ip port; do
     [ -n "$ip" ] || continue
     iptables -A OUTPUT -d "$ip/32" -p tcp --dport "$port" -j ACCEPT
-done </tmp/litellm-targets
+done </tmp/local-provider-targets
 iptables -P OUTPUT DROP
 
 python - <<'PY'
@@ -129,11 +129,15 @@ if external_probe is not None:
     except OSError as error:
         sys.exit(f"FIREWALL SELF-TEST FAILED: {provider_name} unreachable: {error}")
 for name, value in sorted(os.environ.items()):
-    if not re.fullmatch(r"LITELLM_BASE_URL(?:_\d+)?", name) or not value.strip():
+    match = re.fullmatch(r"(LITELLM|VLLM)_BASE_URL(?:_\d+)?", name)
+    if match is None or not value.strip():
         continue
+    provider_prefix = match.group(1)
+    health_path = "/health/liveliness" if provider_prefix == "LITELLM" else "/health"
+    api_key = os.environ.get(f"{provider_prefix}_API_KEY", "")
     request = urllib.request.Request(
-        value.rstrip("/") + "/health/liveliness",
-        headers={"Authorization": f"Bearer {os.environ.get('LITELLM_API_KEY', '')}"},
+        value.rstrip("/") + health_path,
+        headers={"Authorization": f"Bearer {api_key}"},
     )
     try:
         urllib.request.urlopen(request)
