@@ -64,8 +64,10 @@ from src.solver import (
     STOP_BUDGET_EXHAUSTED,
     build_options,
     process_recovery_prompt,
+    provider_transport_policy,
     run_phase,
     token_env_name,
+    uses_litellm,
 )
 from src.storage import (
     load_problems,
@@ -646,7 +648,7 @@ def run_checkpoint_identity(
     config: ExperimentConfig, arm: ArmConfig, problem: Problem, seed: int
 ) -> dict[str, object]:
     """Canonical identity shared by normal runs and audited legacy migration."""
-    return {
+    identity: dict[str, object] = {
         "stage": "run",
         "model": config.model,
         "effort": config.effort,
@@ -665,6 +667,14 @@ def run_checkpoint_identity(
         "max_turns_per_phase": config.max_turns_per_phase,
         "protocol_fingerprint": protocol_fingerprint(),
     }
+    # The LiteLLM/ChatGPT route has explicit transport controls that materially
+    # changed after pilot timeout failures. Version only that route so existing
+    # Anthropic/OpenRouter checkpoints retain their original identities.
+    if uses_litellm(config.model):
+        identity["provider_transport_policy"] = provider_transport_policy(
+            config.model
+        )
+    return identity
 
 
 async def solve_seed(

@@ -193,6 +193,25 @@ LITELLM_API_KEY_ENV: str = "LITELLM_API_KEY"
 ANTHROPIC_BASE_URL_ENV: str = "ANTHROPIC_BASE_URL"
 ANTHROPIC_AUTH_TOKEN_ENV: str = "ANTHROPIC_AUTH_TOKEN"
 ANTHROPIC_API_KEY_ENV: str = "ANTHROPIC_API_KEY"
+# GPT models can spend substantially longer than Claude's default request and
+# stream-idle windows in hidden reasoning before emitting their first
+# Anthropic-compatible SSE event. Keep both transport windows at one hour.
+CLAUDE_API_TIMEOUT_ENV: str = "API_TIMEOUT_MS"
+CLAUDE_API_TIMEOUT_MS: int = 3_600_000
+CLAUDE_ENABLE_STREAM_WATCHDOG_ENV: str = "CLAUDE_ENABLE_STREAM_WATCHDOG"
+CLAUDE_STREAM_IDLE_TIMEOUT_ENV: str = "CLAUDE_STREAM_IDLE_TIMEOUT_MS"
+CLAUDE_STREAM_IDLE_TIMEOUT_MS: int = 3_600_000
+# LiteLLM's ChatGPT Responses translation is streaming-only for this harness.
+# A second, non-streaming request can duplicate inference/tool effects and has
+# returned an empty ``output`` list in live tests, so fail instead.
+CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV: str = (
+    "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"
+)
+# Claude Code otherwise retries each failed request ten times. A failed request
+# can consume backend inference without returning usage, so canonical
+# token-matched runs must not transparently spend another request.
+CLAUDE_MAX_API_RETRIES_ENV: str = "CLAUDE_CODE_MAX_RETRIES"
+CLAUDE_MAX_API_RETRIES: int = 0
 
 # --- Auth / resume --------------------------------------------------------
 OAUTH_TOKEN_ENV: str = "CLAUDE_CODE_OAUTH_TOKEN"

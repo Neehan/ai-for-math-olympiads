@@ -8,6 +8,15 @@ model_list:
       # pinned compatibility image safely folds it into the first user turn.
       supports_system_message: false
 
+router_settings:
+  # Canonical experiments permit exactly one upstream inference request. A
+  # failed request can consume compute without returning usage, so retries
+  # would violate token matching. Keep LiteLLM's transport windows aligned
+  # with the one-hour Claude SDK/CLI window.
+  num_retries: 0
+  timeout: 3600
+  stream_timeout: 3600
+
 general_settings:
   # This authenticates callers to the local proxy. Each sidecar's distinct
   # ChatGPT OAuth credential lives in its private Docker volume.

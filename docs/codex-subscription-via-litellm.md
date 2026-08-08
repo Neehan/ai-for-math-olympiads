@@ -161,6 +161,22 @@ model alias `gpt-5.5`, while result paths use `litellm-gpt-5.5`.
   material and full sidecar URLs are not written into result metadata.
 - If every sidecar is cooling, attempts wait for the earliest reset instead of
   repeatedly retrying a limited account.
+- GPT can spend a long time in hidden reasoning before emitting its first
+  Anthropic-compatible stream event. For `litellm/` models the harness enables
+  the third-party stream watchdog and sets both its idle threshold and the
+  separate API-request timeout to one hour.
+- The harness disables Claude Code's non-streaming fallback and automatic API
+  retries, and the sidecar disables LiteLLM router retries. A failed request
+  may have consumed backend inference without returning usage, so silently
+  issuing another request would violate exact token matching. The attempt
+  remains checkpointed and fails loud instead.
+- Process-resumed results remain useful for development, but metadata marks
+  them `process_recovered_unreported_suffix_possible`; canonical token-matched
+  analyses must include only `provider_reported_complete` attempts.
+- The non-secret LiteLLM transport policy is recorded in every result and in
+  the GPT checkpoint identity. Changing it starts a new GPT checkpoint lineage
+  instead of silently mixing sessions collected under different timeout or
+  retry rules; other providers' checkpoint identities are unchanged.
 
 ## Stop or revoke
 

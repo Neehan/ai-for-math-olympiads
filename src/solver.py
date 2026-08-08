@@ -33,6 +33,14 @@ from src.constants import (
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_AUTH_TOKEN_ENV,
     ANTHROPIC_BASE_URL_ENV,
+    CLAUDE_API_TIMEOUT_ENV,
+    CLAUDE_API_TIMEOUT_MS,
+    CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV,
+    CLAUDE_ENABLE_STREAM_WATCHDOG_ENV,
+    CLAUDE_MAX_API_RETRIES,
+    CLAUDE_MAX_API_RETRIES_ENV,
+    CLAUDE_STREAM_IDLE_TIMEOUT_ENV,
+    CLAUDE_STREAM_IDLE_TIMEOUT_MS,
     MAX_OUTPUT_TOKENS_ENV,
     MAX_OUTPUT_TOKENS_PER_RESPONSE,
     LITELLM_API_KEY_ENV,
@@ -471,6 +479,23 @@ def token_env_name(model: str) -> str:
     return OPENROUTER_KEY_ENV if uses_openrouter(model) else OAUTH_TOKEN_ENV
 
 
+def provider_transport_policy(model: str) -> dict[str, object]:
+    """Non-secret transport controls that define a reproducible attempt."""
+    if not uses_litellm(model):
+        return {"policy": "provider_default_v1"}
+    return {
+        "policy": "litellm_chatgpt_stream_v1",
+        "api_timeout_ms": CLAUDE_API_TIMEOUT_MS,
+        "stream_watchdog_enabled": True,
+        "stream_idle_timeout_ms": CLAUDE_STREAM_IDLE_TIMEOUT_MS,
+        "nonstreaming_fallback_enabled": False,
+        "automatic_api_retries": CLAUDE_MAX_API_RETRIES,
+        "litellm_router_retries": 0,
+        "litellm_timeout_seconds": 3_600,
+        "litellm_stream_timeout_seconds": 3_600,
+    }
+
+
 def provider_env(
     model: str,
     api_key: str,
@@ -486,6 +511,11 @@ def provider_env(
             ANTHROPIC_BASE_URL_ENV: api_key.rstrip("/"),
             ANTHROPIC_AUTH_TOKEN_ENV: proxy_key,
             ANTHROPIC_API_KEY_ENV: "",
+            CLAUDE_API_TIMEOUT_ENV: str(CLAUDE_API_TIMEOUT_MS),
+            CLAUDE_ENABLE_STREAM_WATCHDOG_ENV: "1",
+            CLAUDE_STREAM_IDLE_TIMEOUT_ENV: str(CLAUDE_STREAM_IDLE_TIMEOUT_MS),
+            CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV: "1",
+            CLAUDE_MAX_API_RETRIES_ENV: str(CLAUDE_MAX_API_RETRIES),
             **cap,
         }
     if uses_openrouter(model):
@@ -804,6 +834,23 @@ async def run_phase(
 
     result_usage = result_message.usage or {}
     result_tokens = result_usage.get("output_tokens")
+    if (
+        process_resume_count > 0
+        and not interrupted
+        and result_message.num_turns == 0
+        and not text.strip()
+        and not assistant_messages
+        and not tool_uses
+        and int(str(result_tokens or 0)) == 0
+    ):
+        # A resumed Claude CLI can immediately replay a synthetic successful
+        # ResultMessage after the prior process ended on a transport error.
+        # Treating the tracker's pre-crash prefix as a newly completed phase
+        # would turn infrastructure failure into an empty benchmark answer.
+        raise RuntimeError(
+            f"Resumed phase '{label}' returned no new provider output; "
+            "leaving its checkpoint incomplete"
+        )
     phase_tokens = tracker.finish_phase(
         int(str(result_tokens)) if result_tokens is not None else None
     )

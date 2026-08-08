@@ -4,6 +4,7 @@ import os
 import time
 import tempfile
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import anyio
@@ -24,6 +25,11 @@ from src.constants import (
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_AUTH_TOKEN_ENV,
     ANTHROPIC_BASE_URL_ENV,
+    CLAUDE_API_TIMEOUT_ENV,
+    CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV,
+    CLAUDE_ENABLE_STREAM_WATCHDOG_ENV,
+    CLAUDE_MAX_API_RETRIES_ENV,
+    CLAUDE_STREAM_IDLE_TIMEOUT_ENV,
     LITELLM_API_KEY_ENV,
     LITELLM_BASE_URL_ENV,
     MAX_OUTPUT_TOKENS_ENV,
@@ -37,9 +43,12 @@ from src.solver import (
     build_options,
     provider_env,
     provider_model_name,
+    provider_transport_policy,
     run_phase,
     token_env_name,
 )
+from src.models import Problem
+from src.run import run_checkpoint_identity
 from src.token_pool import TokenPool
 
 
@@ -362,13 +371,48 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider_model_name(model), "gpt-5.5")
         self.assertEqual(token_env_name(model), LITELLM_BASE_URL_ENV)
         self.assertEqual(
+            provider_transport_policy(model),
+            {
+                "policy": "litellm_chatgpt_stream_v1",
+                "api_timeout_ms": 3_600_000,
+                "stream_watchdog_enabled": True,
+                "stream_idle_timeout_ms": 3_600_000,
+                "nonstreaming_fallback_enabled": False,
+                "automatic_api_retries": 0,
+                "litellm_router_retries": 0,
+                "litellm_timeout_seconds": 3_600,
+                "litellm_stream_timeout_seconds": 3_600,
+            },
+        )
+        self.assertEqual(
             env,
             {
                 ANTHROPIC_BASE_URL_ENV: sidecar.rstrip("/"),
                 ANTHROPIC_AUTH_TOKEN_ENV: "sk-local",
                 ANTHROPIC_API_KEY_ENV: "",
+                CLAUDE_API_TIMEOUT_ENV: "3600000",
+                CLAUDE_ENABLE_STREAM_WATCHDOG_ENV: "1",
+                CLAUDE_STREAM_IDLE_TIMEOUT_ENV: "3600000",
+                CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV: "1",
+                CLAUDE_MAX_API_RETRIES_ENV: "0",
                 MAX_OUTPUT_TOKENS_ENV: "64000",
             },
+        )
+
+    def test_transport_policy_versions_only_litellm_checkpoint_identity(
+        self,
+    ) -> None:
+        config = load_config(CONFIG_PATH)
+        arm = config.arms["baseline"]
+        problem = Problem("test", "statement", "combinatorics", None, None, None)
+        anthropic_identity = run_checkpoint_identity(config, arm, problem, 1)
+        litellm_identity = run_checkpoint_identity(
+            replace(config, model="litellm/gpt-5.5"), arm, problem, 1
+        )
+        self.assertNotIn("provider_transport_policy", anthropic_identity)
+        self.assertEqual(
+            litellm_identity["provider_transport_policy"],
+            provider_transport_policy("litellm/gpt-5.5"),
         )
 
     def test_wrap_options_are_one_turn_tool_free_and_capped_at_twenty_k(
@@ -473,6 +517,49 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(phase.text, "## Final Solution\nRecovered proof.")
         self.assertEqual(phase.output_tokens, 8)
+
+    async def test_empty_zero_turn_process_replay_cannot_complete_attempt(
+        self,
+    ) -> None:
+        class EmptyReplaySession:
+            reconnect_count = 0
+            reconnect_events: list[object] = []
+            connection_id = "empty-replay"
+
+            async def query(self, prompt: str) -> None:
+                self.prompt = prompt
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=False,
+                    num_turns=0,
+                    session_id="session",
+                    stop_reason="end_turn",
+                    total_cost_usd=0.0,
+                    usage={"output_tokens": 0},
+                    result="",
+                )
+
+        tracker = BudgetTracker(100, 0)
+        tracker.add("pre-crash", {"output_tokens": 12})
+        with self.assertRaisesRegex(
+            RuntimeError, "returned no new provider output"
+        ):
+            await run_phase(  # type: ignore[arg-type]
+                EmptyReplaySession(),
+                "solve",
+                "solve",
+                tracker,
+                100,
+                process_resume_count=1,
+            )
+        self.assertEqual(tracker.spent, 12)
 
 
 if __name__ == "__main__":

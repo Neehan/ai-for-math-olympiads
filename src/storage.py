@@ -50,6 +50,7 @@ from src.constants import (
     ZSTD_LEVEL,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
+from src.solver import provider_transport_policy
 
 _PROVIDER_USAGE_TOKEN_FIELDS = (
     "input_tokens",
@@ -378,6 +379,7 @@ def write_seed_outputs(
         "mode": arm.mode,
         "hint": arm.hint,
         "model": config.model,
+        "provider_transport_policy": provider_transport_policy(config.model),
         "effort": config.effort,
         "seed": seed,
         "scratch_dir_name": scratch_path.name,
@@ -508,6 +510,7 @@ def write_uniform_strategy_bank_meta(
         "mode": MODE_UNIFORM_STRATEGY,
         "hint": arm.hint,
         "model": config.model,
+        "provider_transport_policy": provider_transport_policy(config.model),
         "effort": config.effort,
         "seed": seed,
         "budget_output_tokens": total_budget,
@@ -575,6 +578,7 @@ def write_uniform_strategy_planner_failure(
         "mode": MODE_UNIFORM_STRATEGY,
         "hint": arm.hint,
         "model": config.model,
+        "provider_transport_policy": provider_transport_policy(config.model),
         "effort": config.effort,
         "seed": seed,
         "budget_output_tokens": total_budget,
