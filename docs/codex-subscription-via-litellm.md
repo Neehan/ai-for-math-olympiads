@@ -165,6 +165,10 @@ model alias `gpt-5.4`, while result paths use `litellm-gpt-5.4`.
   Anthropic-compatible stream event. For `litellm/` models the harness enables
   the third-party stream watchdog and sets both its idle threshold and the
   separate API-request timeout to one hour.
+- Sidecars set `DISABLE_AIOHTTP_TRANSPORT=true`, selecting LiteLLM's HTTPX
+  upstream transport. The pinned aiohttp transport produced truncated chunked
+  streams under long concurrent GPT runs; this choice is recorded in result
+  metadata and the checkpoint identity.
 - The harness disables Claude Code's non-streaming fallback and automatic API
   retries, and the sidecar disables LiteLLM router retries. A failed request
   may have consumed backend inference without returning usage, so silently

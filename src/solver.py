@@ -484,7 +484,7 @@ def provider_transport_policy(model: str) -> dict[str, object]:
     if not uses_litellm(model):
         return {"policy": "provider_default_v1"}
     return {
-        "policy": "litellm_chatgpt_stream_v1",
+        "policy": "litellm_chatgpt_stream_v2",
         "api_timeout_ms": CLAUDE_API_TIMEOUT_MS,
         "stream_watchdog_enabled": True,
         "stream_idle_timeout_ms": CLAUDE_STREAM_IDLE_TIMEOUT_MS,
@@ -493,6 +493,7 @@ def provider_transport_policy(model: str) -> dict[str, object]:
         "litellm_router_retries": 0,
         "litellm_timeout_seconds": 3_600,
         "litellm_stream_timeout_seconds": 3_600,
+        "litellm_upstream_http_transport": "httpx",
     }
 
 

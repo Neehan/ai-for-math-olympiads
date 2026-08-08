@@ -373,7 +373,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             provider_transport_policy(model),
             {
-                "policy": "litellm_chatgpt_stream_v1",
+                "policy": "litellm_chatgpt_stream_v2",
                 "api_timeout_ms": 3_600_000,
                 "stream_watchdog_enabled": True,
                 "stream_idle_timeout_ms": 3_600_000,
@@ -382,6 +382,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 "litellm_router_retries": 0,
                 "litellm_timeout_seconds": 3_600,
                 "litellm_stream_timeout_seconds": 3_600,
+                "litellm_upstream_http_transport": "httpx",
             },
         )
         self.assertEqual(

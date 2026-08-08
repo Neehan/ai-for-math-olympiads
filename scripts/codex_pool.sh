@@ -202,6 +202,7 @@ start_slot() {
         -p "127.0.0.1:${PORT}:4000" \
         -e LITELLM_MASTER_KEY="$PROXY_KEY" \
         -e CHATGPT_TOKEN_DIR=/var/lib/litellm-chatgpt \
+        -e DISABLE_AIOHTTP_TRANSPORT=true \
         -v "$VOLUME:/var/lib/litellm-chatgpt" \
         -v "$PWD/docker/litellm.codex.yaml:/app/config.yaml:ro" \
         "$IMAGE" --config /app/config.yaml --host 0.0.0.0 --port 4000 >/dev/null
