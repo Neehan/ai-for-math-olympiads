@@ -40,6 +40,11 @@ def _phase(tokens: int) -> PhaseResult:
         budget_exhausted=False,
         tool_calls=[],
         reconnects=[],
+        provider_usage={
+            "input_tokens": 21,
+            "cache_read_input_tokens": 8,
+            "output_tokens": tokens,
+        },
     )
 
 
@@ -110,9 +115,7 @@ class CheckpointTests(unittest.TestCase):
         real_save = first._save
         with patch.object(first, "_save", side_effect=RuntimeError("killed")):
             with self.assertRaisesRegex(RuntimeError, "killed"):
-                first.finish_phase(
-                    "main", _phase(9), tracker, "session-uuid", []
-                )
+                first.finish_phase("main", _phase(9), tracker, "session-uuid", [])
         first._save = real_save
         first.close()
 
@@ -120,6 +123,14 @@ class CheckpointTests(unittest.TestCase):
         phases = second.phases("main")
         restored = second.tracker("main", 100, 0)
         self.assertEqual([phase.text for phase in phases], ["complete proof"])
+        self.assertEqual(
+            phases[0].provider_usage,
+            {
+                "input_tokens": 21,
+                "cache_read_input_tokens": 8,
+                "output_tokens": 9,
+            },
+        )
         self.assertEqual(restored.spent, 9)
         self.assertIsNone(second.active("main"))
         second.clear()
@@ -185,9 +196,7 @@ class CheckpointTests(unittest.TestCase):
         checkpoint = AttemptCheckpoint(self.identity)
         path = checkpoint.path
         workspace = checkpoint.scratch_dir("main")
-        with patch.dict(
-            os.environ, {DEFER_CHECKPOINT_CLEANUP_ENV: "1"}, clear=False
-        ):
+        with patch.dict(os.environ, {DEFER_CHECKPOINT_CLEANUP_ENV: "1"}, clear=False):
             checkpoint.prepare_completion("model/arm/p1/seed_1/meta.json")
             checkpoint.complete()
         checkpoint.close()
@@ -272,9 +281,7 @@ class _KilledPhaseClient:
             event={"type": "message_delta", "usage": {"output_tokens": tokens}},
         )
         yield AssistantMessage(
-            content=[
-                TextBlock("partial proof" if self.killed else "complete proof")
-            ],
+            content=[TextBlock("partial proof" if self.killed else "complete proof")],
             model="test-model",
             usage={"output_tokens": 1},
             message_id=message_id,
@@ -320,8 +327,9 @@ class _MidTextKilledClient(_KilledPhaseClient):
 
 class CrossProcessPhaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_mid_message_text_is_preserved_as_discarded_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as root, patch.dict(
-            os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.dict(os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False),
         ):
             identity = {"stage": "run", "attempt": "mid-text-kill"}
             first = AttemptCheckpoint(identity)
@@ -357,8 +365,9 @@ class CrossProcessPhaseTests(unittest.IsolatedAsyncioTestCase):
             second.clear()
 
     async def test_pre_query_kill_recovery_repeats_pending_request(self) -> None:
-        with tempfile.TemporaryDirectory() as root, patch.dict(
-            os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.dict(os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False),
         ):
             identity = {"stage": "run", "attempt": "pre-query-kill"}
             first = AttemptCheckpoint(identity)
@@ -387,8 +396,9 @@ class CrossProcessPhaseTests(unittest.IsolatedAsyncioTestCase):
             second.clear()
 
     async def test_killed_phase_resumes_without_losing_reported_tokens(self) -> None:
-        with tempfile.TemporaryDirectory() as root, patch.dict(
-            os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.dict(os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False),
         ):
             identity = {"stage": "run", "attempt": "cross-process"}
             first = AttemptCheckpoint(identity)
@@ -433,8 +443,9 @@ class CrossProcessPhaseTests(unittest.IsolatedAsyncioTestCase):
             second.clear()
 
     async def test_killed_phase_at_cutoff_finishes_without_another_query(self) -> None:
-        with tempfile.TemporaryDirectory() as root, patch.dict(
-            os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.dict(os.environ, {CHECKPOINT_ROOT_ENV: root}, clear=False),
         ):
             identity = {"stage": "run", "attempt": "cutoff-recovery"}
             first = AttemptCheckpoint(identity)

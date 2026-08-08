@@ -1,7 +1,7 @@
 # Throwaway run environment for one experiment arm.
 # Isolation model: the container holds only the harness, the problems, and the
 # prompts (no reference solutions, no other repos); the entrypoint firewall
-# limits egress to the Anthropic API alone.
+# limits egress to the configured LLM endpoints alone.
 FROM python:3.12-slim
 
 # The SDK-bundled CLI (2.1.92) ignores CLAUDE_CODE_MAX_OUTPUT_TOKENS on Opus

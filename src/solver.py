@@ -35,6 +35,9 @@ from src.constants import (
     ANTHROPIC_BASE_URL_ENV,
     MAX_OUTPUT_TOKENS_ENV,
     MAX_OUTPUT_TOKENS_PER_RESPONSE,
+    LITELLM_API_KEY_ENV,
+    LITELLM_BASE_URL_ENV,
+    LITELLM_MODEL_PREFIX,
     OAUTH_TOKEN_ENV,
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
@@ -442,11 +445,29 @@ class BudgetTracker:
 
 def uses_openrouter(model: str) -> bool:
     """True for 'vendor/model' ids, which route through OpenRouter."""
-    return "/" in model
+    return "/" in model and not uses_litellm(model)
+
+
+def uses_litellm(model: str) -> bool:
+    """True for models routed to the local Codex-subscription sidecar pool."""
+    return model.startswith(LITELLM_MODEL_PREFIX)
+
+
+def provider_model_name(model: str) -> str:
+    """Translate a harness model id into the model alias sent to the provider."""
+    if uses_litellm(model):
+        provider_model = model.removeprefix(LITELLM_MODEL_PREFIX)
+        if not provider_model:
+            raise ValueError("LiteLLM model id must include a model after 'litellm/'")
+        return provider_model
+    return model
 
 
 def token_env_name(model: str) -> str:
     """Name of the env var family holding this model's provider API keys."""
+    if uses_litellm(model):
+        # Pool entries are isolated sidecar URLs rather than bearer secrets.
+        return LITELLM_BASE_URL_ENV
     return OPENROUTER_KEY_ENV if uses_openrouter(model) else OAUTH_TOKEN_ENV
 
 
@@ -457,6 +478,16 @@ def provider_env(
 ) -> dict[str, str]:
     """Per-session provider auth and an explicit per-response output cap."""
     cap = {MAX_OUTPUT_TOKENS_ENV: str(max_output_tokens_per_response)}
+    if uses_litellm(model):
+        proxy_key = os.environ.get(LITELLM_API_KEY_ENV, "").strip()
+        if not proxy_key:
+            raise ValueError(f"{LITELLM_API_KEY_ENV} is required for {model}")
+        return {
+            ANTHROPIC_BASE_URL_ENV: api_key.rstrip("/"),
+            ANTHROPIC_AUTH_TOKEN_ENV: proxy_key,
+            ANTHROPIC_API_KEY_ENV: "",
+            **cap,
+        }
     if uses_openrouter(model):
         return {
             ANTHROPIC_BASE_URL_ENV: OPENROUTER_BASE_URL,
@@ -504,7 +535,7 @@ def build_options(
     passed explicitly with an empty value.
     """
     return ClaudeAgentOptions(
-        model=config.model,
+        model=provider_model_name(config.model),
         cli_path=os.environ.get(CLI_PATH_ENV),
         env=isolated_session_env(
             config.model,
@@ -801,6 +832,7 @@ async def run_phase(
         budget_exhausted=interrupted,
         tool_calls=_collect_tool_calls(tool_uses, tool_results),
         reconnects=reconnects,
+        provider_usage=dict(result_usage),
         process_resume_count=process_resume_count,
         discarded_output_text=discarded_output_text,
         discarded_tool_calls=list(discarded_tool_calls or []),

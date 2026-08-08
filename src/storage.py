@@ -51,6 +51,36 @@ from src.constants import (
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
 
+_PROVIDER_USAGE_TOKEN_FIELDS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+def _provider_usage_totals(phases: list[PhaseResult]) -> dict[str, int]:
+    """Sum standard SDK usage counters while retaining raw usage in logs."""
+    totals: dict[str, int] = {}
+    for phase in phases:
+        for field in _PROVIDER_USAGE_TOKEN_FIELDS:
+            value = phase.provider_usage.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            totals[field] = totals.get(field, 0) + int(value)
+    return totals
+
+
+def _merge_provider_usage_totals(destination: dict[str, int], source: object) -> None:
+    """Add a child attempt's standard provider counters into a bank total."""
+    if not isinstance(source, dict):
+        return
+    for field in _PROVIDER_USAGE_TOKEN_FIELDS:
+        value = source.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        destination[field] = destination.get(field, 0) + int(value)
+
 
 def _fetch_jsonl(env_name: str, url: str) -> list[dict[str, Any]]:
     """Load one jsonl data source into memory, leaving no trace on disk.
@@ -165,6 +195,7 @@ def _phase_record(phase: PhaseResult) -> dict[str, object]:
         "budget_exhausted": phase.budget_exhausted,
         "session_reconnect_count": len(phase.reconnects),
         "session_reconnects": [asdict(event) for event in phase.reconnects],
+        "provider_usage": phase.provider_usage,
         "tool_calls": [
             {
                 "name": c.name,
@@ -359,6 +390,7 @@ def write_seed_outputs(
         "num_phases": len(phases),
         "phase_labels": [p.label for p in phases],
         "total_cost_usd": sum(p.total_cost_usd for p in phases),
+        "provider_usage_totals": _provider_usage_totals(phases),
         "session_reconnect_count": sum(len(p.reconnects) for p in phases),
         "session_reconnects": [
             asdict(event) for phase in phases for event in phase.reconnects
@@ -465,6 +497,11 @@ def write_uniform_strategy_bank_meta(
         int(meta.get("process_resume_count", 0)) for meta in branch_metas
     )
     output_tokens_spent = plan_spent + branch_spent
+    provider_usage_totals = _provider_usage_totals(plan_phases)
+    for branch_meta in branch_metas:
+        _merge_provider_usage_totals(
+            provider_usage_totals, branch_meta.get("provider_usage_totals")
+        )
     meta = {
         "problem_id": problem.problem_id,
         "arm": arm.name,
@@ -476,6 +513,7 @@ def write_uniform_strategy_bank_meta(
         "budget_output_tokens": total_budget,
         "output_tokens_spent": output_tokens_spent,
         "output_tokens_over_budget": max(0, output_tokens_spent - total_budget),
+        "provider_usage_totals": provider_usage_totals,
         "uniform_strategy_plan_budget_output_tokens": (
             config.uniform_strategy_plan_tokens
         ),
@@ -544,6 +582,7 @@ def write_uniform_strategy_planner_failure(
         "output_tokens_over_budget": max(
             0, plan_spent - config.uniform_strategy_plan_tokens
         ),
+        "provider_usage_totals": _provider_usage_totals(plan_phases),
         "uniform_strategy_plan_budget_output_tokens": (
             config.uniform_strategy_plan_tokens
         ),

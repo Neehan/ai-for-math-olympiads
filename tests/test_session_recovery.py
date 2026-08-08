@@ -1,5 +1,6 @@
 """Deterministic recovery tests; no provider calls or credentials required."""
 
+import os
 import time
 import tempfile
 import unittest
@@ -20,6 +21,11 @@ from src.concurrency import run_all
 from src.config import load_config
 from src.constants import (
     CONFIG_PATH,
+    ANTHROPIC_API_KEY_ENV,
+    ANTHROPIC_AUTH_TOKEN_ENV,
+    ANTHROPIC_BASE_URL_ENV,
+    LITELLM_API_KEY_ENV,
+    LITELLM_BASE_URL_ENV,
     MAX_OUTPUT_TOKENS_ENV,
     OAUTH_TOKEN_ENV,
     SESSION_RECOVERY_PROMPT,
@@ -29,7 +35,10 @@ from src.solver import (
     ResumableClaudeSession,
     StderrTail,
     build_options,
+    provider_env,
+    provider_model_name,
     run_phase,
+    token_env_name,
 )
 from src.token_pool import TokenPool
 
@@ -344,6 +353,23 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 session_id="00000000-0000-0000-0000-000000000000",
             )
         self.assertEqual(options.task_budget, {"total": 20_000})
+
+    def test_litellm_model_uses_sidecar_url_pool_and_bearer_key(self) -> None:
+        model = "litellm/gpt-5.5"
+        sidecar = "http://olympiad-codex-litellm-2:4000/"
+        with patch.dict(os.environ, {LITELLM_API_KEY_ENV: "sk-local"}):
+            env = provider_env(model, sidecar)
+        self.assertEqual(provider_model_name(model), "gpt-5.5")
+        self.assertEqual(token_env_name(model), LITELLM_BASE_URL_ENV)
+        self.assertEqual(
+            env,
+            {
+                ANTHROPIC_BASE_URL_ENV: sidecar.rstrip("/"),
+                ANTHROPIC_AUTH_TOKEN_ENV: "sk-local",
+                ANTHROPIC_API_KEY_ENV: "",
+                MAX_OUTPUT_TOKENS_ENV: "64000",
+            },
+        )
 
     def test_wrap_options_are_one_turn_tool_free_and_capped_at_twenty_k(
         self,

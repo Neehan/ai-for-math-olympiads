@@ -58,6 +58,7 @@ from src.solver import (
     StderrTail,
     isolated_session_env,
     process_recovery_prompt,
+    provider_model_name,
     token_env_name,
 )
 from src.storage import (
@@ -107,7 +108,7 @@ def _audit_options(
     setting_sources exclusion needs extra_args (a falsy [] is dropped).
     """
     return ClaudeAgentOptions(
-        model=config.audit_model,
+        model=provider_model_name(config.audit_model),
         cli_path=os.environ.get(CLI_PATH_ENV),
         effort=config.effort,  # type: ignore[arg-type]
         stderr=stderr_tail,

@@ -9,10 +9,9 @@
 # Policy: the agent may talk to the LLM API and NOTHING else. We allow
 # loopback, DNS to the container's configured resolvers (on the default
 # bridge these are NOT loopback — blocking them breaks all resolution), and
-# TLS (443) only to the Anthropic endpoints resolved right now; every other
-# outbound packet is dropped. The firewall is self-tested before any token is
-# spent: the run aborts unless a non-Anthropic host is unreachable AND the
-# Anthropic API is reachable.
+# TLS (443) only to the external provider endpoints plus explicitly configured
+# local LiteLLM sidecars; every other outbound packet is dropped. The firewall
+# is self-tested before any token is spent.
 set -eu
 
 STAGE="${1:?usage: entrypoint.sh <run|audit> [args...]}"
@@ -46,7 +45,13 @@ export PROBLEMS_FILE=/run/contest/problems.jsonl
 export HINTS_FILE=/run/contest/hints.jsonl
 export OUTLINES_FILE=/run/contest/outlines.jsonl
 
-API_HOSTS="api.anthropic.com claude.ai console.anthropic.com openrouter.ai"
+PROVIDER_KIND="${HARNESS_PROVIDER_KIND:?HARNESS_PROVIDER_KIND is required}"
+case "$PROVIDER_KIND" in
+    anthropic) API_HOSTS="api.anthropic.com claude.ai console.anthropic.com" ;;
+    openrouter) API_HOSTS="openrouter.ai" ;;
+    litellm) API_HOSTS="" ;;
+    *) echo "unknown HARNESS_PROVIDER_KIND '$PROVIDER_KIND'" >&2; exit 2 ;;
+esac
 
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED -j ACCEPT
@@ -61,11 +66,44 @@ for host in $API_HOSTS; do
         iptables -A OUTPUT -d "$ip/32" -p tcp --dport 443 -j ACCEPT
     done
 done
+
+# Local LiteLLM sidecars are permitted only when explicitly supplied by the
+# controller. Resolve them before locking DNS/egress, then allow only their
+# exact container IP and port. The dedicated Docker network contains no data
+# services or experiment artifacts.
+python - <<'PY' >/tmp/litellm-targets
+import os
+import re
+import socket
+from urllib.parse import urlparse
+
+pattern = re.compile(r"^LITELLM_BASE_URL(?:_\d+)?$")
+targets = set()
+for name, value in os.environ.items():
+    if not pattern.fullmatch(name) or not value.strip():
+        continue
+    parsed = urlparse(value)
+    if parsed.scheme != "http" or not parsed.hostname:
+        raise SystemExit(f"invalid {name}: expected an http:// sidecar URL")
+    port = parsed.port or 80
+    for _, _, _, _, address in socket.getaddrinfo(
+        parsed.hostname, port, socket.AF_INET, socket.SOCK_STREAM
+    ):
+        targets.add((address[0], port))
+for ip, port in sorted(targets):
+    print(ip, port)
+PY
+while read -r ip port; do
+    [ -n "$ip" ] || continue
+    iptables -A OUTPUT -d "$ip/32" -p tcp --dport "$port" -j ACCEPT
+done </tmp/litellm-targets
 iptables -P OUTPUT DROP
 
 python - <<'PY'
 import socket
 import sys
+import os
+import re
 import urllib.error
 import urllib.request
 
@@ -77,18 +115,30 @@ except urllib.error.HTTPError:
     sys.exit("FIREWALL SELF-TEST FAILED: example.com is reachable")
 except OSError:
     pass
-try:
-    urllib.request.urlopen("https://api.anthropic.com/")
-except urllib.error.HTTPError:
-    pass  # any HTTP response means the API is reachable
-except OSError as error:
-    sys.exit(f"FIREWALL SELF-TEST FAILED: Anthropic API unreachable: {error}")
-try:
-    urllib.request.urlopen("https://openrouter.ai/")
-except urllib.error.HTTPError:
-    pass
-except OSError as error:
-    sys.exit(f"FIREWALL SELF-TEST FAILED: OpenRouter unreachable: {error}")
+provider_kind = os.environ["HARNESS_PROVIDER_KIND"]
+external_probe = {
+    "anthropic": ("Anthropic", "https://api.anthropic.com/"),
+    "openrouter": ("OpenRouter", "https://openrouter.ai/"),
+}.get(provider_kind)
+if external_probe is not None:
+    provider_name, provider_url = external_probe
+    try:
+        urllib.request.urlopen(provider_url)
+    except urllib.error.HTTPError:
+        pass  # any HTTP response means the selected provider is reachable
+    except OSError as error:
+        sys.exit(f"FIREWALL SELF-TEST FAILED: {provider_name} unreachable: {error}")
+for name, value in sorted(os.environ.items()):
+    if not re.fullmatch(r"LITELLM_BASE_URL(?:_\d+)?", name) or not value.strip():
+        continue
+    request = urllib.request.Request(
+        value.rstrip("/") + "/health/liveliness",
+        headers={"Authorization": f"Bearer {os.environ.get('LITELLM_API_KEY', '')}"},
+    )
+    try:
+        urllib.request.urlopen(request)
+    except OSError as error:
+        sys.exit(f"FIREWALL SELF-TEST FAILED: {name} unreachable: {error}")
 print("firewall ok: egress restricted to the allowed LLM APIs")
 PY
 

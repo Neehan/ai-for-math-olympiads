@@ -1,0 +1,5 @@
+FROM docker.litellm.ai/berriai/litellm@sha256:e0ac5d76ead293c1505587985c8d4360647118cf30d8005963a8f1225ee4d631
+
+COPY docker/patch_litellm_chatgpt.py /tmp/patch_litellm_chatgpt.py
+RUN /app/.venv/bin/python /tmp/patch_litellm_chatgpt.py \
+    && rm /tmp/patch_litellm_chatgpt.py

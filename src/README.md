@@ -8,7 +8,7 @@ One harness implementing the paper's arms (top-level README): every attempt is o
 
 ## Configuration — `config.json`
 
-Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), the Uniform Strategy planner/reserve/branch settings, `max_turns_per_phase` / `audit_max_turns` (per-phase guards; the token budget is the sequential stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`) or OpenRouter `vendor/model` ids (`openai/gpt-5.5`), which route through OpenRouter's Anthropic-compatible endpoint using `OPENROUTER_API_KEY*` keys from `.env` (same round-robin pool scheme); results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
+Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), the Uniform Strategy planner/reserve/branch settings, `max_turns_per_phase` / `audit_max_turns` (per-phase guards; the token budget is the sequential stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`), OpenRouter `vendor/model` ids (`openai/gpt-5.5`), or local Codex-subscription aliases (`litellm/gpt-5.5`). The last uses `LITELLM_BASE_URL*` as the round-robin/cooldown pool and `LITELLM_API_KEY` for the local proxy; setup is in `docs/codex-subscription-via-litellm.md`. Results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
 
 ## Compute ladder (1×/2×/4×/8×)
 
@@ -43,17 +43,17 @@ All prompts are editable markdown files, including the three `uniform_strategy_*
 
 - **Docker is the boundary.** `./run.sh run --arm <slug>` builds a throwaway container (`--rm`) that holds only the harness, problems, and prompts — no reference solutions, nothing else from the machine.
 - **Prior results never enter a generation container.** The run stage mounts a staging dir pre-seeded with only `meta.json` completion markers (resume still works), then merges only newly completed attempts containing both `solution.md` and the last-written `meta.json`. Marker-only resume inputs and partial writes are discarded rather than re-merged, preventing a long-running arm from resurrecting stale results archived while it was active. An agent can never read past arms' solutions or hint-carrying logs, even by exploring the filesystem. The audit stage mounts the real tree (the judge must read solutions).
-- **Network:** the entrypoint installs an egress firewall (loopback + established + TLS to the LLM API endpoints only — Anthropic and `openrouter.ai` — default DROP) and self-tests it before any token is spent: the run aborts unless a non-allowlisted host is unreachable and both APIs are reachable. Only the LLM connection leaves the container.
+- **Network:** the entrypoint installs a default-DROP egress firewall and allows only the active provider: Anthropic, OpenRouter, or the explicitly configured local LiteLLM sidecars. It self-tests the selected route and confirms that a non-allowlisted host is unreachable before any token is spent.
 - **Tools:** `agent_settings.json` (passed via the SDK's `--settings`) denies `WebSearch`, `WebFetch`, and network/download Bash commands (`curl`, `wget`, `git`, `pip install`, …); `disallowed_tools` strips the web, subagent/fleet, publishing, and background-scheduling built-ins. User/project settings are excluded by passing `--setting-sources` explicitly empty (the SDK silently drops a falsy `setting_sources=[]`).
 - **Live transcripts:** each solver, planner, executor, and judge call has an isolated provider UUID and transcript in a host-persisted opaque workspace (for example `/c/w/a1b2c3d4`); concurrent seeds never share one, runtime state is excluded from archived scratch, and Docker mounts only the current stage/model/arm checkpoint namespace so other interventions remain invisible.
 - Every tool call is captured untruncated in the logs, so a run can be proven clean after the fact.
 
 ## Outputs — `results/<model>/<arm>/<problem_id>/seed_<k>/`
 
-- `logs.jsonl.zst` — one JSON line per phase: prompt, full response text, every tool call (full input/result), per-phase and cumulative output tokens, turns, duration, cost, stop reason, and any credential reconnects.
+- `logs.jsonl.zst` — one JSON line per phase: prompt, full response text, every tool call (full input/result), raw provider usage, per-phase and cumulative output tokens, turns, duration, SDK-reported cost estimate, stop reason, and any credential reconnects.
 - `solution.md` — the graded artifact: the last COMPLETE proof-producing phase (normally the wrap-up), same convention as the budget cuts so the full-budget point can never score below a lower cut by truncation artifact. The judge grades ONLY its `## Final Solution` section (anything before the heading is working notes; no heading at all scores 0).
 - `scratch/` — copy of the proof solver's scratch directory. The live path is short and opaque (`/c/w/a1b2c3d4`) so the prompt carries no arm, contest, or seed identity. Uniform Strategy banks store the shared planner log and `strategies.json` at the seed root, archive its workspace as `plan_scratch/`, and store each independently audited executor under `branch_<k>/`.
-- `meta.json` — attempt metadata and totals, provider session UUIDs, process-recovery count, and sequential `termination_reason` (`self_converged` or `token_limit`); written last, so its presence is the completion marker.
+- `meta.json` — attempt metadata, standard provider-usage totals, provider session UUIDs, process-recovery count, and sequential `termination_reason` (`self_converged` or `token_limit`); written last, so its presence is the completion marker.
 - `audit.json` — the judge's verdict (full solution + per-cut scores/notes); `audit_scratch/` — any computations the judge ran while grading.
 
 ## Audit (grading)
@@ -62,8 +62,39 @@ After generation, `./run.sh audit --arm <slug>` grades every completed attempt �
 
 ## Running
 
+### GPT-5.5 through a Codex subscription
+
+There is one user-facing pool command: `scripts/codex_pool.sh`.
+The Python files under `scripts/codex_pool_internal/` are implementation
+helpers; do not invoke them directly. First-time setup for the Codex account
+currently logged in on this machine is:
+
 ```bash
-cp .env.example .env   # set CLAUDE_CODE_OAUTH_TOKEN (or OPENROUTER_API_KEY* for vendor/model ids)
+# One-time: copy the current Codex login into slot 1's private Docker volume.
+./scripts/codex_pool.sh add 1 ~/.codex/auth.json
+
+# Start the sidecar and verify a direct request plus Agent SDK tool use.
+./scripts/codex_pool.sh start 1
+./scripts/codex_pool.sh verify 1
+
+# Copy these LITELLM_* lines into the repository's .env once.
+test -f .env || cp .env.example .env
+./scripts/codex_pool.sh env 1
+```
+
+After a reboot, only `start 1` is needed; the copied OAuth remains in its Docker
+volume. `add` makes the sidecar's private runtime copy—it does not
+modify `~/.codex/auth.json`. For multiple subscriptions, private auth-file
+layout, revocation, and troubleshooting, see
+`docs/codex-subscription-via-litellm.md`.
+
+With ChatGPT login, `total_cost_usd` is the SDK/LiteLLM API-equivalent estimate,
+not an additional subscription charge. Canonical compute accounting uses the
+provider-reported output-token totals; actual plan consumption is governed by
+ChatGPT credits and usage limits and is visible in the Codex usage dashboard.
+
+```bash
+test -f .env || cp .env.example .env   # configure the active provider
 
 # generation (Docker), one arm per invocation
 ./run.sh run --arm baseline
@@ -84,6 +115,7 @@ cp .env.example .env   # set CLAUDE_CODE_OAUTH_TOKEN (or OPENROUTER_API_KEY* for
 
 # model overrides (default: config.json; solver and judge must differ)
 ./run.sh run --arm baseline --model claude-fable-5 --audit-model claude-opus-4-8
+./run.sh run --arm baseline --model litellm/gpt-5.5 --audit-model claude-opus-4-8
 ./run.sh audit --arm baseline --model claude-fable-5 --audit-model openai/gpt-5.6-sol
 
 # audit (same container, same filters); compiles audit.jsonl

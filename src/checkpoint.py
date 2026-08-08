@@ -100,6 +100,7 @@ def phase_record(phase: PhaseResult) -> dict[str, object]:
         "budget_exhausted": phase.budget_exhausted,
         "tool_calls": [_tool_record(call) for call in phase.tool_calls],
         "reconnects": [dataclasses.asdict(event) for event in phase.reconnects],
+        "provider_usage": phase.provider_usage,
         "process_resume_count": phase.process_resume_count,
         "discarded_output_text": phase.discarded_output_text,
         "discarded_tool_calls": [
@@ -124,11 +125,11 @@ def phase_from_record(record: dict[str, Any]) -> PhaseResult:
         budget_exhausted=bool(record["budget_exhausted"]),
         tool_calls=[_tool_from_record(item) for item in record.get("tool_calls", [])],
         reconnects=[ReconnectEvent(**item) for item in record.get("reconnects", [])],
+        provider_usage=dict(record.get("provider_usage", {})),
         process_resume_count=int(record.get("process_resume_count", 0)),
         discarded_output_text=str(record.get("discarded_output_text", "")),
         discarded_tool_calls=[
-            _tool_from_record(item)
-            for item in record.get("discarded_tool_calls", [])
+            _tool_from_record(item) for item in record.get("discarded_tool_calls", [])
         ],
     )
 
@@ -162,9 +163,7 @@ def tool_calls_from_records(records: object) -> list[ToolCall]:
     """Restore the accumulated discarded-call ledger for a resumed phase."""
     if not isinstance(records, list):
         return []
-    return [
-        _tool_from_record(record) for record in records if isinstance(record, dict)
-    ]
+    return [_tool_from_record(record) for record in records if isinstance(record, dict)]
 
 
 class AttemptCheckpoint:
@@ -184,9 +183,7 @@ class AttemptCheckpoint:
         self._lock_handle = (self.path / ".lock").open("a+")
         os.chmod(self.path / ".lock", 0o600)
         try:
-            fcntl.flock(
-                self._lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
-            )
+            fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             self._lock_handle.close()
             raise RuntimeError(
@@ -446,9 +443,7 @@ class AttemptCheckpoint:
             _tool_record(call) for call in progress_tool_calls(progress)
         ]
         active["progress"] = {}
-        active["process_resume_count"] = int(
-            active.get("process_resume_count", 0)
-        ) + 1
+        active["process_resume_count"] = int(active.get("process_resume_count", 0)) + 1
         self._save()
         return active
 

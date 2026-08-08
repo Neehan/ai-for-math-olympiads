@@ -111,6 +111,10 @@ class PhaseResult:
     budget_exhausted: bool
     tool_calls: list[ToolCall]
     reconnects: list[ReconnectEvent]
+    # Raw per-query SDK usage (input, cached input, output, and any
+    # provider-specific details) is retained so subscription credits can be
+    # reconstructed independently of the SDK's dollar estimate.
+    provider_usage: dict[str, object] = field(default_factory=dict)
     # A killed process may be resumed from the same provider transcript.  Its
     # incomplete response prefix is retained for auditing but is not spliced
     # into the replacement complete response used as the phase artifact.

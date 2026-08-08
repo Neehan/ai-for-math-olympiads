@@ -1,0 +1,14 @@
+model_list:
+  - model_name: gpt-5.5
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.5
+      # Claude Agent SDK supplies list-valued Anthropic system content. The
+      # pinned compatibility image safely folds it into the first user turn.
+      supports_system_message: false
+
+general_settings:
+  # This authenticates callers to the local proxy. Each sidecar's distinct
+  # ChatGPT OAuth credential lives in its private Docker volume.
+  master_key: os.environ/LITELLM_MASTER_KEY

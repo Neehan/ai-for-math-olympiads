@@ -33,11 +33,6 @@ if [ -f .env ]; then
     . ./.env
     set +a
 fi
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN is not set (put it in .env)." >&2
-    exit 1
-fi
-
 IMAGE=olympiad-harness
 docker build -q -t "$IMAGE" -f docker/Dockerfile . >/dev/null
 mkdir -p results
@@ -79,6 +74,46 @@ if [ -z "$ARM_NAME" ]; then
     echo "ERROR: --arm requires a value" >&2
     exit 2
 fi
+
+if [ "$1" = "run" ]; then
+    ACTIVE_MODEL=$MODEL_NAME
+else
+    ACTIVE_MODEL=$AUDIT_MODEL_NAME
+fi
+network_args=()
+case "$ACTIVE_MODEL" in
+    litellm/*)
+        if [ -z "${LITELLM_API_KEY:-}" ] || [ -z "${LITELLM_BASE_URL:-}" ]; then
+            echo "ERROR: $ACTIVE_MODEL requires LITELLM_API_KEY and LITELLM_BASE_URL in .env." >&2
+            exit 1
+        fi
+        LITELLM_NETWORK=${CODEX_LITELLM_NETWORK:-olympiad-codex-litellm}
+        if ! docker network inspect "$LITELLM_NETWORK" >/dev/null 2>&1; then
+            echo "ERROR: LiteLLM network '$LITELLM_NETWORK' is absent; start the pool first." >&2
+            exit 1
+        fi
+        network_args=(--network "$LITELLM_NETWORK")
+        TOKEN_PATTERN='^(LITELLM_API_KEY|LITELLM_BASE_URL)(_[0-9]+)?$'
+        PROVIDER_KIND=litellm
+        ;;
+    */*)
+        if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "ERROR: $ACTIVE_MODEL requires OPENROUTER_API_KEY in .env." >&2
+            exit 1
+        fi
+        TOKEN_PATTERN='^OPENROUTER_API_KEY(_[0-9]+)?$'
+        PROVIDER_KIND=openrouter
+        ;;
+    *)
+        if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "ERROR: $ACTIVE_MODEL requires CLAUDE_CODE_OAUTH_TOKEN in .env." >&2
+            exit 1
+        fi
+        TOKEN_PATTERN='^CLAUDE_CODE_OAUTH_TOKEN(_[0-9]+)?$'
+        PROVIDER_KIND=anthropic
+        ;;
+esac
+
 CHECKPOINT_NAMESPACE=$(python -c \
     'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:]).encode()); files=[pathlib.Path("config.json"),pathlib.Path("agent_settings.json"),*sorted(pathlib.Path("prompts").glob("*.md"))]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
     "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME")
@@ -90,7 +125,7 @@ chmod 700 .session-checkpoints .session-checkpoints/runtime "$CHECKPOINT_MOUNT"
 token_args=()
 while IFS= read -r name; do
     token_args+=(-e "$name")
-done < <(compgen -v | grep -E '^(CLAUDE_CODE_OAUTH_TOKEN|OPENROUTER_API_KEY)')
+done < <(compgen -v | grep -E "$TOKEN_PATTERN")
 
 RESULTS_MOUNT="$PWD/results"
 STAGING=""
@@ -141,10 +176,12 @@ fi
 docker run --rm --cap-add=NET_ADMIN \
     ${token_args[@]+"${token_args[@]}"} \
     ${checkpoint_args[@]+"${checkpoint_args[@]}"} \
+    ${network_args[@]+"${network_args[@]}"} \
     -v "$PWD/prompts:/app/prompts:ro" \
     -v "$PWD/config.json:/app/config.json:ro" \
     -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
     -v "$RESULTS_MOUNT:/app/results" \
     -v "$CHECKPOINT_MOUNT:/c" \
     -e HARNESS_CHECKPOINT_ROOT=/c \
+    -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
     "$IMAGE" "$@"
