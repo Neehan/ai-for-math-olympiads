@@ -5,7 +5,7 @@ Run only `scripts/codex_pool.sh`; the Python files in
 
 This setup runs one isolated LiteLLM sidecar per authorized Codex
 subscription on a single machine. The experiment harness addresses the model
-as `litellm/gpt-5.5`, assigns concurrent sessions across healthy sidecars, and
+as `litellm/gpt-5.4`, assigns concurrent sessions across healthy sidecars, and
 uses its existing cooldown/recovery logic when a sidecar reports a limit.
 
 Each sidecar has its own OAuth volume. Raw credentials are never baked into an
@@ -91,8 +91,8 @@ Check pool state or one sidecar's logs with:
 A successful per-slot verification prints:
 
 ```text
-PASS direct Responses call: model='gpt-5.5'
-PASS Claude Agent SDK call: model='gpt-5.5', tools=['Write']
+PASS direct Responses call: model='gpt-5.4'
+PASS Claude Agent SDK call: model='gpt-5.4', tools=['Write']
 ```
 
 ## 4. Configure the experiment harness
@@ -127,7 +127,7 @@ Run an ordinary arm with the `litellm/` model prefix:
 ```bash
 ./run.sh run \
   --arm baseline \
-  --model litellm/gpt-5.5 \
+  --model litellm/gpt-5.4 \
   --audit-model claude-opus-4-8 \
   --domain combinatorics \
   --seeds 1
@@ -138,14 +138,14 @@ For auditing GPT-generated proofs, select a different judge as usual:
 ```bash
 ./run.sh audit \
   --arm baseline \
-  --model litellm/gpt-5.5 \
+  --model litellm/gpt-5.4 \
   --audit-model claude-opus-4-8 \
   --domain combinatorics \
   --seeds 1
 ```
 
 The `litellm/` prefix is harness routing metadata. LiteLLM receives the actual
-model alias `gpt-5.5`, while result paths use `litellm-gpt-5.5`.
+model alias `gpt-5.4`, while result paths use `litellm-gpt-5.4`.
 
 ## Routing and recovery
 
@@ -197,7 +197,7 @@ or staged source file is required to add it again.
 
 ## Compatibility patch
 
-Stock LiteLLM 1.97.0 can call `chatgpt/gpt-5.5` through Responses, but its
+Stock LiteLLM 1.97.0 can call `chatgpt/gpt-5.4` through Responses, but its
 Anthropic translation assumes string-valued system content. Claude Agent SDK
 sends content-block lists, and the ChatGPT subscription backend rejects system
 messages.

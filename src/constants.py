@@ -183,7 +183,7 @@ PROVIDER_MIN_TASK_BUDGET_TOKENS: int = 20000
 CLI_PATH_ENV: str = "HARNESS_CLI_PATH"
 
 # --- Providers ------------------------------------------------------------
-# 'vendor/model' ids (e.g. openai/gpt-5.5) route through OpenRouter's
+# 'vendor/model' ids (e.g. openai/gpt-5.4) route through OpenRouter's
 # Anthropic-compatible endpoint; bare ids use the Anthropic API directly.
 OPENROUTER_BASE_URL: str = "https://openrouter.ai/api"
 OPENROUTER_KEY_ENV: str = "OPENROUTER_API_KEY"

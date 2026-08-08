@@ -8,7 +8,7 @@ One harness implementing the paper's arms (top-level README): every attempt is o
 
 ## Configuration — `config.json`
 
-Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), the Uniform Strategy planner/reserve/branch settings, `max_turns_per_phase` / `audit_max_turns` (per-phase guards; the token budget is the sequential stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`), OpenRouter `vendor/model` ids (`openai/gpt-5.5`), or local Codex-subscription aliases (`litellm/gpt-5.5`). The last uses `LITELLM_BASE_URL*` as the round-robin/cooldown pool and `LITELLM_API_KEY` for the local proxy; setup is in `docs/codex-subscription-via-litellm.md`. Results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
+Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), the Uniform Strategy planner/reserve/branch settings, `max_turns_per_phase` / `audit_max_turns` (per-phase guards; the token budget is the sequential stop), `max_concurrency`, and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`), OpenRouter `vendor/model` ids (`openai/gpt-5.4`), or local Codex-subscription aliases (`litellm/gpt-5.4`). The last uses `LITELLM_BASE_URL*` as the round-robin/cooldown pool and `LITELLM_API_KEY` for the local proxy; setup is in `docs/codex-subscription-via-litellm.md`. Results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. `baseline` uses seeds 1–3 and `baseline-parallel` seeds 4–8, so together they form the 8 parallel-channel seeds without collision.
 
 ## Compute ladder (1×/2×/4×/8×)
 
@@ -62,7 +62,7 @@ After generation, `./run.sh audit --arm <slug>` grades every completed attempt �
 
 ## Running
 
-### GPT-5.5 through a Codex subscription
+### GPT-5.4 through a Codex subscription
 
 There is one user-facing pool command: `scripts/codex_pool.sh`.
 The Python files under `scripts/codex_pool_internal/` are implementation
@@ -115,7 +115,7 @@ test -f .env || cp .env.example .env   # configure the active provider
 
 # model overrides (default: config.json; solver and judge must differ)
 ./run.sh run --arm baseline --model claude-fable-5 --audit-model claude-opus-4-8
-./run.sh run --arm baseline --model litellm/gpt-5.5 --audit-model claude-opus-4-8
+./run.sh run --arm baseline --model litellm/gpt-5.4 --audit-model claude-opus-4-8
 ./run.sh audit --arm baseline --model claude-fable-5 --audit-model openai/gpt-5.6-sol
 
 # audit (same container, same filters); compiles audit.jsonl

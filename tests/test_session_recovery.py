@@ -364,11 +364,11 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options.task_budget, {"total": 20_000})
 
     def test_litellm_model_uses_sidecar_url_pool_and_bearer_key(self) -> None:
-        model = "litellm/gpt-5.5"
+        model = "litellm/gpt-5.4"
         sidecar = "http://olympiad-codex-litellm-2:4000/"
         with patch.dict(os.environ, {LITELLM_API_KEY_ENV: "sk-local"}):
             env = provider_env(model, sidecar)
-        self.assertEqual(provider_model_name(model), "gpt-5.5")
+        self.assertEqual(provider_model_name(model), "gpt-5.4")
         self.assertEqual(token_env_name(model), LITELLM_BASE_URL_ENV)
         self.assertEqual(
             provider_transport_policy(model),
@@ -407,12 +407,12 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         problem = Problem("test", "statement", "combinatorics", None, None, None)
         anthropic_identity = run_checkpoint_identity(config, arm, problem, 1)
         litellm_identity = run_checkpoint_identity(
-            replace(config, model="litellm/gpt-5.5"), arm, problem, 1
+            replace(config, model="litellm/gpt-5.4"), arm, problem, 1
         )
         self.assertNotIn("provider_transport_policy", anthropic_identity)
         self.assertEqual(
             litellm_identity["provider_transport_policy"],
-            provider_transport_policy("litellm/gpt-5.5"),
+            provider_transport_policy("litellm/gpt-5.4"),
         )
 
     def test_wrap_options_are_one_turn_tool_free_and_capped_at_twenty_k(

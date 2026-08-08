@@ -1,9 +1,9 @@
 model_list:
-  - model_name: gpt-5.5
+  - model_name: gpt-5.4
     model_info:
       mode: responses
     litellm_params:
-      model: chatgpt/gpt-5.5
+      model: chatgpt/gpt-5.4
       # Claude Agent SDK supplies list-valued Anthropic system content. The
       # pinned compatibility image safely folds it into the first user turn.
       supports_system_message: false

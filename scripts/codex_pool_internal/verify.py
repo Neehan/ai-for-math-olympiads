@@ -250,7 +250,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--model", default=os.environ.get("CODEX_LITELLM_MODEL", "gpt-5.5")
+        "--model", default=os.environ.get("CODEX_LITELLM_MODEL", "gpt-5.4")
     )
     parser.add_argument(
         "--timeout",
