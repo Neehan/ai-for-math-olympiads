@@ -33,7 +33,8 @@ META_FILENAME: str = "meta.json"
 SCRATCH_SUBDIR: str = "scratch"
 PLAN_SCRATCH_SUBDIR: str = "plan_scratch"
 UNIFORM_STRATEGIES_FILENAME: str = "strategies.json"
-UNIFORM_BRANCH_DIR_FORMAT: str = "branch_{branch}"
+BANK_RUN_DIR_FORMAT: str = "run_{run:02d}"
+RUN_REFERENCE_FILENAME: str = "reference.json"
 ZSTD_LEVEL: int = 9
 
 # --- Audit ----------------------------------------------------------------
@@ -83,8 +84,11 @@ HINT_H3: str = "h3"
 HINT_KINDS: frozenset[str] = frozenset({HINT_NONE, HINT_H1, HINT_H2, HINT_H3})
 MODE_SINGLE: str = "single"
 MODE_SEQUENTIAL: str = "sequential"
+MODE_PARALLEL: str = "parallel"
 MODE_UNIFORM_STRATEGY: str = "uniform_strategy"
-MODES: frozenset[str] = frozenset({MODE_SINGLE, MODE_SEQUENTIAL, MODE_UNIFORM_STRATEGY})
+MODES: frozenset[str] = frozenset(
+    {MODE_SINGLE, MODE_SEQUENTIAL, MODE_PARALLEL, MODE_UNIFORM_STRATEGY}
+)
 
 # --- Phase labels ---------------------------------------------------------
 PHASE_SOLVE: str = "solve"

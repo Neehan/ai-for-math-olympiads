@@ -150,17 +150,10 @@ cleanup_completed_checkpoints() {
 }
 merge_staging() {
     if [ -n "$STAGING" ] && [ -d "$STAGING" ]; then
-        # A completed attempt has both files: solution.md is written first and
-        # meta.json last. Pre-seeded resume markers have no solution, so never
-        # merge them back; doing so could resurrect results archived while a
-        # different arm was running. Partial writes are also excluded.
-        shopt -s nullglob
-        for seed_dir in "$STAGING"/*/*/*/seed_*; do
-            if [ ! -f "$seed_dir/meta.json" ] || [ ! -f "$seed_dir/solution.md" ]; then
-                rm -rf "$seed_dir"
-            fi
-        done
-        shopt -u nullglob
+        # meta.json is written last. Drop pre-seeded markers and partial writes,
+        # but retain completed run_<kk> children from an interrupted bank so a
+        # restart spends only on its unfinished members.
+        python scripts/prune_staging.py "$STAGING"
         find "$STAGING" -mindepth 1 -depth -type d -empty -exec rmdir {} \;
         rsync -a "$STAGING"/ "$PWD/results"/
         rm -rf "$STAGING"

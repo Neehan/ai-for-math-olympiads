@@ -1,5 +1,6 @@
 """Durable checkpoint invariants; no provider calls or credentials required."""
 
+import hashlib
 import os
 import shutil
 import tempfile
@@ -81,7 +82,10 @@ class CheckpointTests(unittest.TestCase):
             "session-uuid",
             [],
             {
-                "text_parts": ["partial proof"],
+                "text_parts": ["partial proof", "stream suffix"],
+                "seen_message_ids": ["message-1"],
+                "seen_text_block_keys": ["v2:message-1:already-recorded"],
+                "current_stream_id": "message-2",
                 "tool_uses": {},
                 "tool_results": {},
             },
@@ -101,7 +105,18 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(restored.spent, 12)
         active = second.prepare_process_resume("main")
         self.assertEqual(active["process_resume_count"], 1)
-        self.assertEqual(active["discarded_output_text"], "partial proof")
+        self.assertEqual(
+            active["discarded_output_text"], "partial proof\nstream suffix"
+        )
+        self.assertEqual(
+            set(active["discarded_text_block_keys"]),
+            {
+                "v2:message-1:already-recorded",
+                "sha256:" + hashlib.sha256(b"partial proof").hexdigest(),
+                "sha256:" + hashlib.sha256(b"stream suffix").hexdigest(),
+            },
+        )
+        self.assertEqual(active["discarded_message_ids"], ["message-1", "message-2"])
         second.clear()
 
     def test_phase_first_commit_reconciles_controller_crash(self) -> None:

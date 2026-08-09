@@ -5,8 +5,9 @@ Usage:
     python -m src.run --arm hint --problems usamo-2026-3,china-2026-5
 
 An attempt = one (problem, seed) pair. Mode 'single' runs one solve phase;
-mode 'sequential' runs solve -> (critique -> revise)*; mode
-'uniform_strategy' runs one shared planner followed by eight fresh proof
+mode 'sequential' runs solve -> (critique -> revise)*; mode 'parallel' forms
+an eight-run bank from the matched frozen 1x attempt plus seven fresh runs;
+mode 'uniform_strategy' runs one shared planner followed by eight fresh proof
 executors. Completed attempts (meta.json present) are skipped, so an
 interrupted run resumes cleanly.
 """
@@ -36,6 +37,7 @@ from src.constants import (
     LOG_FORMAT,
     LOG_LEVEL,
     META_FILENAME,
+    MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
     NO_GENUINE_GAP_MARKER,
@@ -71,10 +73,11 @@ from src.solver import (
     uses_vllm,
 )
 from src.storage import (
+    bank_run_output_dir,
     load_problems,
     seed_done,
     seed_output_dir,
-    uniform_branch_output_dir,
+    write_parallel_bank_meta,
     write_uniform_strategy_bank_meta,
     write_uniform_strategy_plan_artifacts,
     write_uniform_strategy_planner_failure,
@@ -83,6 +86,18 @@ from src.storage import (
 from src.token_pool import TokenPool
 
 log = logging.getLogger("run")
+
+
+def parallel_source_arm_name(arm: ArmConfig) -> str:
+    """Return the frozen 1x arm supplying run_01 of a Parallel bank."""
+    by_bank = {
+        "baseline-parallel": "baseline",
+        "hint-parallel": "hint",
+    }
+    try:
+        return by_bank[arm.name]
+    except KeyError as error:
+        raise ValueError(f"Unsupported Parallel arm {arm.name!r}") from error
 
 
 async def _checkpointed_phase(
@@ -163,6 +178,12 @@ async def _checkpointed_phase(
 
     original_prompt = str(active["prompt"])
     stop_at = int(active["stop_at_tokens"])
+    raw_text_block_keys = active.get("discarded_text_block_keys", [])
+    if not isinstance(raw_text_block_keys, list):
+        raise TypeError("Checkpoint discarded text-block keys are corrupt")
+    raw_message_ids = active.get("discarded_message_ids", [])
+    if not isinstance(raw_message_ids, list):
+        raise TypeError("Checkpoint discarded message ids are corrupt")
 
     def save_progress(progress: dict[str, object]) -> None:
         checkpoint.save_progress(
@@ -199,6 +220,8 @@ async def _checkpointed_phase(
             discarded_tool_calls=tool_calls_from_records(
                 active.get("discarded_tool_calls", [])
             ),
+            discarded_text_block_keys=[str(key) for key in raw_text_block_keys],
+            discarded_message_ids=[str(value) for value in raw_message_ids],
             reconnect_start=int(active.get("reconnect_start", 0)),
             on_progress=save_progress,
             on_complete=finish,
@@ -207,9 +230,7 @@ async def _checkpointed_phase(
         # Also persist reconnects when every bounded transport retry fails
         # before another stream event arrives.  A later invocation can still
         # resume the stable transcript instead of resetting paid work.
-        checkpoint.save_session(
-            role, client.session_id, client.reconnect_events
-        )
+        checkpoint.save_session(role, client.session_id, client.reconnect_events)
 
 
 async def _run_strict_wrap_phase(
@@ -330,12 +351,175 @@ def _critique_reports_no_gap(text: str) -> bool:
     return False
 
 
-async def _solve_uniform_strategy_branch(
+async def _solve_parallel_run(
     config: ExperimentConfig,
     arm: ArmConfig,
     problem: Problem,
     bank_seed: int,
-    branch: int,
+    run: int,
+    pool: TokenPool,
+) -> None:
+    """Run one fresh 1x member (run_02..run_08) of a Parallel bank."""
+    if not 2 <= run <= 8:
+        raise ValueError("Fresh Parallel runs must be numbered 02..08")
+    bank_dir = seed_output_dir(config, arm, problem.problem_id, bank_seed)
+    output_dir = bank_run_output_dir(bank_dir, run)
+    if seed_done(output_dir):
+        return
+    identity = run_checkpoint_identity(config, arm, problem, bank_seed)
+    identity.update(
+        {
+            "parallel_bank_seed": bank_seed,
+            "parallel_run": run,
+            "parallel_run_budget": config.unit_output_tokens,
+        }
+    )
+    checkpoint = AttemptCheckpoint(identity)
+    try:
+        scratch_path = checkpoint.scratch_dir("main")
+        phases = checkpoint.phases("main")
+        tracker = checkpoint.tracker(
+            "main", config.unit_output_tokens, config.wrap_up_reserve_tokens
+        )
+        active_main = checkpoint.active("main")
+        active_is_wrap = (
+            active_main is not None and active_main.get("label") == PHASE_WRAP_UP
+        )
+        needs_work_session = not active_is_wrap and (
+            active_main is not None or not phases
+        )
+        if needs_work_session:
+            async with ResumableClaudeSession(
+                pool,
+                lambda token, session_id, resume_id, stderr: build_options(
+                    config,
+                    str(scratch_path),
+                    max(1, tracker.remaining),
+                    token,
+                    stderr,
+                    session_id=session_id,
+                    resume_session_id=resume_id,
+                ),
+                session_id=checkpoint.session_id("main"),
+                reconnects=checkpoint.reconnects("main"),
+            ) as executor:
+                checkpoint.save_session(
+                    "main", executor.session_id, executor.reconnect_events
+                )
+                if not phases:
+                    phases.append(
+                        await _checkpointed_phase(
+                            checkpoint,
+                            "main",
+                            executor,
+                            tracker,
+                            task_prompt(
+                                problem,
+                                hint_for(problem, arm),
+                                str(scratch_path),
+                                config.unit_output_tokens,
+                            ),
+                            PHASE_SOLVE,
+                            tracker.soft_limit_tokens,
+                        )
+                    )
+        await _run_strict_wrap_phase(
+            config,
+            checkpoint,
+            "main",
+            tracker,
+            phases,
+            scratch_path,
+            pool,
+            PHASE_WRAP_UP,
+            wrap_up_prompt(tracker.remaining),
+            config.wrap_up_reserve_tokens,
+        )
+        checkpoint.prepare_completion(
+            (output_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+        )
+        write_seed_outputs(
+            config,
+            arm,
+            problem,
+            bank_seed,
+            config.unit_output_tokens,
+            phases,
+            scratch_path,
+            provider_session_ids=checkpoint.session_ids(),
+            output_dir_override=output_dir,
+            meta_extra={
+                "parallel_bank_seed": bank_seed,
+                "parallel_run": run,
+                "parallel_run_budget_output_tokens": config.unit_output_tokens,
+            },
+        )
+        log.info(
+            "%s/%s bank seed %d run_%02d done (%d/%d tokens)",
+            arm.name,
+            problem.problem_id,
+            bank_seed,
+            run,
+            tracker.spent,
+            config.unit_output_tokens,
+        )
+        checkpoint.complete()
+    finally:
+        checkpoint.close()
+
+
+async def solve_parallel_bank(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    bank_seed: int,
+    pool: TokenPool,
+) -> None:
+    """Build one 8x bank: matched frozen run_01 plus seven fresh 1x runs."""
+    source_arm = config.arms[parallel_source_arm_name(arm)]
+    source_dir = seed_output_dir(
+        config, source_arm, problem.problem_id, bank_seed
+    )
+    if not seed_done(source_dir):
+        raise FileNotFoundError(
+            f"Parallel bank requires completed {source_arm.name} run_01: "
+            f"{source_dir / META_FILENAME}"
+        )
+    bank_dir = seed_output_dir(config, arm, problem.problem_id, bank_seed)
+    tasks = []
+    for run in range(2, 9):
+        if seed_done(bank_run_output_dir(bank_dir, run)):
+            continue
+        tasks.append(
+            lambda r=run: _solve_parallel_run(
+                config, arm, problem, bank_seed, r, pool
+            )
+        )
+    await run_all(tasks, min(config.max_concurrency, 7))
+    write_parallel_bank_meta(
+        config,
+        arm,
+        problem,
+        bank_seed,
+        bank_dir,
+        source_arm,
+        source_dir,
+    )
+    log.info(
+        "%s/%s bank seed %d done (run_01 reused, 7 fresh) -> %s",
+        arm.name,
+        problem.problem_id,
+        bank_seed,
+        bank_dir,
+    )
+
+
+async def _solve_uniform_strategy_run(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    bank_seed: int,
+    run: int,
     strategy_index: int,
     strategy: str,
     executor_budget: int,
@@ -343,13 +527,13 @@ async def _solve_uniform_strategy_branch(
 ) -> None:
     """Run one fresh executor under one shared-bank strategy."""
     bank_dir = seed_output_dir(config, arm, problem.problem_id, bank_seed)
-    output_dir = uniform_branch_output_dir(bank_dir, branch)
+    output_dir = bank_run_output_dir(bank_dir, run)
     if seed_done(output_dir):
         return
     identity = run_checkpoint_identity(config, arm, problem, bank_seed)
     identity.update(
         {
-            "uniform_strategy_branch": branch,
+            "uniform_strategy_run": run,
             "uniform_strategy_index": strategy_index,
             "uniform_strategy_text": strategy,
             "uniform_strategy_executor_budget": executor_budget,
@@ -430,16 +614,17 @@ async def _solve_uniform_strategy_branch(
             output_dir_override=output_dir,
             meta_extra={
                 "uniform_strategy_bank_seed": bank_seed,
-                "uniform_strategy_branch": branch,
+                "uniform_strategy_run": run,
                 "uniform_strategy_index": strategy_index,
+                "uniform_strategy_executor_budget": executor_budget,
             },
         )
         log.info(
-            "%s/%s seed %d branch %d done (%d/%d tokens)",
+            "%s/%s seed %d run_%02d done (%d/%d tokens)",
             arm.name,
             problem.problem_id,
             bank_seed,
-            branch,
+            run,
             tracker.spent,
             executor_budget,
         )
@@ -561,8 +746,8 @@ async def solve_uniform_strategy_bank(
         checkpoint.complete()
         return
     assignments = [
-        (branch - 1) % len(strategies) + 1
-        for branch in range(1, config.uniform_strategy_branches + 1)
+        (run - 1) % len(strategies) + 1
+        for run in range(1, config.uniform_strategy_branches + 1)
     ]
     log.info(
         "%s/%s seed %d: %d strategies planned (%d/%d tokens)",
@@ -574,19 +759,19 @@ async def solve_uniform_strategy_bank(
         plan_budget,
     )
     tasks = []
-    for branch, strategy_index in enumerate(assignments, start=1):
-        output_dir = uniform_branch_output_dir(bank_dir, branch)
+    for run, strategy_index in enumerate(assignments, start=1):
+        output_dir = bank_run_output_dir(bank_dir, run)
         if seed_done(output_dir):
             continue
         strategy = strategies[strategy_index - 1]
         tasks.append(
-            lambda b=branch, i=strategy_index, s=strategy: (
-                _solve_uniform_strategy_branch(
+            lambda r=run, i=strategy_index, s=strategy: (
+                _solve_uniform_strategy_run(
                     config,
                     arm,
                     problem,
                     seed,
-                    b,
+                    r,
                     i,
                     s,
                     executor_budget,
@@ -596,7 +781,7 @@ async def solve_uniform_strategy_bank(
         )
     await run_all(tasks, min(config.max_concurrency, config.uniform_strategy_branches))
     # Do not expose the shared strategy set in the mounted result tree while
-    # executors are live; each branch receives only its assigned strategy.
+    # executors are live; each run receives only its assigned strategy.
     write_uniform_strategy_plan_artifacts(
         bank_dir,
         plan_phases,
@@ -680,9 +865,7 @@ def run_checkpoint_identity(
     # those routes so existing Anthropic/OpenRouter checkpoints retain their
     # original identities.
     if uses_litellm(config.model) or uses_vllm(config.model):
-        identity["provider_transport_policy"] = provider_transport_policy(
-            config.model
-        )
+        identity["provider_transport_policy"] = provider_transport_policy(config.model)
     return identity
 
 
@@ -700,6 +883,10 @@ async def solve_seed(
     wrap-up phase tells the model how many tokens remain and to write down
     what it has; only that phase may spend into the hard budget.
     """
+    if arm.mode == MODE_PARALLEL:
+        await solve_parallel_bank(config, arm, problem, seed, pool)
+        return
+
     checkpoint = AttemptCheckpoint(run_checkpoint_identity(config, arm, problem, seed))
     try:
         if arm.mode == MODE_UNIFORM_STRATEGY:
@@ -979,13 +1166,27 @@ async def main() -> None:
     # Fail fast BEFORE spending tokens if any selected problem lacks the hint.
     for problem in problems:
         hint_for(problem, arm)
-
     pending = [
         (problem, seed)
         for problem in problems
         for seed in seeds
         if not seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
     ]
+    if arm.mode == MODE_PARALLEL:
+        source_arm = config.arms[parallel_source_arm_name(arm)]
+        missing_sources = [
+            seed_output_dir(config, source_arm, problem.problem_id, seed)
+            for problem, seed in pending
+            if not seed_done(
+                seed_output_dir(config, source_arm, problem.problem_id, seed)
+            )
+        ]
+        if missing_sources:
+            preview = ", ".join(str(path) for path in missing_sources[:3])
+            raise FileNotFoundError(
+                f"Parallel run_01 sources are incomplete ({len(missing_sources)}): "
+                f"{preview}"
+            )
     total = len(problems) * len(seeds)
     log.info(
         "Arm %s: %d attempts to run, %d already done",
@@ -998,9 +1199,13 @@ async def main() -> None:
         lambda p=problem, s=seed: solve_seed(config, arm, p, s, pool)
         for problem, seed in pending
     ]
-    # A Uniform Strategy bank launches its own eight executor calls. Running
-    # one bank controller at a time keeps the global concurrency cap at eight.
-    outer_limit = 1 if arm.mode == MODE_UNIFORM_STRATEGY else config.max_concurrency
+    # Parallel and Uniform Strategy banks launch their own executor calls.
+    # Running one bank controller at a time preserves the global cap of eight.
+    outer_limit = (
+        1
+        if arm.mode in {MODE_PARALLEL, MODE_UNIFORM_STRATEGY}
+        else config.max_concurrency
+    )
     await run_all(tasks, outer_limit)
 
 

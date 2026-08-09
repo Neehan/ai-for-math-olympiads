@@ -34,10 +34,9 @@ The primary question is whether coverage grows more from 1× to 8× after strate
 Use a predeclared survivor cascade:
 
 1. Continue every problem below 2/3 after unaided Self-Refine 4×—seven in the pilot—to Self-Refine 8×.
-2. Run Parallel-8, comprising eight independent 1× attempts, on the Self-Refine-8 survivors.
-3. Run Uniform Strategy Search-8 on the Parallel-8 survivors, using an 80k shared planner plus eight 190k executors (`1.6M` total), motivated by [TTS-Uniform](https://arxiv.org/abs/2509.17905).
+2. On that same frozen survivor cohort, independently run Parallel-8 and Uniform Strategy Search-8. Parallel-8 uses eight independent 1× attempts. Uniform uses an 80k shared planner plus eight 190k executors (`1.6M` total), motivated by [TTS-Uniform](https://arxiv.org/abs/2509.17905).
 
-A full survivor has received up to 24× across three separate protocols; do not collapse them into one 24× inference curve. Report the denominator and incremental rescue at every gate; because the cohorts shrink, do not compare Parallel and Uniform rescue rates directly. For survivors of every unaided protocol, freeze an idea rubric, audit the recorded unaided outputs, then report strategy and strategy-plus-inference rescue as a conditional boundary analysis.
+Each search protocol has three replicated banks and is analyzed separately; do not sum their budgets into one inference curve. Because Parallel and Uniform use the identical frozen cohort, compare their rescue rates directly. For survivors of every unaided protocol, freeze an idea rubric, audit the recorded unaided outputs, then report strategy and strategy-plus-inference rescue as a conditional boundary analysis.
 
 ### 3. Confirmation and replication
 
@@ -47,7 +46,7 @@ Treat the 13 combinatorics problems as development data. Freeze the design, eval
 
 - **Correctness:** attempt success = blinded audit score ≥5; any substantive gap scores 0. Repeat at ≥6 and independently human-check every headline proof.
 - **Reliability:** report raw `0/3`–`3/3`; primary solved = ≥2/3, unstable = 1/3, failed = 0/3; report 3/3 as a conservative sensitivity result.
-- **Replicates:** any ≥2/3 protocol claim uses three independent replicates; one Parallel or Uniform bank is one replicate.
+- **Replicates:** any ≥2/3 protocol claim uses three independent replicates. A Parallel bank is the matching frozen 1× attempt plus seven fresh attempts; a Uniform bank is one fresh planner-and-executor replicate.
 - **Strategy:** one frozen, audited hint of at most 25 words. It may state the key idea, but not the answer, a substantial intermediate derivation, or a proof sketch.
 - **Budget:** 1× is at most 200k eligible output tokens, including hidden reasoning, visible text, and tool calls. Over-budget attempts cannot count.
 - **Sequential:** one exact-prefix trajectory with self-review and cumulative cuts, without grades, references, or ground truth.

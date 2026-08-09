@@ -6,8 +6,8 @@ Per-seed output layout (nothing mixed):
         solution.md      the graded final write-up (last proof phase)
         scratch/         copy of the proof executor's scratch dir
         plan_scratch/    Uniform Strategy planner scratch
-        strategies.json  parsed strategy set and branch allocation
-        branch_<k>/      one fresh proof executor's normal attempt artifacts
+        strategies.json  parsed strategy set and executor-run allocation
+        run_<kk>/        one bank member's artifacts (or run_01 reference)
         meta.json        attempt metadata; written LAST = completion marker
 """
 
@@ -29,6 +29,7 @@ from src.constants import (
     HINTS_URL,
     LOGS_FILENAME,
     META_FILENAME,
+    MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
     OUTLINES_FILE_ENV,
@@ -45,7 +46,8 @@ from src.constants import (
     SEED_AUDIT_FILENAME,
     SOLUTION_CUT_FILENAME_FORMAT,
     SOLUTION_FILENAME,
-    UNIFORM_BRANCH_DIR_FORMAT,
+    BANK_RUN_DIR_FORMAT,
+    RUN_REFERENCE_FILENAME,
     UNIFORM_STRATEGIES_FILENAME,
     ZSTD_LEVEL,
 )
@@ -169,11 +171,24 @@ def seed_output_dir(
     return RESULTS_ROOT / config.model_dirname / arm.name / problem_id / f"seed_{seed}"
 
 
-def uniform_branch_output_dir(bank_dir: Path, branch: int) -> Path:
-    """Result directory for one executor inside a Uniform Strategy bank."""
-    if branch < 1:
-        raise ValueError("Uniform Strategy branch numbers start at 1")
-    return bank_dir / UNIFORM_BRANCH_DIR_FORMAT.format(branch=branch)
+def bank_run_output_dir(bank_dir: Path, run: int) -> Path:
+    """Result directory for one prespecified member of an 8-run bank."""
+    if not 1 <= run <= 8:
+        raise ValueError("Bank run numbers must be in 1..8")
+    return bank_dir / BANK_RUN_DIR_FORMAT.format(run=run)
+
+
+def _validate_bank_member_meta(
+    meta: dict[str, Any], expected: dict[str, object], label: str
+) -> None:
+    """Reject stale/cross-bank metadata before it can certify a bank."""
+    mismatches = {
+        key: {"expected": value, "actual": meta.get(key)}
+        for key, value in expected.items()
+        if meta.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(f"{label} metadata identity mismatch: {mismatches}")
 
 
 def seed_done(output_dir: Path) -> bool:
@@ -435,6 +450,178 @@ def write_seed_outputs(
     return output_dir
 
 
+def write_parallel_bank_meta(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    bank_seed: int,
+    bank_dir: Path,
+    source_arm: ArmConfig,
+    source_dir: Path,
+) -> None:
+    """Write one replicated 8-run Parallel bank after runs 02..08 finish.
+
+    run_01 is the already-frozen matched baseline/hint attempt. It is referenced
+    rather than copied, so one stochastic attempt can never acquire two mutable
+    result records. Runs 02..08 are fresh independent attempts stored locally.
+    """
+    if arm.mode != MODE_PARALLEL or arm.seeds != source_arm.seeds:
+        raise ValueError("Parallel bank and source arm are not seed-matched")
+    source_meta_path = source_dir / META_FILENAME
+    if not source_meta_path.exists():
+        raise FileNotFoundError(
+            f"Parallel run_01 source is incomplete: {source_meta_path}"
+        )
+    source_meta = json.loads(source_meta_path.read_text(encoding="utf-8"))
+    _validate_bank_member_meta(
+        source_meta,
+        {
+            "problem_id": problem.problem_id,
+            "arm": source_arm.name,
+            "model": config.model,
+            "seed": bank_seed,
+            "budget_output_tokens": config.unit_output_tokens,
+        },
+        "Parallel run_01 source",
+    )
+    run_metas: list[dict[str, Any]] = [source_meta]
+    for run in range(2, 9):
+        path = bank_run_output_dir(bank_dir, run) / META_FILENAME
+        if not path.exists():
+            raise FileNotFoundError(f"Parallel run_{run:02d} is incomplete: {path}")
+        run_meta = json.loads(path.read_text(encoding="utf-8"))
+        _validate_bank_member_meta(
+            run_meta,
+            {
+                "problem_id": problem.problem_id,
+                "arm": arm.name,
+                "mode": MODE_PARALLEL,
+                "model": config.model,
+                "seed": bank_seed,
+                "budget_output_tokens": config.unit_output_tokens,
+                "parallel_bank_seed": bank_seed,
+                "parallel_run": run,
+                "parallel_run_budget_output_tokens": config.unit_output_tokens,
+            },
+            f"Parallel run_{run:02d}",
+        )
+        run_metas.append(run_meta)
+
+    source_rel = source_dir.relative_to(RESULTS_ROOT).as_posix()
+    run_01_dir = bank_run_output_dir(bank_dir, 1)
+    run_01_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(
+        run_01_dir / RUN_REFERENCE_FILENAME,
+        (
+            json.dumps(
+                {
+                    "source_arm": source_arm.name,
+                    "source_problem_id": problem.problem_id,
+                    "source_seed": bank_seed,
+                    "source_result_path": source_rel,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8"),
+    )
+
+    output_tokens_spent = sum(
+        int(meta.get("output_tokens_spent", 0)) for meta in run_metas
+    )
+    total_budget = config.budget_tokens(arm)
+    reconnects = [
+        event
+        for meta in run_metas
+        for event in meta.get("session_reconnects", [])
+        if isinstance(event, dict)
+    ]
+    process_resume_count = sum(
+        int(meta.get("process_resume_count", 0)) for meta in run_metas
+    )
+    provider_usage_totals: dict[str, int] = {}
+    for run_meta in run_metas:
+        _merge_provider_usage_totals(
+            provider_usage_totals, run_meta.get("provider_usage_totals")
+        )
+    transport_recovered = any(
+        event.get("reason") == "transport" for event in reconnects
+    )
+    accounting_status = (
+        "process_and_transport_recovered_unreported_suffix_possible"
+        if process_resume_count and transport_recovered
+        else "process_recovered_unreported_suffix_possible"
+        if process_resume_count
+        else "transport_recovered_unreported_suffix_possible"
+        if transport_recovered
+        else "provider_reported_complete"
+    )
+    run_records = []
+    for run, run_meta in enumerate(run_metas, start=1):
+        run_records.append(
+            {
+                "run": run,
+                "source_result_path": source_rel if run == 1 else None,
+                "local_result_path": (
+                    None
+                    if run == 1
+                    else bank_run_output_dir(bank_dir, run)
+                    .relative_to(RESULTS_ROOT)
+                    .as_posix()
+                ),
+                "output_tokens_spent": int(run_meta.get("output_tokens_spent", 0)),
+                "gradeable_solution_emitted": bool(
+                    run_meta.get("gradeable_solution_emitted")
+                ),
+                "process_resume_count": int(
+                    run_meta.get("process_resume_count", 0)
+                ),
+                "session_reconnect_count": int(
+                    run_meta.get("session_reconnect_count", 0)
+                ),
+            }
+        )
+    meta = {
+        "problem_id": problem.problem_id,
+        "arm": arm.name,
+        "mode": MODE_PARALLEL,
+        "hint": arm.hint,
+        "model": config.model,
+        "provider_transport_policy": provider_transport_policy(config.model),
+        "session_recovery_policy": session_recovery_policy(),
+        "effort": config.effort,
+        "seed": bank_seed,
+        "budget_output_tokens": total_budget,
+        "output_tokens_spent": output_tokens_spent,
+        "output_tokens_over_budget": max(0, output_tokens_spent - total_budget),
+        "provider_usage_totals": provider_usage_totals,
+        "parallel_run_count": 8,
+        "parallel_run_budget_output_tokens_each": config.unit_output_tokens,
+        "run_01_source_arm": source_arm.name,
+        "run_01_source_result_path": source_rel,
+        "runs": run_records,
+        "process_resume_count": process_resume_count,
+        "session_reconnect_count": len(reconnects),
+        "session_reconnects": reconnects,
+        "token_accounting_status": accounting_status,
+        "gradeable_solution_emitted": any(
+            bool(meta.get("gradeable_solution_emitted")) for meta in run_metas
+        ),
+    }
+    _atomic_write_bytes(
+        bank_dir / SOLUTION_FILENAME,
+        (
+            "Parallel 8-run bank. run_01 references the matched frozen "
+            f"{source_arm.name} attempt; grade run_01 through run_08.\n"
+        ).encode("utf-8"),
+    )
+    _atomic_write_bytes(
+        bank_dir / META_FILENAME,
+        (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+
+
 def write_uniform_strategy_plan_artifacts(
     bank_dir: Path,
     phases: list[PhaseResult],
@@ -445,7 +632,7 @@ def write_uniform_strategy_plan_artifacts(
     """Persist the shared planner output after every executor has finished.
 
     The bank-level meta.json remains reserved as the completion marker and is
-    written only after every branch has completed.
+    written only after every executor run has completed.
     """
     bank_dir.mkdir(parents=True, exist_ok=True)
     log_lines = "\n".join(
@@ -459,7 +646,7 @@ def write_uniform_strategy_plan_artifacts(
         bank_dir / UNIFORM_STRATEGIES_FILENAME,
         (
             json.dumps(
-                {"strategies": strategies, "branch_strategy_indices": assignments},
+                {"strategies": strategies, "run_strategy_indices": assignments},
                 ensure_ascii=False,
                 indent=2,
             )
@@ -490,17 +677,33 @@ def write_uniform_strategy_bank_meta(
 ) -> None:
     """Write the bank completion marker after all executor metas are durable."""
     if len(assignments) != config.uniform_strategy_branches:
-        raise ValueError("Uniform Strategy bank must assign every executor branch")
+        raise ValueError("Uniform Strategy bank must assign every executor run")
     if strategy_count < 1 or any(
         index < 1 or index > strategy_count for index in assignments
     ):
         raise ValueError("Uniform Strategy bank contains an invalid strategy index")
-    branch_metas = []
-    for branch in range(1, config.uniform_strategy_branches + 1):
-        path = uniform_branch_output_dir(bank_dir, branch) / META_FILENAME
-        branch_metas.append(json.loads(path.read_text(encoding="utf-8")))
+    run_metas: list[dict[str, Any]] = []
+    for run in range(1, config.uniform_strategy_branches + 1):
+        path = bank_run_output_dir(bank_dir, run) / META_FILENAME
+        run_meta = json.loads(path.read_text(encoding="utf-8"))
+        _validate_bank_member_meta(
+            run_meta,
+            {
+                "problem_id": problem.problem_id,
+                "arm": arm.name,
+                "mode": MODE_UNIFORM_STRATEGY,
+                "model": config.model,
+                "seed": seed,
+                "budget_output_tokens": executor_budget,
+                "uniform_strategy_bank_seed": seed,
+                "uniform_strategy_run": run,
+                "uniform_strategy_executor_budget": executor_budget,
+            },
+            f"Uniform Strategy run_{run:02d}",
+        )
+        run_metas.append(run_meta)
     plan_spent = sum(phase.output_tokens for phase in plan_phases)
-    branch_spent = sum(int(meta["output_tokens_spent"]) for meta in branch_metas)
+    run_spent = sum(int(meta["output_tokens_spent"]) for meta in run_metas)
     total_budget = config.budget_tokens(arm)
     allocated = (
         config.uniform_strategy_plan_tokens
@@ -511,22 +714,22 @@ def write_uniform_strategy_bank_meta(
             f"Uniform Strategy allocation {allocated} != bank budget {total_budget}"
         )
     process_resume_count = sum(p.process_resume_count for p in plan_phases) + sum(
-        int(meta.get("process_resume_count", 0)) for meta in branch_metas
+        int(meta.get("process_resume_count", 0)) for meta in run_metas
     )
     plan_reconnects = [
         event for phase in plan_phases for event in phase.reconnects
     ]
-    branch_reconnects = [
+    run_reconnects = [
         event
-        for meta in branch_metas
+        for meta in run_metas
         for event in meta.get("session_reconnects", [])
         if isinstance(event, dict)
     ]
-    output_tokens_spent = plan_spent + branch_spent
+    output_tokens_spent = plan_spent + run_spent
     provider_usage_totals = _provider_usage_totals(plan_phases)
-    for branch_meta in branch_metas:
+    for run_meta in run_metas:
         _merge_provider_usage_totals(
-            provider_usage_totals, branch_meta.get("provider_usage_totals")
+            provider_usage_totals, run_meta.get("provider_usage_totals")
         )
     meta = {
         "problem_id": problem.problem_id,
@@ -548,50 +751,50 @@ def write_uniform_strategy_bank_meta(
         "uniform_strategy_plan_output_tokens_spent": plan_spent,
         "uniform_strategy_executor_count": config.uniform_strategy_branches,
         "uniform_strategy_executor_budget_output_tokens_each": executor_budget,
-        "uniform_strategy_executor_output_tokens_spent": branch_spent,
+        "uniform_strategy_executor_output_tokens_spent": run_spent,
         "strategy_count": strategy_count,
-        "branch_strategy_indices": assignments,
+        "run_strategy_indices": assignments,
         "provider_session_ids": dict(sorted(provider_session_ids.items())),
-        "branch_provider_session_ids": {
+        "run_provider_session_ids": {
             str(i): meta.get("provider_session_ids", {})
-            for i, meta in enumerate(branch_metas, start=1)
+            for i, meta in enumerate(run_metas, start=1)
         },
         "process_resume_count": process_resume_count,
-        "session_reconnect_count": len(plan_reconnects) + len(branch_reconnects),
+        "session_reconnect_count": len(plan_reconnects) + len(run_reconnects),
         "session_reconnects": [
             *[asdict(event) for event in plan_reconnects],
-            *branch_reconnects,
+            *run_reconnects,
         ],
         "token_accounting_status": (
             "process_and_transport_recovered_unreported_suffix_possible"
             if process_resume_count
             and (
                 any(event.reason == "transport" for event in plan_reconnects)
-                or any(event.get("reason") == "transport" for event in branch_reconnects)
+                or any(event.get("reason") == "transport" for event in run_reconnects)
             )
             else "process_recovered_unreported_suffix_possible"
             if process_resume_count
             else "transport_recovered_unreported_suffix_possible"
             if (
                 any(event.reason == "transport" for event in plan_reconnects)
-                or any(event.get("reason") == "transport" for event in branch_reconnects)
+                or any(event.get("reason") == "transport" for event in run_reconnects)
             )
             else "provider_reported_complete"
         ),
         "gradeable_solution_emitted": any(
-            bool(meta.get("gradeable_solution_emitted")) for meta in branch_metas
+            bool(meta.get("gradeable_solution_emitted")) for meta in run_metas
         ),
     }
     # run.sh distinguishes newly completed staged attempts from pre-seeded
     # resume markers by requiring solution.md beside the last-written meta.json.
-    # The bank is graded from branch_<k>/solution.md; this top-level file is an
+    # The bank is graded from run_<kk>/solution.md; this top-level file is an
     # explicit manifest, never a proof candidate.
     _atomic_write_bytes(
         bank_dir / SOLUTION_FILENAME,
         (
             "Uniform Strategy Search bank. Grade the executor candidates in "
-            "branch_1 through branch_"
-            f"{config.uniform_strategy_branches}; this file is not a candidate proof.\n"
+            "run_01 through run_"
+            f"{config.uniform_strategy_branches:02d}; this file is not a candidate proof.\n"
         ).encode("utf-8"),
     )
     _atomic_write_bytes(
@@ -635,7 +838,7 @@ def write_uniform_strategy_planner_failure(
         "uniform_strategy_plan_output_tokens_spent": plan_spent,
         "uniform_strategy_executor_count": 0,
         "strategy_count": 0,
-        "branch_strategy_indices": [],
+        "run_strategy_indices": [],
         "provider_session_ids": dict(sorted(provider_session_ids.items())),
         "session_reconnect_count": sum(
             len(phase.reconnects) for phase in plan_phases
@@ -707,16 +910,24 @@ def archive_audit_scratches(output_dir: Path, scratch_paths: dict[str, Path]) ->
 
 
 def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, int]:
-    """Compile EVERY seed verdict on disk into results/<model>/<arm>/audit.jsonl.
+    """Compile every configured-seed verdict into the arm's audit.jsonl.
 
     Scans the arm's whole results tree rather than any CLI problem filter, so
     a re-audit of one problem can never truncate the compiled file down to
-    that subset. One JSON line per audited (problem, seed), sorted. Returns
-    the file path and the number of records written.
+    that subset. Results from retired/out-of-config seed layouts are never
+    silently mixed into a current analysis. One line per audited configured
+    (problem, seed), sorted. Returns the path and record count.
     """
     arm_root = RESULTS_ROOT / config.model_dirname / arm.name
     records: list[dict[str, object]] = []
     for audit_file in sorted(arm_root.glob(f"*/seed_*/{SEED_AUDIT_FILENAME}")):
+        seed_name = audit_file.parent.name
+        try:
+            seed = int(seed_name.removeprefix("seed_"))
+        except ValueError:
+            continue
+        if seed not in arm.seeds:
+            continue
         records.append(json.loads(audit_file.read_text(encoding="utf-8")))
     path = arm_root / ARM_AUDIT_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -16,6 +16,10 @@ from claude_agent_sdk import (
     ResultMessage,
     StreamEvent,
     TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
 )
 
 from src.concurrency import run_all
@@ -503,6 +507,460 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_output_after_rate_limit_event_is_not_discarded(self) -> None:
+        class BufferedAfterRejectionSDKClient:
+            def __init__(self, options: ClaudeAgentOptions) -> None:
+                self.options = options
+                self.token = options.env[OAUTH_TOKEN_ENV]
+                self.session_id = options.session_id or options.resume
+                if self.session_id is None:
+                    raise AssertionError("test sessions must have an explicit id")
+
+            async def connect(self) -> None:
+                return None
+
+            async def disconnect(self) -> None:
+                return None
+
+            async def query(self, prompt: str) -> None:
+                self.prompt = prompt
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                if self.token == "token-a":
+                    yield RateLimitEvent(
+                        rate_limit_info=RateLimitInfo(
+                            status="rejected", resets_at=int(time.time()) + 3600
+                        ),
+                        uuid="limit-first",
+                        session_id=self.session_id,
+                    )
+                    yield StreamEvent(
+                        uuid="buffered-start",
+                        session_id=self.session_id,
+                        event={
+                            "type": "message_start",
+                            "message": {"id": "buffered-message"},
+                        },
+                    )
+                    yield StreamEvent(
+                        uuid="buffered-delta",
+                        session_id=self.session_id,
+                        event={
+                            "type": "message_delta",
+                            "usage": {"output_tokens": 6},
+                        },
+                    )
+                    yield AssistantMessage(
+                        content=[
+                            TextBlock("buffered work"),
+                            ToolUseBlock(
+                                id="tool-1",
+                                name="Bash",
+                                input={"command": "true"},
+                            ),
+                        ],
+                        model="test-model",
+                        usage={"output_tokens": 1},
+                        message_id="buffered-message",
+                        session_id=self.session_id,
+                        uuid="buffered-assistant",
+                    )
+                    yield UserMessage(
+                        content=[
+                            ToolResultBlock(
+                                tool_use_id="tool-1", content="command completed"
+                            )
+                        ],
+                        uuid="buffered-tool-result",
+                    )
+                    return
+
+                yield StreamEvent(
+                    uuid="resumed-start",
+                    session_id=self.session_id,
+                    event={
+                        "type": "message_start",
+                        "message": {"id": "resumed-message"},
+                    },
+                )
+                yield StreamEvent(
+                    uuid="resumed-delta",
+                    session_id=self.session_id,
+                    event={
+                        "type": "message_delta",
+                        "usage": {"output_tokens": 4},
+                    },
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=20,
+                    duration_api_ms=15,
+                    is_error=False,
+                    num_turns=1,
+                    session_id=self.session_id,
+                    stop_reason="end_turn",
+                    total_cost_usd=0.01,
+                    usage={"output_tokens": 4},
+                    result="## Final Solution\nRecovered proof.",
+                )
+
+        pool = TokenPool(["token-a", "token-b"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+                include_partial_messages=True,
+            )
+
+        with patch("src.solver.ClaudeSDKClient", BufferedAfterRejectionSDKClient):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                result = await run_phase(session, "solve", "solve", tracker, 100)
+
+        self.assertEqual(
+            result.text,
+            "buffered work\n## Final Solution\nRecovered proof.",
+        )
+        self.assertEqual(result.output_tokens, 10)
+        self.assertEqual(len(result.reconnects), 1)
+        self.assertEqual(len(result.tool_calls), 1)
+        self.assertEqual(result.tool_calls[0].name, "Bash")
+        self.assertEqual(result.tool_calls[0].result, "command completed")
+
+    async def test_fresh_result_before_handoff_survives_zero_turn_replay(self) -> None:
+        class FinalThenReplaySDKClient:
+            queries: list[tuple[str, str]] = []
+
+            def __init__(self, options: ClaudeAgentOptions) -> None:
+                self.options = options
+                self.token = options.env[OAUTH_TOKEN_ENV]
+                self.session_id = options.session_id or options.resume
+                if self.session_id is None:
+                    raise AssertionError("test sessions must have an explicit id")
+
+            async def connect(self) -> None:
+                return None
+
+            async def disconnect(self) -> None:
+                return None
+
+            async def query(self, prompt: str) -> None:
+                self.queries.append((self.token, prompt))
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                if self.token == "token-a":
+                    yield StreamEvent(
+                        uuid="final-start",
+                        session_id=self.session_id,
+                        event={
+                            "type": "message_start",
+                            "message": {"id": "final-message"},
+                        },
+                    )
+                    yield StreamEvent(
+                        uuid="final-delta",
+                        session_id=self.session_id,
+                        event={
+                            "type": "message_delta",
+                            "usage": {"output_tokens": 8},
+                        },
+                    )
+                    yield RateLimitEvent(
+                        rate_limit_info=RateLimitInfo(
+                            status="rejected", resets_at=int(time.time()) + 3600
+                        ),
+                        uuid="limit-first",
+                        session_id=self.session_id,
+                    )
+                    yield ResultMessage(
+                        subtype="success",
+                        duration_ms=20,
+                        duration_api_ms=15,
+                        is_error=False,
+                        num_turns=1,
+                        session_id=self.session_id,
+                        stop_reason="end_turn",
+                        total_cost_usd=0.01,
+                        usage={"output_tokens": 8},
+                        result="## Final Solution\nProof before handoff.",
+                    )
+                    return
+
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=False,
+                    num_turns=0,
+                    session_id=self.session_id,
+                    stop_reason="end_turn",
+                    total_cost_usd=0.0,
+                    usage={"output_tokens": 0},
+                    result="No response requested.",
+                )
+
+        pool = TokenPool(["token-a", "token-b"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+            )
+
+        with patch("src.solver.ClaudeSDKClient", FinalThenReplaySDKClient):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                result = await run_phase(session, "solve", "solve", tracker, 100)
+
+        self.assertEqual(result.text, "## Final Solution\nProof before handoff.")
+        self.assertEqual(result.output_tokens, 8)
+        # The response completed before handoff, so it is committed now and a
+        # credential rotation is deferred until a later phase needs a query.
+        self.assertEqual(len(result.reconnects), 0)
+        self.assertEqual(FinalThenReplaySDKClient.queries, [("token-a", "solve")])
+
+    async def test_replayed_message_cannot_certify_recovered_completion(self) -> None:
+        class ReplayOnlySession:
+            reconnect_count = 0
+            reconnect_events: list[object] = []
+            connection_id = "replacement"
+
+            async def query(self, prompt: str) -> None:
+                self.prompt = prompt
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                yield StreamEvent(
+                    uuid="replayed-start",
+                    session_id="session",
+                    event={
+                        "type": "message_start",
+                        "message": {"id": "old-message"},
+                    },
+                )
+                yield StreamEvent(
+                    uuid="replayed-delta",
+                    session_id="session",
+                    event={
+                        "type": "message_delta",
+                        "usage": {"output_tokens": 10},
+                    },
+                )
+                yield AssistantMessage(
+                    content=[TextBlock("old partial proof")],
+                    model="test-model",
+                    usage={"output_tokens": 10},
+                    message_id="old-message",
+                    session_id="session",
+                    uuid="replayed-assistant",
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="session",
+                    stop_reason="end_turn",
+                    total_cost_usd=0.0,
+                    usage={"output_tokens": 10},
+                    result="old partial proof",
+                )
+
+        tracker = BudgetTracker(100, 0)
+        tracker.add("old-message", {"output_tokens": 10})
+        with self.assertRaisesRegex(
+            RuntimeError, "no fresh completed provider response"
+        ):
+            await run_phase(  # type: ignore[arg-type]
+                ReplayOnlySession(),
+                "solve",
+                "solve",
+                tracker,
+                100,
+                process_resume_count=1,
+            )
+        self.assertEqual(tracker.spent, 10)
+
+    async def test_rate_limit_assistant_prose_is_never_model_output(self) -> None:
+        class QuotaErrorSDKClient:
+            def __init__(self, options: ClaudeAgentOptions) -> None:
+                self.options = options
+                self.token = options.env[OAUTH_TOKEN_ENV]
+                self.session_id = options.session_id or options.resume
+                if self.session_id is None:
+                    raise AssertionError("test sessions must have an explicit id")
+
+            async def connect(self) -> None:
+                return None
+
+            async def disconnect(self) -> None:
+                return None
+
+            async def query(self, prompt: str) -> None:
+                self.prompt = prompt
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                if self.token == "token-a":
+                    yield RateLimitEvent(
+                        rate_limit_info=RateLimitInfo(
+                            status="rejected", resets_at=int(time.time()) + 3600
+                        ),
+                        uuid="quota-event",
+                        session_id=self.session_id,
+                    )
+                    yield AssistantMessage(
+                        content=[TextBlock("You've hit your weekly usage limit")],
+                        model="test-model",
+                        error="rate_limit",
+                        usage={"output_tokens": 0},
+                        message_id="quota-error",
+                        session_id=self.session_id,
+                        uuid="quota-assistant",
+                    )
+                    yield ResultMessage(
+                        subtype="error",
+                        duration_ms=1,
+                        duration_api_ms=1,
+                        is_error=True,
+                        num_turns=0,
+                        session_id=self.session_id,
+                        stop_reason=None,
+                        total_cost_usd=0.0,
+                        usage={"output_tokens": 0},
+                        result="rate_limit",
+                    )
+                    return
+
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=False,
+                    num_turns=0,
+                    session_id=self.session_id,
+                    stop_reason="end_turn",
+                    total_cost_usd=0.0,
+                    usage={"output_tokens": 0},
+                    result="No response requested.",
+                )
+
+        pool = TokenPool(["token-a", "token-b"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+            )
+
+        with patch("src.solver.ClaudeSDKClient", QuotaErrorSDKClient):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                with self.assertRaisesRegex(
+                    RuntimeError, "no fresh completed provider response"
+                ):
+                    await run_phase(session, "solve", "solve", tracker, 100)
+
+        self.assertEqual(tracker.spent, 0)
+
+    async def test_same_message_id_fragments_preserve_final_text(self) -> None:
+        class FragmentedSession:
+            reconnect_count = 0
+            reconnect_events: list[object] = []
+            connection_id = "fragmented"
+
+            async def query(self, prompt: str) -> None:
+                self.prompt = prompt
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                yield StreamEvent(
+                    uuid="fragment-start",
+                    session_id="session",
+                    event={
+                        "type": "message_start",
+                        "message": {"id": "shared-message"},
+                    },
+                )
+                yield StreamEvent(
+                    uuid="fragment-delta",
+                    session_id="session",
+                    event={
+                        "type": "message_delta",
+                        "usage": {"output_tokens": 8},
+                    },
+                )
+                yield AssistantMessage(
+                    content=[ThinkingBlock("private reasoning", "signature")],
+                    model="test-model",
+                    usage={"output_tokens": 8},
+                    message_id="shared-message",
+                    session_id="session",
+                    uuid="thinking-envelope",
+                )
+                yield AssistantMessage(
+                    content=[TextBlock("## Final Solution\nComplete proof.")],
+                    model="test-model",
+                    usage={"output_tokens": 8},
+                    message_id="shared-message",
+                    session_id="session",
+                    uuid="text-envelope",
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=1,
+                    duration_api_ms=1,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="session",
+                    stop_reason="end_turn",
+                    total_cost_usd=0.0,
+                    usage={"output_tokens": 8},
+                    result="",
+                )
+
+        tracker = BudgetTracker(100, 0)
+        phase = await run_phase(  # type: ignore[arg-type]
+            FragmentedSession(), "solve", "solve", tracker, 100
+        )
+        self.assertEqual(phase.text, "## Final Solution\nComplete proof.")
+        self.assertEqual(phase.output_tokens, 8)
+
     async def test_round_robin_keys_are_not_concurrency_limits(self) -> None:
         pool = TokenPool(["token-a", "token-b"], "TEST_TOKEN")
         assigned = [await pool.acquire() for _ in range(6)]
@@ -559,18 +1017,18 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await run_all([lambda: task() for _ in range(8)], limit=8)
         self.assertEqual(peak, 8)
 
-    def test_parallel_bank_is_exactly_eight_disjoint_seeds(self) -> None:
+    def test_parallel_banks_are_three_seed_matched_eight_run_replicates(self) -> None:
         config = load_config(CONFIG_PATH)
         baseline = config.arms["baseline"].seeds
-        extension = config.arms["baseline-parallel"].seeds
+        banks = config.arms["baseline-parallel"].seeds
         self.assertEqual(config.max_concurrency, 8)
-        self.assertEqual(set(baseline) & set(extension), set())
-        self.assertEqual(sorted(baseline + extension), list(range(1, 9)))
+        self.assertEqual(baseline, [1, 2, 3])
+        self.assertEqual(banks, baseline)
 
         hint = config.arms["hint"].seeds
-        hint_extension = config.arms["hint-parallel"].seeds
-        self.assertEqual(set(hint) & set(hint_extension), set())
-        self.assertEqual(sorted(hint + hint_extension), list(range(1, 9)))
+        hint_banks = config.arms["hint-parallel"].seeds
+        self.assertEqual(hint, [1, 2, 3])
+        self.assertEqual(hint_banks, hint)
 
     def test_uniform_strategy_bank_is_exactly_budget_matched(self) -> None:
         config = load_config(CONFIG_PATH)
@@ -627,7 +1085,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             session_recovery_policy(),
             {
-                "transport_recovery": "same_transcript_continue_v1",
+                "transport_recovery": "same_transcript_continue_v3",
                 "transport_recovery_max_retries": 6,
                 "transport_recovery_base_delay_seconds": 2.0,
                 "transport_recovery_max_delay_seconds": 30.0,
@@ -680,6 +1138,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 MAX_OUTPUT_TOKENS_ENV: "64000",
             },
         )
+
     def test_transport_policy_versions_only_local_checkpoint_identity(
         self,
     ) -> None:
@@ -837,7 +1296,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         tracker = BudgetTracker(100, 0)
         tracker.add("pre-crash", {"output_tokens": 12})
         with self.assertRaisesRegex(
-            RuntimeError, "returned no new provider output"
+            RuntimeError, "no fresh completed provider response"
         ):
             await run_phase(  # type: ignore[arg-type]
                 EmptyReplaySession(),

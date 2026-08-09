@@ -31,7 +31,7 @@ from src.constants import (
 from src.models import PhaseResult, ReconnectEvent, ToolCall
 from src.solver import BudgetTracker
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _ROLE_RE = re.compile(r"^[a-z0-9_-]+$")
 _SCRATCH_RE = re.compile(r"^[0-9a-f]{8}$")
 
@@ -364,6 +364,8 @@ class AttemptCheckpoint:
             "process_resume_count": 0,
             "discarded_output_text": "",
             "discarded_tool_calls": [],
+            "discarded_text_block_keys": [],
+            "discarded_message_ids": [],
             "progress": {},
         }
         state["active"] = active
@@ -442,6 +444,38 @@ class AttemptCheckpoint:
         active["discarded_tool_calls"] = existing_calls + [
             _tool_record(call) for call in progress_tool_calls(progress)
         ]
+        existing_text_keys = active.get("discarded_text_block_keys", [])
+        if not isinstance(existing_text_keys, list):
+            existing_text_keys = []
+        progress_text_keys = progress.get("seen_text_block_keys", [])
+        if not isinstance(progress_text_keys, list):
+            progress_text_keys = []
+        # Anonymous legacy output has no stable message id. Hash every
+        # discarded part regardless of whether structured v2 keys also exist;
+        # this covers a completed TextBlock plus an in-progress stream suffix.
+        progress_text_keys = [
+            *progress_text_keys,
+            *(
+                "sha256:" + hashlib.sha256(str(part).encode("utf-8")).hexdigest()
+                for part in parts
+                if str(part)
+            ),
+        ]
+        active["discarded_text_block_keys"] = sorted(
+            {str(key) for key in [*existing_text_keys, *progress_text_keys]}
+        )
+        existing_message_ids = active.get("discarded_message_ids", [])
+        if not isinstance(existing_message_ids, list):
+            existing_message_ids = []
+        progress_message_ids = progress.get("seen_message_ids", [])
+        if not isinstance(progress_message_ids, list):
+            progress_message_ids = []
+        current_stream_id = progress.get("current_stream_id")
+        if current_stream_id:
+            progress_message_ids = [*progress_message_ids, str(current_stream_id)]
+        active["discarded_message_ids"] = sorted(
+            {str(value) for value in [*existing_message_ids, *progress_message_ids]}
+        )
         active["progress"] = {}
         active["process_resume_count"] = int(active.get("process_resume_count", 0)) + 1
         self._save()

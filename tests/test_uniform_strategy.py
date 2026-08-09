@@ -19,7 +19,7 @@ from src.constants import (
 )
 from src.models import PhaseResult, Problem
 from src.run import _proposed_strategies
-from src.storage import uniform_branch_output_dir, write_uniform_strategy_bank_meta
+from src.storage import bank_run_output_dir, write_uniform_strategy_bank_meta
 from src.token_pool import TokenPool
 
 
@@ -78,16 +78,25 @@ class UniformStrategyTests(unittest.TestCase):
         executor_budget = 190_000
         with tempfile.TemporaryDirectory() as temp:
             bank_dir = Path(temp)
-            for branch in range(1, 9):
-                branch_dir = uniform_branch_output_dir(bank_dir, branch)
-                branch_dir.mkdir()
-                (branch_dir / META_FILENAME).write_text(
+            for run in range(1, 9):
+                run_dir = bank_run_output_dir(bank_dir, run)
+                run_dir.mkdir()
+                (run_dir / META_FILENAME).write_text(
                     json.dumps(
                         {
-                            "output_tokens_spent": branch,
+                            "problem_id": "p",
+                            "arm": arm.name,
+                            "mode": arm.mode,
+                            "model": config.model,
+                            "seed": 1,
+                            "budget_output_tokens": executor_budget,
+                            "output_tokens_spent": run,
                             "process_resume_count": 0,
-                            "provider_session_ids": {"main": f"uuid-{branch}"},
+                            "provider_session_ids": {"main": f"uuid-{run}"},
                             "gradeable_solution_emitted": True,
+                            "uniform_strategy_bank_seed": 1,
+                            "uniform_strategy_run": run,
+                            "uniform_strategy_executor_budget": executor_budget,
                         }
                     ),
                     encoding="utf-8",
@@ -113,7 +122,7 @@ class UniformStrategyTests(unittest.TestCase):
             self.assertEqual(meta["output_tokens_spent"], 20 + sum(range(1, 9)))
             self.assertTrue((bank_dir / SOLUTION_FILENAME).is_file())
 
-    def test_bank_audit_aggregates_independent_branch_verdicts(self) -> None:
+    def test_bank_audit_aggregates_independent_run_verdicts(self) -> None:
         config = load_config(CONFIG_PATH)
         arm = config.arms["baseline-uniform-strategy"]
         problem = Problem("p", "Prove it.", "algebra", None, None, None)
@@ -123,17 +132,30 @@ class UniformStrategyTests(unittest.TestCase):
                 json.dumps(
                     {
                         "strategies": ["Use parity.", "Use extremality."],
-                        "branch_strategy_indices": [1, 2, 1, 2, 1, 2, 1, 2],
+                        "run_strategy_indices": [1, 2, 1, 2, 1, 2, 1, 2],
                     }
                 ),
                 encoding="utf-8",
             )
             scores = [0, 5, 6, 7, 0, 0, 5, 0]
-            for branch, score in enumerate(scores, start=1):
-                branch_dir = uniform_branch_output_dir(bank_dir, branch)
-                branch_dir.mkdir()
-                (branch_dir / SEED_AUDIT_FILENAME).write_text(
-                    json.dumps({"audit_score": score, "note": f"score {score}"}),
+            for run, score in enumerate(scores, start=1):
+                run_dir = bank_run_output_dir(bank_dir, run)
+                run_dir.mkdir()
+                (run_dir / SEED_AUDIT_FILENAME).write_text(
+                    json.dumps(
+                        {
+                            "problem_id": "p",
+                            "arm": arm.name,
+                            "seed": 1,
+                            "solver_model": config.model,
+                            "audit_model": config.audit_model,
+                            "uniform_strategy_bank_seed": 1,
+                            "uniform_strategy_run": run,
+                            "uniform_strategy_index": 1 if run % 2 else 2,
+                            "audit_score": score,
+                            "note": f"score {score}",
+                        }
+                    ),
                     encoding="utf-8",
                 )
             with patch("src.audit.seed_output_dir", return_value=bank_dir):
@@ -150,7 +172,10 @@ class UniformStrategyTests(unittest.TestCase):
             )
             self.assertEqual(record["audit_score"], 7)
             self.assertEqual(record["candidate_pass_count"], 4)
-            self.assertEqual(len(record["branches"]), 8)
+            self.assertEqual(len(record["runs"]), 8)
+            self.assertEqual(
+                record["candidate_prefixes"]["first_2_runs"]["audit_score"], 5
+            )
 
 
 if __name__ == "__main__":

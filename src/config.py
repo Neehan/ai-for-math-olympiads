@@ -7,6 +7,7 @@ from pathlib import Path
 from src.constants import (
     HINT_KINDS,
     HINT_NONE,
+    MODE_PARALLEL,
     MODE_SINGLE,
     MODE_UNIFORM_STRATEGY,
     MODES,
@@ -143,36 +144,42 @@ def load_config(path: Path) -> ExperimentConfig:
     parallel = config.arms.get("baseline-parallel")
     if baseline is None or parallel is None:
         raise ValueError(f"{path}: baseline and baseline-parallel arms are required")
-    if any(
-        arm.hint != HINT_NONE or arm.mode != MODE_SINGLE or arm.budget_units != 1
-        for arm in (baseline, parallel)
+    if (
+        baseline.hint != HINT_NONE
+        or baseline.mode != MODE_SINGLE
+        or baseline.budget_units != 1
+        or baseline.seeds != [1, 2, 3]
     ):
         raise ValueError(
-            f"{path}: baseline and baseline-parallel must be no-hint single 1x arms"
+            f"{path}: baseline must be a no-hint single 1x arm with seeds [1, 2, 3]"
         )
-    if set(baseline.seeds) & set(parallel.seeds) or sorted(
-        baseline.seeds + parallel.seeds
-    ) != list(range(1, 9)):
+    if (
+        parallel.hint != baseline.hint
+        or parallel.mode != MODE_PARALLEL
+        or parallel.budget_units != 8
+        or parallel.seeds != baseline.seeds
+    ):
         raise ValueError(
-            f"{path}: baseline plus baseline-parallel must define each seed 1..8 "
-            "exactly once"
+            f"{path}: baseline-parallel must be an 8x parallel bank matched to "
+            "baseline seeds [1, 2, 3]"
         )
     hint = config.arms.get("hint")
     hint_parallel = config.arms.get("hint-parallel")
     if hint is None or hint_parallel is None:
         raise ValueError(f"{path}: hint and hint-parallel arms are required")
-    if any(
-        arm.hint != hint.hint or arm.mode != MODE_SINGLE or arm.budget_units != 1
-        for arm in (hint, hint_parallel)
+    if hint.mode != MODE_SINGLE or hint.budget_units != 1 or hint.seeds != [1, 2, 3]:
+        raise ValueError(
+            f"{path}: hint must be a single 1x arm with seeds [1, 2, 3]"
+        )
+    if (
+        hint_parallel.hint != hint.hint
+        or hint_parallel.mode != MODE_PARALLEL
+        or hint_parallel.budget_units != 8
+        or hint_parallel.seeds != hint.seeds
     ):
         raise ValueError(
-            f"{path}: hint and hint-parallel must be matched single 1x arms"
-        )
-    if set(hint.seeds) & set(hint_parallel.seeds) or sorted(
-        hint.seeds + hint_parallel.seeds
-    ) != list(range(1, 9)):
-        raise ValueError(
-            f"{path}: hint plus hint-parallel must define each seed 1..8 exactly once"
+            f"{path}: hint-parallel must be an 8x parallel bank matched to hint "
+            "seeds [1, 2, 3]"
         )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")

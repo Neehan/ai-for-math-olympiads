@@ -6,6 +6,7 @@ its remaining budget so it paces itself, and the harness hard-cuts by
 interrupting the session the moment cumulative output tokens exceed the budget.
 """
 
+import hashlib
 import logging
 import os
 import uuid
@@ -109,6 +110,8 @@ def _assistant_transport_error(message: AssistantMessage) -> str | None:
     text = "\n".join(
         block.text for block in message.content if isinstance(block, TextBlock)
     ).strip()
+    if message.error == "server_error":
+        return text or "Claude server error"
     if text.lower().startswith("api error:") and is_retryable_transport_error(text):
         return text
     return None
@@ -117,7 +120,7 @@ def _assistant_transport_error(message: AssistantMessage) -> str | None:
 def session_recovery_policy() -> dict[str, object]:
     """Non-secret live recovery controls recorded with every result."""
     return {
-        "transport_recovery": "same_transcript_continue_v1",
+        "transport_recovery": "same_transcript_continue_v3",
         "transport_recovery_max_retries": TRANSPORT_RECOVERY_MAX_RETRIES,
         "transport_recovery_base_delay_seconds": (
             TRANSPORT_RECOVERY_BASE_DELAY_SECONDS
@@ -185,6 +188,16 @@ class ResumableClaudeSession:
         self._reconnects: list[ReconnectEvent] = list(reconnects or [])
         self._connection_id: str | None = None
         self._pending_prompt: str | None = None
+        # A resumed CLI can replay the transcript tail before it answers the
+        # pending query.  run_phase consumes this guard only after observing a
+        # genuinely new provider message and a nonzero terminal result.
+        self._connection_requires_fresh_output = self._resume_on_enter
+        # If a response completed before a late rate-limit/transport envelope,
+        # commit it immediately and defer the credential handoff until the next
+        # query.  Otherwise a valid answer can sit uncommitted for hours while
+        # every replacement credential is cooling.
+        self._deferred_recovery: tuple[str, int | None, str] | None = None
+        self._recovery_signal_count = 0
 
     @property
     def session_id(self) -> str:
@@ -207,6 +220,20 @@ class ResumableClaudeSession:
     def reconnect_events(self) -> list[ReconnectEvent]:
         """Return an immutable-by-convention snapshot for result logging."""
         return list(self._reconnects)
+
+    @property
+    def recovery_signal_count(self) -> int:
+        """Number of rate/spend/transport failures observed, handoff or deferred."""
+        return self._recovery_signal_count
+
+    @property
+    def connection_requires_fresh_output(self) -> bool:
+        """Whether this CLI was opened by transcript resume, not a fresh session."""
+        return self._connection_requires_fresh_output
+
+    def confirm_fresh_response(self) -> None:
+        """Consume the replay guard after run_phase proves a response completed."""
+        self._connection_requires_fresh_output = False
 
     async def __aenter__(self) -> "ResumableClaudeSession":
         if self._resume_on_enter:
@@ -252,6 +279,7 @@ class ResumableClaudeSession:
             self._stderr_tail = stderr_tail
             self._client = client
             self._connection_id = str(uuid.uuid4())
+            self._connection_requires_fresh_output = resume
             return
 
     async def _close(self, *, suppress_errors: bool) -> None:
@@ -310,8 +338,54 @@ class ResumableClaudeSession:
             new_label,
         )
 
+    async def _defer_completed_recovery(
+        self, reason: str, resets_at: int | None
+    ) -> None:
+        """Retire a failed credential now; reopen only when another query exists."""
+        token = self._token
+        if token is None:
+            raise RuntimeError("Cannot defer recovery with no leased credential")
+        old_label = self._pool.credential_label(token)
+        if reason == "rate_limit":
+            await self._pool.mark_rate_limited(token, resets_at or 0)
+        elif reason == "spend_limit":
+            await self._pool.mark_dead(token)
+        elif reason != "transport":
+            raise ValueError(f"Cannot defer recovery reason: {reason}")
+        self._deferred_recovery = (reason, resets_at, old_label)
+
+    async def _finish_deferred_recovery(self) -> None:
+        """Rotate a retired completed leg immediately before the next query."""
+        deferred = self._deferred_recovery
+        if deferred is None:
+            return
+        reason, resets_at, old_label = deferred
+        self._deferred_recovery = None
+        await self._close(suppress_errors=True)
+        await self._open(resume=True)
+        if self._token is None:
+            raise RuntimeError("Deferred recovery opened no replacement credential")
+        new_label = self._pool.credential_label(self._token)
+        self._reconnects.append(
+            ReconnectEvent(
+                reason=reason,
+                resets_at=resets_at,
+                from_credential=old_label,
+                to_credential=new_label,
+            )
+        )
+        log.warning(
+            "Session %s resumed after deferred %s (%s -> %s); preserving "
+            "accumulated output-token accounting",
+            self._session_id,
+            reason,
+            old_label,
+            new_label,
+        )
+
     async def query(self, prompt: str) -> None:
         """Send a normal experiment prompt to the active conversation."""
+        await self._finish_deferred_recovery()
         if self._client is None:
             raise RuntimeError("Session is not open")
         self._pending_prompt = prompt
@@ -326,6 +400,8 @@ class ResumableClaudeSession:
             rate_limit_reset: int | None = None
             spend_limited = False
             transport_failure: str | None = None
+            completed_response = False
+            leg_saw_provider_output = False
             try:
                 async for message in self._client.receive_response():
                     message_session_id = getattr(message, "session_id", None)
@@ -339,10 +415,28 @@ class ResumableClaudeSession:
                             )
                         continue
                     if isinstance(message, AssistantMessage):
+                        if message.error == "rate_limit":
+                            # Claude Code emits this zero-token quota prose as
+                            # an AssistantMessage; it is infrastructure, never
+                            # experimental model output.
+                            if rate_limit_reset is None:
+                                rate_limit_reset = 0
+                            # Let the phase collector retract any stream deltas
+                            # that preceded this synthetic quota envelope. It
+                            # never treats error Assistants as model output.
+                            yield message
+                            continue
                         assistant_error = _assistant_transport_error(message)
                         if assistant_error is not None:
                             transport_failure = assistant_error
+                            # Expose the envelope only as a discard signal for
+                            # already-streamed infrastructure prose.
+                            yield message
                             continue
+                        if message.content or message.usage:
+                            leg_saw_provider_output = True
+                    elif isinstance(message, StreamEvent):
+                        leg_saw_provider_output = True
                     if isinstance(message, ResultMessage) and (
                         message.is_error
                         and is_retryable_transport_error(
@@ -357,29 +451,60 @@ class ResumableClaudeSession:
                         # Never expose an infrastructure error as the terminal
                         # ResultMessage of an experimental phase.
                         continue
-                    # Once rejected, drain the dying CLI without exposing its
-                    # error ResultMessage as a completed experimental phase.
-                    if rate_limit_reset is None and transport_failure is None:
-                        yield message
+                    if isinstance(message, ResultMessage):
+                        if message.is_error:
+                            if rate_limit_reset is not None:
+                                # The rejected leg's error terminator is not an
+                                # experimental completion.
+                                continue
+                        else:
+                            usage = message.usage or {}
+                            output_tokens = usage.get("output_tokens")
+                            completed_response = completed_response or (
+                                message.num_turns > 0
+                                and (
+                                    leg_saw_provider_output
+                                    or (
+                                        output_tokens is not None
+                                        and int(str(output_tokens)) > 0
+                                    )
+                                )
+                            )
+                    # A rejected/error event can precede valid buffered
+                    # Assistant/User/Stream envelopes from the same CLI. The
+                    # specific infrastructure envelopes were skipped above;
+                    # retain every remaining envelope so a credential handoff
+                    # cannot silently erase paid model output or tool calls.
+                    yield message
             except Exception as exc:
                 if rate_limit_reset is None:
                     try:
                         self._stderr_tail.raise_if_spend_limit()
                     except TokenSpendLimit:
                         spend_limited = True
-                    diagnostic = "\n".join(
-                        [str(exc), *self._stderr_tail.lines[-8:]]
-                    )
+                    diagnostic = "\n".join([str(exc), *self._stderr_tail.lines[-8:]])
                     if not spend_limited and is_retryable_transport_error(diagnostic):
                         transport_failure = diagnostic
                     elif not spend_limited:
                         raise
 
             if rate_limit_reset is not None:
+                self._recovery_signal_count += 1
+                if completed_response:
+                    await self._defer_completed_recovery("rate_limit", rate_limit_reset)
+                    return
                 await self._recover("rate_limit", rate_limit_reset)
             elif spend_limited:
+                self._recovery_signal_count += 1
+                if completed_response:
+                    await self._defer_completed_recovery("spend_limit", None)
+                    return
                 await self._recover("spend_limit", None)
             elif transport_failure is not None:
+                self._recovery_signal_count += 1
+                if completed_response:
+                    await self._defer_completed_recovery("transport", None)
+                    return
                 if transport_retries >= TRANSPORT_RECOVERY_MAX_RETRIES:
                     raise RuntimeError(
                         "Transient provider transport failure persisted after "
@@ -442,30 +567,64 @@ class BudgetTracker:
         # Persist maxima for the whole conversation: a resumed CLI may replay
         # an earlier message, including one from a completed phase.
         self._message_tokens: dict[str, int] = {}
+        # Zero-token/message-start-only ids must also survive phase boundaries;
+        # otherwise a later transcript replay could masquerade as fresh work.
+        self._seen_message_ids: set[str] = set()
+        # A successful terminal Result seals the stable message ids generated
+        # by that query. Its aggregate usage has already trued up the phase, so
+        # a later transcript replay must not charge those ids a second time.
+        self._sealed_message_ids: set[str] = set()
         self._current_phase_streamed_tokens = 0
         self._prev_session_cost = 0.0
         self._prev_connection_id: str | None = None
 
-    def add(self, message_id: str | None, usage: dict[str, object] | None) -> None:
+    def add(self, message_id: str | None, usage: dict[str, object] | None) -> int:
         """Accumulate the current phase's streamed usage (max snapshot per id).
 
         Usage snapshots for one API message (message_start, then the real
         count in message_delta) share one id and grow — track the max, never
-        the first (undercounts) nor the sum (double counts).
+        the first (undercounts) nor the sum (double counts). Return the newly
+        charged delta so callers can distinguish fresh output from a replay.
         """
         if usage is None:
-            return
+            return 0
         tokens = int(str(usage.get("output_tokens", 0)))
         if message_id is None:
             self._current_phase_streamed_tokens += tokens
             self.spent += tokens
-            return
+            return tokens
+        if message_id in self._sealed_message_ids:
+            return 0
         previous = self._message_tokens.get(message_id, 0)
         if tokens > previous:
             delta = tokens - previous
             self._current_phase_streamed_tokens += delta
             self.spent += delta
             self._message_tokens[message_id] = tokens
+            return delta
+        return 0
+
+    @property
+    def known_message_ids(self) -> frozenset[str]:
+        """Stable API message ids already charged in this conversation."""
+        return (
+            frozenset(self._message_tokens)
+            | frozenset(self._seen_message_ids)
+            | frozenset(self._sealed_message_ids)
+        )
+
+    def observe_message_id(self, message_id: str) -> None:
+        """Persist an id even when no usage snapshot accompanied its envelope."""
+        self._seen_message_ids.add(message_id)
+
+    def seal_message_ids(self, message_ids: set[str]) -> None:
+        """Bind a completed query's Result true-up to its stable message ids."""
+        self._sealed_message_ids.update(message_ids)
+
+    @property
+    def current_phase_streamed_tokens(self) -> int:
+        """Unique streamed tokens charged in the active phase, including restarts."""
+        return self._current_phase_streamed_tokens
 
     def finish_phase(self, result_output_tokens: int | None) -> int:
         """Close a phase with the authoritative per-query result usage.
@@ -522,6 +681,8 @@ class BudgetTracker:
             "spent": self.spent,
             "completed_phases_tokens": self._completed_phases_tokens,
             "message_tokens": dict(self._message_tokens),
+            "seen_message_ids": sorted(self._seen_message_ids),
+            "sealed_message_ids": sorted(self._sealed_message_ids),
             "current_phase_streamed_tokens": self._current_phase_streamed_tokens,
             "prev_session_cost": self._prev_session_cost,
             "prev_connection_id": self._prev_connection_id,
@@ -550,6 +711,14 @@ class BudgetTracker:
         tracker._message_tokens = {
             str(message_id): int(tokens) for message_id, tokens in raw_messages.items()
         }
+        raw_seen = snapshot["seen_message_ids"]
+        if not isinstance(raw_seen, list):
+            raise TypeError("Checkpoint seen_message_ids must be a list")
+        tracker._seen_message_ids = {str(message_id) for message_id in raw_seen}
+        raw_sealed = snapshot["sealed_message_ids"]
+        if not isinstance(raw_sealed, list):
+            raise TypeError("Checkpoint sealed_message_ids must be a list")
+        tracker._sealed_message_ids = {str(message_id) for message_id in raw_sealed}
         tracker._current_phase_streamed_tokens = int(
             str(snapshot["current_phase_streamed_tokens"])
         )
@@ -750,16 +919,6 @@ def build_options(
     )
 
 
-def _collect_text(messages: list[AssistantMessage]) -> str:
-    """Concatenate all assistant text blocks in order."""
-    parts: list[str] = []
-    for message in messages:
-        for block in message.content:
-            if isinstance(block, TextBlock):
-                parts.append(block.text)
-    return "\n".join(parts)
-
-
 def _stringify_result(content: object) -> str:
     """Flatten a ToolResultBlock's content (str or list of blocks) to text."""
     if isinstance(content, str):
@@ -818,6 +977,8 @@ async def run_phase(
     process_resume_count: int = 0,
     discarded_output_text: str = "",
     discarded_tool_calls: list[ToolCall] | None = None,
+    discarded_text_block_keys: list[str] | None = None,
+    discarded_message_ids: list[str] | None = None,
     reconnect_start: int | None = None,
     on_progress: Callable[[dict[str, object]], None] | None = None,
     on_complete: Callable[[PhaseResult], None] | None = None,
@@ -830,34 +991,107 @@ async def run_phase(
     interrupted and the phase is marked budget_exhausted. Fails loud if no
     ResultMessage arrives or the result is an API error.
     """
-    await client.query(query_prompt if query_prompt is not None else prompt)
     if reconnect_start is None:
         reconnect_start = client.reconnect_count
+    recovery_signal_start = int(getattr(client, "recovery_signal_count", 0))
+    await client.query(query_prompt if query_prompt is not None else prompt)
+    resumed_connection_at_query = bool(
+        getattr(client, "connection_requires_fresh_output", False)
+    )
 
-    assistant_messages: list[AssistantMessage] = []
-    seen_assistant_ids: set[str] = set()
+    assistant_text_parts: list[str] = []
+    seen_message_ids: set[str] = set(discarded_message_ids or [])
+    for discarded_message_id in seen_message_ids:
+        tracker.observe_message_id(discarded_message_id)
+    phase_initial_message_ids = set(tracker.known_message_ids) | seen_message_ids
+    globally_seen_message_ids = set(phase_initial_message_ids)
+    seen_text_block_keys: set[str] = set(discarded_text_block_keys or [])
     tool_uses: dict[str, ToolUseBlock] = {}
     tool_results: dict[str, ToolResultBlock] = {}
-    result_message: ResultMessage | None = None
+    result_records: list[tuple[str, ResultMessage]] = []
+    connection_known_before: dict[str, set[str]] = {}
+    connection_resumed: dict[str, bool] = {}
+    connection_fresh_message_ids: dict[str, set[str]] = {}
+    connection_fresh_output_ids: dict[str, set[str]] = {}
+    connection_observed_tokens: dict[str, dict[str, int]] = {}
+    result_messages_by_connection: dict[str, ResultMessage] = {}
+    result_connection_order: list[str] = []
     interrupted = False
     interrupted_connections: set[str] = set()
 
     current_stream_id: str | None = None
     streamed_text: dict[str, list[str]] = {}
 
+    def register_connection(connection_id: str) -> None:
+        """Snapshot transcript history before this CLI emits any envelopes."""
+        if connection_id in connection_known_before:
+            return
+        connection_known_before[connection_id] = set(globally_seen_message_ids)
+        connection_resumed[connection_id] = bool(
+            getattr(client, "connection_requires_fresh_output", False)
+        )
+
+    def register_message(connection_id: str, message_id: str | None) -> bool:
+        """Return true only for a stable id created by this connection/query."""
+        register_connection(connection_id)
+        if message_id is None:
+            return False
+        is_fresh = message_id not in connection_known_before[connection_id]
+        globally_seen_message_ids.add(message_id)
+        seen_message_ids.add(message_id)
+        tracker.observe_message_id(message_id)
+        if is_fresh:
+            connection_fresh_message_ids.setdefault(connection_id, set()).add(
+                message_id
+            )
+        return is_fresh
+
+    def message_is_fresh(connection_id: str, message_id: str | None) -> bool:
+        """Classify a stable id without confusing a larger replay with new work."""
+        register_message(connection_id, message_id)
+        return bool(
+            message_id is not None
+            and message_id in connection_fresh_message_ids.get(connection_id, set())
+        )
+
+    def add_streamed_usage(
+        connection_id: str,
+        accounting_id: str | None,
+        stable_message_id: str | None,
+        usage: dict[str, object] | None,
+    ) -> int:
+        """Charge global novelty while retaining raw local maxima for Result use."""
+        fresh_message = register_message(connection_id, stable_message_id)
+        if usage is not None:
+            tokens = int(str(usage.get("output_tokens", 0)))
+            if fresh_message and stable_message_id is not None and tokens > 0:
+                connection_fresh_output_ids.setdefault(connection_id, set()).add(
+                    stable_message_id
+                )
+            if accounting_id is not None:
+                local = connection_observed_tokens.setdefault(connection_id, {})
+                local[accounting_id] = max(local.get(accounting_id, 0), tokens)
+        return tracker.add(accounting_id, usage)
+
+    def text_block_key(message_id: str, text: str) -> str:
+        """Deduplicate fragments only within the same stable provider message."""
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return f"v2:{message_id}:{digest}"
+
+    def anonymous_text_was_discarded(text: str) -> bool:
+        """Deduplicate discarded output that had no stable provider message id."""
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return f"sha256:{digest}" in seen_text_block_keys
+
     def progress_record() -> dict[str, object]:
         """Serializable prefix retained if the local process is killed."""
         return {
             "text_parts": [
-                *(
-                    block.text
-                    for message in assistant_messages
-                    for block in message.content
-                    if isinstance(block, TextBlock)
-                ),
+                *assistant_text_parts,
                 *("".join(parts) for parts in streamed_text.values() if parts),
             ],
-            "seen_assistant_ids": sorted(seen_assistant_ids),
+            "seen_message_ids": sorted(seen_message_ids),
+            "seen_text_block_keys": sorted(seen_text_block_keys),
             "current_stream_id": current_stream_id,
             "tool_uses": {
                 use_id: {"name": use.name, "input": dict(use.input)}
@@ -895,25 +1129,77 @@ async def run_phase(
             await client.interrupt()
 
     async for message in client.receive_response():
+        message_connection_id = client.connection_id
+        register_connection(message_connection_id)
         if isinstance(message, AssistantMessage):
             # API message ids are stable if a resumed CLI replays the tail;
-            # SDK envelope UUIDs need not be.
-            assistant_id = message.message_id or message.uuid
-            if assistant_id is None or assistant_id not in seen_assistant_ids:
-                assistant_messages.append(message)
-                if assistant_id is not None:
-                    seen_assistant_ids.add(assistant_id)
+            # SDK envelope UUIDs need not be. One API message id may arrive in
+            # several envelopes (thinking, tools, then final text), so merge
+            # blocks instead of dropping the whole repeated message.
+            stable_assistant_id = message.message_id or current_stream_id
+            accounting_id = stable_assistant_id or message.uuid
+            assistant_error = (
+                message.error == "rate_limit"
+                or _assistant_transport_error(message) is not None
+            )
+            if assistant_error:
+                # Stream deltas can precede the SDK's synthetic quota/server
+                # error Assistant. Remove their prose and disqualify their id
+                # as fresh experimental output. Any token charge already seen
+                # is retained as a conservative upper bound.
+                error_message_ids = {
+                    message_id
+                    for message_id in (stable_assistant_id, current_stream_id)
+                    if message_id is not None
+                }
+                for error_message_id in error_message_ids:
+                    streamed_text.pop(error_message_id, None)
+                    connection_fresh_output_ids.setdefault(
+                        message_connection_id, set()
+                    ).discard(error_message_id)
+                register_message(message_connection_id, stable_assistant_id)
+                save_progress()
+                continue
+            anonymous_allowed = (
+                stable_assistant_id is None
+                and not connection_resumed[message_connection_id]
+            )
+            # A live reconnect may reveal a TextBlock/tool envelope that was
+            # generated on the first leg but not delivered before transport
+            # failure. Preserve that within-phase evidence. By contrast, ids
+            # known before this phase are transcript history (or deliberately
+            # discarded crash prefixes) and must never enter the new artifact.
+            content_allowed = bool(
+                stable_assistant_id is not None
+                and stable_assistant_id not in phase_initial_message_ids
+            )
+            if content_allowed or anonymous_allowed:
+                block_identity = stable_assistant_id or accounting_id
                 for block in message.content:
-                    if isinstance(block, ToolUseBlock):
+                    if isinstance(block, TextBlock):
+                        if block_identity is None:
+                            if not anonymous_text_was_discarded(block.text):
+                                assistant_text_parts.append(block.text)
+                        else:
+                            key = text_block_key(block_identity, block.text)
+                            if key not in seen_text_block_keys:
+                                assistant_text_parts.append(block.text)
+                                seen_text_block_keys.add(key)
+                    elif isinstance(block, ToolUseBlock):
                         tool_uses[block.id] = block
-            if assistant_id is not None:
-                streamed_text.pop(assistant_id, None)
-            if current_stream_id is not None:
-                streamed_text.pop(current_stream_id, None)
+                if stable_assistant_id is not None:
+                    streamed_text.pop(stable_assistant_id, None)
+                if current_stream_id is not None:
+                    streamed_text.pop(current_stream_id, None)
             # SDK assistant envelopes should carry the API message id. If one
             # does not, reuse the most recent stream id so its initial usage
             # snapshot cannot be double-counted against message_delta.
-            tracker.add(message.message_id or current_stream_id, message.usage)
+            add_streamed_usage(
+                message_connection_id,
+                accounting_id,
+                stable_assistant_id,
+                message.usage,
+            )
             save_progress()
             await interrupt_if_over_budget()
         elif isinstance(message, StreamEvent):
@@ -921,8 +1207,13 @@ async def run_phase(
             # AssistantMessage.usage only carries the initial tiny snapshot.
             event_type = message.event.get("type")
             if event_type == "message_start":
-                current_stream_id = message.event.get("message", {}).get("id")
-                if current_stream_id is not None:
+                raw_stream_id = message.event.get("message", {}).get("id")
+                current_stream_id = (
+                    str(raw_stream_id) if raw_stream_id is not None else None
+                )
+                if current_stream_id is not None and message_is_fresh(
+                    message_connection_id, current_stream_id
+                ):
                     streamed_text.setdefault(current_stream_id, [])
                 save_progress()
                 # If a quota handoff happened after the previous CLI was
@@ -930,13 +1221,22 @@ async def run_phase(
                 # materially beyond the same attempt cutoff.
                 await interrupt_if_over_budget()
             elif event_type == "message_delta":
-                tracker.add(current_stream_id, message.event.get("usage"))
+                add_streamed_usage(
+                    message_connection_id,
+                    current_stream_id or message.uuid,
+                    current_stream_id,
+                    message.event.get("usage"),
+                )
                 save_progress()
                 await interrupt_if_over_budget()
             elif event_type == "content_block_delta":
                 delta = message.event.get("delta", {})
+                fresh_stream = message_is_fresh(
+                    message_connection_id, current_stream_id
+                )
                 if (
                     current_stream_id is not None
+                    and fresh_stream
                     and isinstance(delta, dict)
                     and delta.get("type") == "text_delta"
                 ):
@@ -946,14 +1246,52 @@ async def run_phase(
                     save_progress()
         elif isinstance(message, UserMessage) and isinstance(message.content, list):
             for block in message.content:
-                if isinstance(block, ToolResultBlock):
+                if (
+                    isinstance(block, ToolResultBlock)
+                    and block.tool_use_id in tool_uses
+                ):
                     tool_results[block.tool_use_id] = block
             save_progress()
         elif isinstance(message, ResultMessage):
-            result_message = message
+            result_records.append((message_connection_id, message))
+            if message_connection_id not in result_messages_by_connection:
+                result_connection_order.append(message_connection_id)
+            result_messages_by_connection[message_connection_id] = message
 
-    if result_message is None:
+    if not result_records:
         raise RuntimeError(f"Agent produced no ResultMessage for phase '{label}'")
+
+    reconnects = client.reconnect_events[reconnect_start:]
+    recovered_phase = bool(
+        process_resume_count > 0
+        or resumed_connection_at_query
+        or reconnects
+        or int(getattr(client, "recovery_signal_count", 0)) > recovery_signal_start
+    )
+
+    if interrupted:
+        result_connection_id, result_message = result_records[-1]
+    else:
+        completed_results = [
+            (connection_id, message)
+            for connection_id, message in result_records
+            if message.num_turns > 0
+            and bool(connection_fresh_output_ids.get(connection_id))
+        ]
+        if not completed_results:
+            last_connection_id, last_message = result_records[-1]
+            if last_message.is_error:
+                result_connection_id, result_message = (
+                    last_connection_id,
+                    last_message,
+                )
+            else:
+                raise RuntimeError(
+                    f"Phase '{label}' returned no fresh completed provider "
+                    "response; leaving its checkpoint incomplete"
+                )
+        else:
+            result_connection_id, result_message = completed_results[-1]
 
     # An API-error result (auth failure, server error, max-turns error, ...)
     # must never be written as a completed attempt: fail the task so the
@@ -964,8 +1302,7 @@ async def run_phase(
             f"errors={result_message.errors} result={result_message.result!r}"
         )
 
-    reconnects = client.reconnect_events[reconnect_start:]
-    text = _collect_text(assistant_messages)
+    text = "\n".join(part for part in assistant_text_parts if part)
     # Some Claude CLI/SDK versions persist the final assistant text to the raw
     # transcript and emit it as stream deltas, but return result="" and no
     # TextBlock envelope.  Never let that empty aggregate erase real output.
@@ -977,38 +1314,80 @@ async def run_phase(
     if residual_streamed_text:
         text = "\n".join(part for part in [text, *residual_streamed_text] if part)
     result_text = result_message.result
-    if (
-        isinstance(result_text, str)
-        and result_text.strip()
-        and not interrupted
-        and not reconnects
-    ):
-        text = result_text
-
-    result_usage = result_message.usage or {}
-    result_tokens = result_usage.get("output_tokens")
-    if (
-        process_resume_count > 0
-        and not interrupted
-        and result_message.num_turns == 0
-        and not text.strip()
-        and not assistant_messages
-        and not tool_uses
-        and int(str(result_tokens or 0)) == 0
-    ):
-        # A resumed Claude CLI can immediately replay a synthetic successful
-        # ResultMessage after the prior process ended on a transport error.
-        # Treating the tracker's pre-crash prefix as a newly completed phase
-        # would turn infrastructure failure into an empty benchmark answer.
-        raise RuntimeError(
-            f"Resumed phase '{label}' returned no new provider output; "
-            "leaving its checkpoint incomplete"
-        )
-    phase_tokens = tracker.finish_phase(
-        int(str(result_tokens)) if result_tokens is not None else None
+    if isinstance(result_text, str) and result_text.strip() and not interrupted:
+        if not recovered_phase:
+            text = result_text
+        else:
+            # A resumed CLI can return the completed final answer only in the
+            # terminal ResultMessage, without replaying its AssistantMessage.
+            # Preserve any already-streamed prefix and append the aggregate
+            # only when it is not already represented there.
+            if result_text.strip() not in text:
+                text = "\n".join(part for part in (text, result_text) if part)
+    # The tracker charges each stable API message once across all reconnects.
+    # Result usage is per query in the Claude SDK. Reconcile it only against
+    # messages created by the terminal recovery query; replayed transcript
+    # history was generated by an earlier query and is already represented by
+    # the tracker's global message-id maxima. If a proxy instead reports a
+    # transcript aggregate, this deliberately overcounts rather than risking
+    # an over-budget experimental artifact.
+    reconciled_phase_tokens = tracker.current_phase_streamed_tokens
+    usage = result_message.usage or {}
+    raw_tokens = usage.get("output_tokens")
+    result_can_supply_unstreamed_tokens = bool(
+        connection_fresh_output_ids.get(result_connection_id)
     )
+    unstreamed_result_tokens = 0
+    result_usage_covers_observed = False
+    if raw_tokens is not None and result_can_supply_unstreamed_tokens:
+        result_output_tokens = int(str(raw_tokens))
+        observed = connection_observed_tokens.get(result_connection_id, {})
+        fresh_observed_ids = connection_fresh_message_ids.get(
+            result_connection_id, set()
+        )
+        observed_message_ids = (
+            fresh_observed_ids
+            if fresh_observed_ids or recovered_phase
+            else set(observed)
+        )
+        observed_on_connection = sum(
+            tokens
+            for message_id, tokens in observed.items()
+            if message_id in observed_message_ids
+        )
+        unstreamed_result_tokens = max(0, result_output_tokens - observed_on_connection)
+        reconciled_phase_tokens += unstreamed_result_tokens
+        result_usage_covers_observed = result_output_tokens >= observed_on_connection
+    if result_usage_covers_observed and not interrupted:
+        tracker.seal_message_ids(
+            connection_fresh_message_ids.get(result_connection_id, set())
+        )
+    phase_tokens = tracker.finish_phase(reconciled_phase_tokens)
 
-    cost = result_message.total_cost_usd
+    phase_cost = tracker.phase_cost_delta(
+        result_message.total_cost_usd
+        if result_message.total_cost_usd is not None
+        else 0.0,
+        result_connection_id,
+    )
+    provider_usage: dict[str, object] = dict(usage)
+    if recovered_phase:
+        # Keep every provider-specific field losslessly while exposing the
+        # normalized cross-connection count used by the experiment.
+        provider_usage["_terminal_result_usage"] = dict(usage)
+        provider_usage["_result_usage_by_connection"] = [
+            {
+                "connection_id": connection_id,
+                "usage": dict(message.usage or {}),
+            }
+            for connection_id in result_connection_order
+            for message in [result_messages_by_connection[connection_id]]
+        ]
+        provider_usage["_recovery_output_accounting"] = (
+            "stable_message_ids_plus_per_query_result_conservative"
+        )
+        provider_usage["output_tokens"] = phase_tokens
+
     stop_reason = (
         STOP_BUDGET_EXHAUSTED
         if interrupted
@@ -1020,23 +1399,24 @@ async def run_phase(
         text=text,
         output_tokens=phase_tokens,
         cumulative_output_tokens=tracker.spent,
-        # ResultMessage.num_turns is per query (unlike total_cost_usd, which
-        # accumulates across queries in one live CLI process).
         num_turns=result_message.num_turns,
         duration_ms=result_message.duration_ms,
-        total_cost_usd=tracker.phase_cost_delta(
-            cost if cost is not None else 0.0, client.connection_id
-        ),
+        total_cost_usd=phase_cost,
         is_error=result_message.is_error,
         stop_reason=stop_reason,
         budget_exhausted=interrupted,
         tool_calls=_collect_tool_calls(tool_uses, tool_results),
         reconnects=reconnects,
-        provider_usage=dict(result_usage),
+        provider_usage=provider_usage,
         process_resume_count=process_resume_count,
         discarded_output_text=discarded_output_text,
         discarded_tool_calls=list(discarded_tool_calls or []),
     )
+    confirm_response = getattr(client, "confirm_fresh_response", None)
+    if callable(confirm_response) and bool(
+        connection_fresh_output_ids.get(result_connection_id)
+    ):
+        confirm_response()
     if on_complete is not None:
         on_complete(phase)
     return phase

@@ -21,6 +21,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import anyio
 
@@ -43,6 +44,7 @@ from src.constants import (
     LOG_FORMAT,
     LOG_LEVEL,
     META_FILENAME,
+    MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
     PERMISSION_MODE,
@@ -52,7 +54,7 @@ from src.constants import (
 )
 from src.models import ArmConfig, ExperimentConfig, Problem, ReconnectEvent
 from src.prompts import audit_prompt
-from src.run import select_problems, select_seeds
+from src.run import parallel_source_arm_name, select_problems, select_seeds
 from src.solver import (
     ResumableClaudeSession,
     StderrTail,
@@ -63,6 +65,7 @@ from src.solver import (
 )
 from src.storage import (
     archive_audit_scratches,
+    bank_run_output_dir,
     budget_cut_multipliers,
     compile_arm_audit,
     cut_solution_path,
@@ -71,7 +74,6 @@ from src.storage import (
     seed_done,
     seed_output_dir,
     seed_solution_text,
-    uniform_branch_output_dir,
     write_seed_audit,
 )
 from src.token_pool import TokenPool
@@ -214,6 +216,9 @@ async def audit_seed(
     audit_score + note. A missing snapshot (no complete write-up within that
     budget) is scored invalid with an explanatory note, no judge call spent.
     """
+    if arm.mode == MODE_PARALLEL and output_dir_override is None:
+        await audit_parallel_bank(config, arm, problem, seed, pool)
+        return
     if arm.mode == MODE_UNIFORM_STRATEGY and output_dir_override is None:
         await audit_uniform_strategy_bank(config, arm, problem, seed, pool)
         return
@@ -370,6 +375,139 @@ async def audit_seed(
         checkpoint.close()
 
 
+def _prefix_summary(
+    records: list[dict[str, Any]],
+    sizes: tuple[int, ...],
+    *,
+    key_template: str = "{size}x",
+) -> dict[str, dict[str, object]]:
+    """Best-score/pass-count summaries for prespecified candidate prefixes."""
+    summaries: dict[str, dict[str, object]] = {}
+    for size in sizes:
+        prefix = records[:size]
+        scores = [int(record["audit_score"]) for record in prefix]
+        summaries[key_template.format(size=size)] = {
+            "audit_score": max(scores),
+            "candidate_pass_count": sum(score >= 5 for score in scores),
+            "candidate_count": size,
+            "note": f"Best of the first {size} prespecified candidate(s).",
+        }
+    return summaries
+
+
+def _bank_audit_record(
+    path: Path, expected: dict[str, object], label: str
+) -> dict[str, Any]:
+    """Load one candidate verdict and reject stale/cross-bank audit files."""
+    record: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    mismatches = {
+        key: {"expected": value, "actual": record.get(key)}
+        for key, value in expected.items()
+        if record.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(f"{label} audit identity mismatch: {mismatches}")
+    return record
+
+
+async def audit_parallel_bank(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    pool: TokenPool,
+) -> None:
+    """Audit one replicated Parallel bank, including its frozen run_01."""
+    bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+    source_arm = config.arms[parallel_source_arm_name(arm)]
+    source_dir = seed_output_dir(config, source_arm, problem.problem_id, seed)
+    if not seed_done(source_dir):
+        raise FileNotFoundError(f"Parallel run_01 source is incomplete: {source_dir}")
+    if not seed_audited(source_dir):
+        await audit_seed(config, source_arm, problem, seed, pool)
+
+    tasks = []
+    for run in range(2, 9):
+        run_dir = bank_run_output_dir(bank_dir, run)
+        if not seed_done(run_dir):
+            raise FileNotFoundError(f"Parallel run_{run:02d} is incomplete: {run_dir}")
+        if seed_audited(run_dir):
+            continue
+        tasks.append(
+            lambda r=run, d=run_dir: audit_seed(
+                config,
+                arm,
+                problem,
+                seed,
+                pool,
+                output_dir_override=d,
+                record_extra={"parallel_bank_seed": seed, "parallel_run": r},
+            )
+        )
+    await run_all(tasks, min(config.max_concurrency, 7))
+
+    runs: list[dict[str, Any]] = []
+    for run in range(1, 9):
+        run_dir = source_dir if run == 1 else bank_run_output_dir(bank_dir, run)
+        expected_arm = source_arm.name if run == 1 else arm.name
+        expected = {
+            "problem_id": problem.problem_id,
+            "arm": expected_arm,
+            "seed": seed,
+            "solver_model": config.model,
+            "audit_model": config.audit_model,
+        }
+        if run > 1:
+            expected.update({"parallel_bank_seed": seed, "parallel_run": run})
+        record = _bank_audit_record(
+            run_dir / SEED_AUDIT_FILENAME,
+            expected,
+            f"Parallel run_{run:02d}",
+        )
+        runs.append(
+            {
+                "run": run,
+                "source_arm": source_arm.name if run == 1 else None,
+                "audit_score": int(record["audit_score"]),
+                "note": str(record["note"]),
+            }
+        )
+    scores = [int(record["audit_score"]) for record in runs]
+    pass_count = sum(score >= 5 for score in scores)
+    first_success = next(
+        (run for run, score in enumerate(scores, start=1) if score >= 5), None
+    )
+    write_seed_audit(
+        bank_dir,
+        {
+            "problem_id": problem.problem_id,
+            "arm": arm.name,
+            "seed": seed,
+            "solver_model": config.model,
+            "audit_model": config.audit_model,
+            "audit_score": max(scores),
+            "note": (
+                f"Parallel candidate coverage: {pass_count}/8 proofs scored at "
+                "least 5."
+            ),
+            "candidate_pass_count": pass_count,
+            "candidate_count": 8,
+            "first_success_run": first_success,
+            "run_01_source_arm": source_arm.name,
+            "runs": runs,
+            "budget_cuts": _prefix_summary(runs, (1, 2, 4, 8)),
+        },
+    )
+    log.info(
+        "%s/%s bank seed %d: candidate coverage %d/8 (best score %d)",
+        arm.name,
+        problem.problem_id,
+        seed,
+        pass_count,
+        max(scores),
+    )
+
+
 async def audit_uniform_strategy_bank(
     config: ExperimentConfig,
     arm: ArmConfig,
@@ -382,7 +520,7 @@ async def audit_uniform_strategy_bank(
     strategy_record = json.loads(
         (bank_dir / UNIFORM_STRATEGIES_FILENAME).read_text(encoding="utf-8")
     )
-    assignments = [int(value) for value in strategy_record["branch_strategy_indices"]]
+    assignments = [int(value) for value in strategy_record["run_strategy_indices"]]
     strategies = strategy_record["strategies"]
     if not isinstance(strategies, list):
         raise ValueError("Uniform Strategy bank strategies must be a list")
@@ -402,8 +540,8 @@ async def audit_uniform_strategy_bank(
                 "candidate_pass_count": 0,
                 "candidate_count": 0,
                 "strategy_count": 0,
-                "branch_strategy_indices": [],
-                "branches": [],
+                "run_strategy_indices": [],
+                "runs": [],
                 "budget_cuts": {},
             },
         )
@@ -417,14 +555,14 @@ async def audit_uniform_strategy_bank(
     if len(assignments) != config.uniform_strategy_branches or any(
         index < 1 or index > len(strategies) for index in assignments
     ):
-        raise ValueError("Uniform Strategy bank has invalid branch assignments")
+        raise ValueError("Uniform Strategy bank has invalid run assignments")
     tasks = []
-    for branch, strategy_index in enumerate(assignments, start=1):
-        branch_dir = uniform_branch_output_dir(bank_dir, branch)
-        if seed_audited(branch_dir):
+    for run, strategy_index in enumerate(assignments, start=1):
+        run_dir = bank_run_output_dir(bank_dir, run)
+        if seed_audited(run_dir):
             continue
         tasks.append(
-            lambda b=branch, i=strategy_index, d=branch_dir: audit_seed(
+            lambda r=run, i=strategy_index, d=run_dir: audit_seed(
                 config,
                 arm,
                 problem,
@@ -433,29 +571,40 @@ async def audit_uniform_strategy_bank(
                 output_dir_override=d,
                 record_extra={
                     "uniform_strategy_bank_seed": seed,
-                    "uniform_strategy_branch": b,
+                    "uniform_strategy_run": r,
                     "uniform_strategy_index": i,
                 },
             )
         )
     await run_all(tasks, min(config.max_concurrency, len(assignments)))
 
-    branches = []
-    for branch, strategy_index in enumerate(assignments, start=1):
-        branch_dir = uniform_branch_output_dir(bank_dir, branch)
-        record = json.loads(
-            (branch_dir / SEED_AUDIT_FILENAME).read_text(encoding="utf-8")
-        )
-        branches.append(
+    runs = []
+    for run, strategy_index in enumerate(assignments, start=1):
+        run_dir = bank_run_output_dir(bank_dir, run)
+        record = _bank_audit_record(
+            run_dir / SEED_AUDIT_FILENAME,
             {
-                "branch": branch,
+                "problem_id": problem.problem_id,
+                "arm": arm.name,
+                "seed": seed,
+                "solver_model": config.model,
+                "audit_model": config.audit_model,
+                "uniform_strategy_bank_seed": seed,
+                "uniform_strategy_run": run,
+                "uniform_strategy_index": strategy_index,
+            },
+            f"Uniform Strategy run_{run:02d}",
+        )
+        runs.append(
+            {
+                "run": run,
                 "strategy_index": strategy_index,
                 "audit_score": int(record["audit_score"]),
                 "note": str(record["note"]),
             }
         )
-    best_score = max(int(record["audit_score"]) for record in branches)
-    pass_count = sum(int(record["audit_score"]) >= 5 for record in branches)
+    best_score = max(int(record["audit_score"]) for record in runs)
+    pass_count = sum(int(record["audit_score"]) >= 5 for record in runs)
     write_seed_audit(
         bank_dir,
         {
@@ -467,13 +616,16 @@ async def audit_uniform_strategy_bank(
             "audit_score": best_score,
             "note": (
                 f"Audited candidate coverage: {pass_count}/"
-                f"{len(branches)} executor proofs scored at least 5."
+                f"{len(runs)} executor proofs scored at least 5."
             ),
             "candidate_pass_count": pass_count,
-            "candidate_count": len(branches),
+            "candidate_count": len(runs),
             "strategy_count": len(strategies),
-            "branch_strategy_indices": assignments,
-            "branches": branches,
+            "run_strategy_indices": assignments,
+            "runs": runs,
+            "candidate_prefixes": _prefix_summary(
+                runs, (1, 2, 4, 8), key_template="first_{size}_runs"
+            ),
             "budget_cuts": {},
         },
     )
@@ -483,7 +635,7 @@ async def audit_uniform_strategy_bank(
         problem.problem_id,
         seed,
         pass_count,
-        len(branches),
+        len(runs),
         best_score,
     )
 
@@ -554,9 +706,13 @@ async def main() -> None:
         lambda p=problem, s=seed: audit_seed(config, arm, p, s, pool)
         for problem, seed in pending
     ]
-    # A Uniform Strategy bank audits up to eight executor candidates in
-    # parallel. One bank controller at a time preserves the global cap.
-    outer_limit = 1 if arm.mode == MODE_UNIFORM_STRATEGY else config.max_concurrency
+    # Parallel and Uniform Strategy banks audit their candidates internally.
+    # One bank controller at a time preserves the global concurrency cap.
+    outer_limit = (
+        1
+        if arm.mode in {MODE_PARALLEL, MODE_UNIFORM_STRATEGY}
+        else config.max_concurrency
+    )
     await run_all(tasks, outer_limit)
 
     path, count = compile_arm_audit(config, arm)
