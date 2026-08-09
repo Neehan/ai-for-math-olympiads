@@ -1,58 +1,63 @@
-# Paper 1: When More Inference Fails to Find an Executable Strategy
+# Strategy-Conditioned Test-Time Scaling
 
-## Question and claim
+## Thesis
 
-When a model fails a fresh olympiad proof, can substantial unaided inference recover it, or does the model fail to discover a strategy it could execute?
+How much test-time inference is equivalent to knowing what to try? When unaided inference stops producing valid proofs, is the model out of capability, or is it missing a strategy that would make further inference useful?
 
-We first stress-test unaided inference under sequential depth, parallel breadth, and explicit strategy diversification. Only afterward do we supply a frozen, audited, ≤25-word strategy. The hint never defines which problems receive unaided scaling.
+> **The return to inference is strategy-conditioned: unaided inference can plateau, while a short correct strategy moves the same model into a state where additional inference becomes productive again.**
 
-> Some failures survive strong unaided inference—including explicit strategy diversification—yet become solvable once the same model receives a short correct strategy.
+Strategic information and inference compute are complementary, not interchangeable. This claim is restricted to the tested models, problems, protocols, and budgets. The oracle strategy is a controlled diagnostic intervention, not free deployable information.
 
-This is a discovery–execution gap under specified models, protocols, and 8× budgets. It does not imply that unlimited inference could never discover the strategy.
+## Development signal
 
-## Experiment sequence
+On the 13-problem Opus 4.8 combinatorics pilot, with problem solved = at least 2/3 audited attempts scoring ≥5:
 
-### 13-problem development pilot
+- unaided coverage: `4/13 → 6/13 → 6/13 → 6/13` at `1×/2×/4×/8×`;
+- supplying the frozen ≤25-word strategy to the seven survivors: `9/13` at 1×;
+- further strategy-conditioned inference: provisionally `10/13 → 10/13 → 11/13` at `2×/4×/8×`.
 
-Complete this pilot before freezing the 35-problem confirmation. Baseline, hint, sequential, and Uniform Strategy Search use three independent replicates; each parallel bank comprises the prespecified eight independent 1× attempts.
+Three missing hinted audits count as failures in this development plot. The result is gated and motivates the thesis; it is not the unbiased interaction estimate. Parallel and Uniform Search are unfinished.
 
-1. **Baseline 1×:** run all 13 problems.
-2. **Define the scaling set:** include every problem that fails baseline in at least one seed.
-3. **Sequential 8×:** run the entire scaling set with audited 1×/2×/4×/8× cuts.
-4. **Parallel 8×:** run the same scaling set with eight independent 1× attempts.
-5. **Define depth–breadth survivors:** problems with no success under either 8× protocol.
-6. **Uniform Strategy Search-8:** run every depth–breadth survivor. Inspired by the strategy-extraction and uniform-allocation components of [TTS-Uniform](https://arxiv.org/abs/2509.17905), an 80k shared planner enumerates strategies and eight fresh 190k executors are allocated across them (`80k + 8×190k = 1.6M`). Blinded proof audit measures candidate coverage and a separate trace audit records whether the later oracle strategy's key idea appeared.
-7. **Define full-search survivors:** depth–breadth survivors with no successful proof under Uniform Strategy Search-8.
-8. **Hint 1×:** now evaluate the frozen ≤25-word strategy on all 13 problems; the primary outcomes are strict witness prevalence among all problems and rescue rate among full-search survivors.
-9. **Strategy-conditioned scaling:** among full-search survivors with stable hint failure (0/3), run both hint-sequential and hint-parallel. Problems already rescued by hint 1× need no expensive hint-conditioned arm. These gated arms measure residual rescue, not a full-factorial interaction effect.
+## Frozen experiment design
 
-All problems satisfying a gate are included. Stable baseline successes are carried forward rather than given unnecessary 8× runs.
+### 1. Fixed-cohort scaling — primary
 
-**Current status.** Baseline is complete and audited: 39/39 attempts. Eleven problems fail at least once and form the scaling set; the original nine plus `apmo-2026-05` and `china-tst-2026-12`. Baseline-sequential currently has seed 1 for the original nine, leaving 24 attempts: seeds 2–3 for those nine and all three seeds for the two additions. Hint seed 1 is complete; its early execution during development does not alter the survivor-first analysis.
+1. Freeze prompts, strategies, budgets, audit rules, and analyses.
+2. Run baseline 1× with three seeds. Select every problem below 2/3 using baseline only; the pilot cohort has nine problems.
+3. On every selected problem, run unaided and strategy-conditioned Self-Refine with three trajectories and audited `1×/2×/4×/8×` exact-prefix cuts.
+4. Compare cumulative reliable coverage on the same cohort and denominator. Carry a problem forward within an arm after it reaches 2/3.
 
-### 35-problem confirmation
+The primary question is whether coverage grows more from 1× to 8× after strategy conditioning. Neither final unaided outcomes nor hinted outcomes may define this cohort.
 
-After the pilot, freeze the prompts, hints, gates, success threshold, and hypotheses. Repeat the sequence on all 35 post-cutoff algebra, combinatorics, and number-theory problems. Primary claims are within model; GPT-family and open-weight replications test generality, while cross-model comparisons are supporting observational evidence.
+### 2. Unaided-search stress test
+
+Use a predeclared survivor cascade:
+
+1. Continue every problem below 2/3 after unaided Self-Refine 4×—seven in the pilot—to Self-Refine 8×.
+2. Run Parallel-8, comprising eight independent 1× attempts, on the Self-Refine-8 survivors.
+3. Run Uniform Strategy Search-8 on the Parallel-8 survivors, using an 80k shared planner plus eight 190k executors (`1.6M` total), motivated by [TTS-Uniform](https://arxiv.org/abs/2509.17905).
+
+A full survivor has received up to 24× across three separate protocols; do not collapse them into one 24× inference curve. Report the denominator and incremental rescue at every gate; because the cohorts shrink, do not compare Parallel and Uniform rescue rates directly. For survivors of every unaided protocol, freeze an idea rubric, audit the recorded unaided outputs, then report strategy and strategy-plus-inference rescue as a conditional boundary analysis.
+
+### 3. Confirmation and replication
+
+Treat the 13 combinatorics problems as development data. Freeze the design, evaluate the remaining 22 untouched problems, and report both splits separately; pooled results over 35 are secondary. Opus is the main experiment. Replicate the qualitative result with one GPT-family and one open-weight proof model. Each model defines its own baseline-selected and stress-test cohorts; report every available intermediate cut, while reserving expensive search controls for problems passing the frozen gates.
 
 ## Protocol
 
-- **Success:** blinded audit score ≥5. Scores 7/6/5 mean complete, one obvious one-line omission, or two to three such omissions, each locally checkable without a new idea; any substantive gap is 0. Every headline witness receives independent human validation, and score ≥6 is reported as a sensitivity analysis.
-- **Three-seed reporting:** report the raw `0/3`–`3/3` pass count. For summaries, solved = ≥2/3, unstable = 1/3, and failed = 0/3.
-- **Strategy:** one frozen, independently audited hint of at most 25 words. It may state the key idea, but not the answer, a substantial intermediate derivation, or a proof sketch.
-- **1×:** a strict 200k eligible-output-token tier, including hidden reasoning, visible text, and tool calls. Work stops around 180k, followed when possible by one tool-free response capped at 20k; any phase ending beyond 200k is logged but cannot count.
-- **Sequential 8×:** one exact-prefix trajectory with self-review and cumulative budget cuts, but no grade, reference solution, or ground truth.
-- **Parallel 8×:** eight independent attempts under the matched baseline or hint prompt, reported as pass@1/2/4/8 with allocated and realized tokens.
-- Sequential depth and parallel breadth are analyzed separately; neither is called “unlimited compute.”
+- **Correctness:** attempt success = blinded audit score ≥5; any substantive gap scores 0. Repeat at ≥6 and independently human-check every headline proof.
+- **Reliability:** report raw `0/3`–`3/3`; primary solved = ≥2/3, unstable = 1/3, failed = 0/3; report 3/3 as a conservative sensitivity result.
+- **Replicates:** any ≥2/3 protocol claim uses three independent replicates; one Parallel or Uniform bank is one replicate.
+- **Strategy:** one frozen, audited hint of at most 25 words. It may state the key idea, but not the answer, a substantial intermediate derivation, or a proof sketch.
+- **Budget:** 1× is at most 200k eligible output tokens, including hidden reasoning, visible text, and tool calls. Over-budget attempts cannot count.
+- **Sequential:** one exact-prefix trajectory with self-review and cumulative cuts, without grades, references, or ground truth.
+- **Reporting:** include every late success, first-passing budget, allocated and realized tokens, and token mean, median, standard deviation, and maximum.
+- **Trace audit:** for full-search survivors only, freeze a problem-specific decisive-idea rubric before inspection. Two blinded auditors classify the idea as absent, mentioned but not operationalized, developed but abandoned, or executed. This label is required for strict discovery witnesses but not the population-level interaction; claims concern recorded outputs, not unobserved internal thought.
 
-## Hypotheses and analyses
+## Figures and success condition
 
-1. **Unaided saturation:** rescues are front-loaded, with little additional audited success from 4× to 8× under sequential and parallel inference separately.
-2. **Conditional capability beyond the boundary:** a reproducible fraction of full-search survivors is rescued by the ≤25-word strategy at 1×.
-3. **Discovery–execution gap:** for the strongest cases, the supplied key idea is absent from all recorded unaided outputs while hint 1× succeeds. If it appears unaided, the case is classified as abandonment or failed execution rather than failed discovery.
-4. **Complementarity:** some full-search survivors with stable hint failure pass hint-sequential or hint-parallel, showing that strategic information can make additional inference productive without replacing proof-development work.
+1. **Gated frontier:** unaided plateau → explicit strategy intervention → renewed strategy-conditioned scaling. The two phases repeat the `1×/2×/4×/8×` budget axis and are joined only by the labeled intervention, not as continuous total compute.
+2. **Primary interaction:** both scaling curves on the same baseline-selected cohort.
+3. **Survivor funnel:** conditional rescue and remaining problems after Self-Refine-8, Parallel-8, Uniform-8, and the strategy intervention.
 
-Baseline stability and first-passing budget are exploratory diagnostics, not confirmatory predictions.
-
-Report full seed-level transitions, unstable cases, every late rescue, and the mean, median, standard deviation, and maximum realized tokens for each arm. Pivotal proofs and strategy-presence judgments receive independent blinded human review.
-
-The paper succeeds only if held-out results show reproducible short-strategy rescues beyond strong unaided inference. Aggregate gains from hints, reviewers, or stronger models alone are insufficient.
+The paper succeeds only if held-out data show both a reproducible positive strategy–compute interaction and several problems that survive strong unaided search but become solvable under strategy conditioning. The strongest witnesses are below 2/3 under Self-Refine-8, Parallel-8, and Uniform-8, have the decisive idea absent from recorded unaided outputs, but reach at least 2/3 after strategy conditioning. “Hints help” or “stronger models do better” alone is insufficient.
