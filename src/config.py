@@ -130,10 +130,10 @@ def load_config(path: Path) -> ExperimentConfig:
                 "executor budget divisible by uniform_strategy_branches"
             )
         executor_budget = executor_pool // config.uniform_strategy_branches
-        if arm.hint != HINT_NONE or arm.budget_units != 8 or arm.seeds != [1, 2, 3]:
+        if arm.hint != HINT_NONE or arm.budget_units != 8 or arm.seeds != [1]:
             raise ValueError(
                 f"{path}: Uniform Strategy arm '{arm.name}' must use hint='none', "
-                "budget_units=8, and seeds [1, 2, 3]"
+                "budget_units=8, and seeds [1]"
             )
         if config.wrap_up_reserve_tokens >= executor_budget:
             raise ValueError(
@@ -154,32 +154,21 @@ def load_config(path: Path) -> ExperimentConfig:
             f"{path}: baseline must be a no-hint single 1x arm with seeds [1, 2, 3]"
         )
     if (
-        parallel.hint != baseline.hint
+        parallel.hint != HINT_NONE
         or parallel.mode != MODE_PARALLEL
         or parallel.budget_units != 8
-        or parallel.seeds != baseline.seeds
+        or parallel.seeds != [1]
     ):
         raise ValueError(
-            f"{path}: baseline-parallel must be an 8x parallel bank matched to "
-            "baseline seeds [1, 2, 3]"
+            f"{path}: baseline-parallel must be one fresh 8x no-hint bank "
+            "with seeds [1]"
         )
     hint = config.arms.get("hint")
-    hint_parallel = config.arms.get("hint-parallel")
-    if hint is None or hint_parallel is None:
-        raise ValueError(f"{path}: hint and hint-parallel arms are required")
+    if hint is None:
+        raise ValueError(f"{path}: hint arm is required")
     if hint.mode != MODE_SINGLE or hint.budget_units != 1 or hint.seeds != [1, 2, 3]:
         raise ValueError(
             f"{path}: hint must be a single 1x arm with seeds [1, 2, 3]"
-        )
-    if (
-        hint_parallel.hint != hint.hint
-        or hint_parallel.mode != MODE_PARALLEL
-        or hint_parallel.budget_units != 8
-        or hint_parallel.seeds != hint.seeds
-    ):
-        raise ValueError(
-            f"{path}: hint-parallel must be an 8x parallel bank matched to hint "
-            "seeds [1, 2, 3]"
         )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")

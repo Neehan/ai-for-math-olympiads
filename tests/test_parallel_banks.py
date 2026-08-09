@@ -1,4 +1,4 @@
-"""Replicated Parallel-bank layout, accounting, and audit tests."""
+"""Fresh-IID Parallel-8 layout, accounting, migration, and audit tests."""
 
 import json
 import tempfile
@@ -13,31 +13,27 @@ from src.config import load_config
 from src.constants import (
     CONFIG_PATH,
     META_FILENAME,
+    PARALLEL_BANK_PROTOCOL,
     RUN_REFERENCE_FILENAME,
     SEED_AUDIT_FILENAME,
+    SOLUTION_FILENAME,
 )
 from src.models import Problem
-from src.run import parallel_source_arm_name, solve_parallel_bank
+from src.run import _solve_parallel_run, solve_parallel_bank
 from src.storage import (
     bank_run_output_dir,
     compile_arm_audit,
+    parallel_bank_done,
     write_parallel_bank_meta,
 )
 from src.token_pool import TokenPool
 
 
-def _meta(
-    tokens: int,
-    *,
-    arm: str = "baseline",
-    mode: str = "single",
-    run: int | None = None,
-    gradeable: bool = True,
-) -> dict[str, object]:
-    record: dict[str, object] = {
+def _meta(tokens: int, run: int) -> dict[str, object]:
+    return {
         "problem_id": "p",
-        "arm": arm,
-        "mode": mode,
+        "arm": "baseline-parallel",
+        "mode": "parallel",
         "model": "claude-opus-4-8",
         "seed": 1,
         "budget_output_tokens": 200_000,
@@ -46,17 +42,21 @@ def _meta(
         "session_reconnect_count": 0,
         "session_reconnects": [],
         "provider_usage_totals": {"output_tokens": tokens},
-        "gradeable_solution_emitted": gradeable,
+        "gradeable_solution_emitted": True,
+        "parallel_bank_seed": 1,
+        "parallel_run": run,
+        "parallel_run_budget_output_tokens": 200_000,
     }
-    if run is not None:
-        record.update(
-            {
-                "parallel_bank_seed": 1,
-                "parallel_run": run,
-                "parallel_run_budget_output_tokens": 200_000,
-            }
-        )
-    return record
+
+
+def _write_member(bank_dir: Path, run: int, *, tokens: int | None = None) -> None:
+    run_dir = bank_run_output_dir(bank_dir, run)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / META_FILENAME).write_text(
+        json.dumps(_meta(tokens if tokens is not None else run, run)),
+        encoding="utf-8",
+    )
+    (run_dir / SOLUTION_FILENAME).write_text("## Final Solution\nProof.", encoding="utf-8")
 
 
 class ParallelBankTests(unittest.TestCase):
@@ -69,16 +69,39 @@ class ParallelBankTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bank_run_output_dir(root, 9)
 
-    def test_only_prespecified_parallel_arms_can_select_a_source(self) -> None:
+    def test_parallel_worker_accepts_fresh_run_01(self) -> None:
+        """Regression: the controller and worker must agree on runs 01..08."""
         config = load_config(CONFIG_PATH)
-        self.assertEqual(
-            parallel_source_arm_name(config.arms["baseline-parallel"]), "baseline"
-        )
-        self.assertEqual(parallel_source_arm_name(config.arms["hint-parallel"]), "hint")
-        with self.assertRaises(ValueError):
-            parallel_source_arm_name(config.arms["baseline"])
+        arm = config.arms["baseline-parallel"]
+        problem = Problem("p", "Prove it.", "algebra", None, None, None)
+        with tempfile.TemporaryDirectory() as temp:
+            bank_dir = Path(temp)
+            run_01 = bank_run_output_dir(bank_dir, 1)
+            run_01.mkdir()
+            (run_01 / META_FILENAME).write_text("{}", encoding="utf-8")
+            with patch("src.run.seed_output_dir", return_value=bank_dir):
+                anyio.run(
+                    _solve_parallel_run,
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                )
+                with self.assertRaisesRegex(ValueError, "01..08"):
+                    anyio.run(
+                        _solve_parallel_run,
+                        config,
+                        arm,
+                        problem,
+                        1,
+                        0,
+                        TokenPool(["unused"], "TEST_TOKEN"),
+                    )
 
-    def test_bank_resume_launches_only_unfinished_fresh_runs(self) -> None:
+    def test_old_seven_fresh_bank_resumes_only_new_run_01(self) -> None:
+        """The live pilot's paid runs 02..08 survive the protocol migration."""
         config = load_config(CONFIG_PATH)
         arm = config.arms["baseline-parallel"]
         problem = Problem("p", "Prove it.", "algebra", None, None, None)
@@ -90,12 +113,12 @@ class ParallelBankTests(unittest.TestCase):
             ) -> Path:
                 return root / getattr(selected_arm, "name") / f"seed_{seed}"
 
-            source_dir = output_dir(config, config.arms["baseline"], "p", 1)
-            source_dir.mkdir(parents=True)
-            (source_dir / META_FILENAME).write_text("{}", encoding="utf-8")
-            completed = bank_run_output_dir(output_dir(config, arm, "p", 1), 4)
-            completed.mkdir(parents=True)
-            (completed / META_FILENAME).write_text("{}", encoding="utf-8")
+            bank_dir = output_dir(config, arm, "p", 1)
+            for run in range(2, 9):
+                _write_member(bank_dir, run)
+            run_01 = bank_run_output_dir(bank_dir, 1)
+            run_01.mkdir(parents=True)
+            (run_01 / RUN_REFERENCE_FILENAME).write_text("{}", encoding="utf-8")
             worker = AsyncMock()
             with (
                 patch("src.run.seed_output_dir", side_effect=output_dir),
@@ -110,104 +133,67 @@ class ParallelBankTests(unittest.TestCase):
                     1,
                     TokenPool(["unused"], "TEST_TOKEN"),
                 )
-            launched = {call.args[4] for call in worker.await_args_list}
-            self.assertEqual(launched, {2, 3, 5, 6, 7, 8})
+            self.assertEqual([call.args[4] for call in worker.await_args_list], [1])
+            self.assertFalse((run_01 / RUN_REFERENCE_FILENAME).exists())
 
-    def test_bank_meta_reuses_run_01_and_accounts_for_eight_runs(self) -> None:
+    def test_bank_meta_accounts_for_eight_fresh_local_runs(self) -> None:
         config = load_config(CONFIG_PATH)
         arm = config.arms["baseline-parallel"]
-        source_arm = config.arms["baseline"]
         problem = Problem("p", "Prove it.", "algebra", None, None, None)
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            source_dir = root / "claude-opus-4-8" / "baseline" / "p" / "seed_1"
-            bank_dir = (
-                root / "claude-opus-4-8" / "baseline-parallel" / "p" / "seed_1"
-            )
-            source_dir.mkdir(parents=True)
-            (source_dir / META_FILENAME).write_text(
-                json.dumps(_meta(10)), encoding="utf-8"
-            )
-            for run in range(2, 9):
-                run_dir = bank_run_output_dir(bank_dir, run)
-                run_dir.mkdir(parents=True)
-                (run_dir / META_FILENAME).write_text(
-                    json.dumps(
-                        _meta(
-                            run,
-                            arm="baseline-parallel",
-                            mode="parallel",
-                            run=run,
-                        )
-                    ),
-                    encoding="utf-8",
-                )
+            bank_dir = root / config.model_dirname / arm.name / "p" / "seed_1"
+            for run in range(1, 9):
+                _write_member(bank_dir, run)
 
             with patch("src.storage.RESULTS_ROOT", root):
-                write_parallel_bank_meta(
-                    config,
-                    arm,
-                    problem,
-                    1,
-                    bank_dir,
-                    source_arm,
-                    source_dir,
-                )
+                write_parallel_bank_meta(config, arm, problem, 1, bank_dir)
 
             meta = json.loads((bank_dir / META_FILENAME).read_text(encoding="utf-8"))
-            reference = json.loads(
-                (bank_run_output_dir(bank_dir, 1) / RUN_REFERENCE_FILENAME).read_text(
-                    encoding="utf-8"
-                )
-            )
+            self.assertEqual(meta["parallel_bank_protocol"], PARALLEL_BANK_PROTOCOL)
             self.assertEqual(meta["parallel_run_count"], 8)
             self.assertEqual(meta["budget_output_tokens"], 1_600_000)
-            self.assertEqual(meta["output_tokens_spent"], 10 + sum(range(2, 9)))
-            self.assertEqual(meta["runs"][0]["source_result_path"], reference["source_result_path"])
-            self.assertFalse((bank_run_output_dir(bank_dir, 1) / META_FILENAME).exists())
+            self.assertEqual(meta["output_tokens_spent"], sum(range(1, 9)))
+            self.assertTrue(all(record["local_result_path"] for record in meta["runs"]))
+            self.assertNotIn("run_01_source_arm", meta)
+            self.assertTrue(parallel_bank_done(bank_dir))
+            # Generation staging intentionally preloads metadata only. The
+            # last-written protocol marker must still make a finished bank
+            # skippable without exposing old solutions to the solver.
+            for run in range(1, 9):
+                (bank_run_output_dir(bank_dir, run) / SOLUTION_FILENAME).unlink()
+            self.assertTrue(parallel_bank_done(bank_dir))
 
     def test_bank_meta_rejects_a_stale_run_from_another_bank(self) -> None:
         config = load_config(CONFIG_PATH)
         arm = config.arms["baseline-parallel"]
-        source_arm = config.arms["baseline"]
         problem = Problem("p", "Prove it.", "algebra", None, None, None)
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            source_dir = root / config.model_dirname / "baseline" / "p" / "seed_1"
             bank_dir = root / config.model_dirname / arm.name / "p" / "seed_1"
-            source_dir.mkdir(parents=True)
-            (source_dir / META_FILENAME).write_text(
-                json.dumps(_meta(10)), encoding="utf-8"
-            )
-            for run in range(2, 9):
-                run_dir = bank_run_output_dir(bank_dir, run)
-                run_dir.mkdir(parents=True)
-                record = _meta(
-                    run,
-                    arm="baseline-parallel",
-                    mode="parallel",
-                    run=run,
-                )
-                if run == 6:
-                    record["parallel_bank_seed"] = 2
-                (run_dir / META_FILENAME).write_text(
-                    json.dumps(record), encoding="utf-8"
-                )
+            for run in range(1, 9):
+                _write_member(bank_dir, run)
+            stale_path = bank_run_output_dir(bank_dir, 6) / META_FILENAME
+            stale = json.loads(stale_path.read_text(encoding="utf-8"))
+            stale["parallel_bank_seed"] = 2
+            stale_path.write_text(json.dumps(stale), encoding="utf-8")
             with (
                 patch("src.storage.RESULTS_ROOT", root),
                 self.assertRaisesRegex(ValueError, "run_06.*identity mismatch"),
             ):
-                write_parallel_bank_meta(
-                    config,
-                    arm,
-                    problem,
-                    1,
-                    bank_dir,
-                    source_arm,
-                    source_dir,
-                )
+                write_parallel_bank_meta(config, arm, problem, 1, bank_dir)
 
-    def test_bank_audit_uses_ordered_prefixes_and_frozen_source(self) -> None:
+    def test_old_top_level_marker_cannot_certify_new_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bank_dir = Path(temp)
+            for run in range(1, 9):
+                _write_member(bank_dir, run)
+            (bank_dir / META_FILENAME).write_text(
+                json.dumps({"parallel_run_count": 8}), encoding="utf-8"
+            )
+            self.assertFalse(parallel_bank_done(bank_dir))
+
+    def test_bank_audit_reports_coverage_and_unbiased_pass_at_k(self) -> None:
         config = load_config(CONFIG_PATH)
         arm = config.arms["baseline-parallel"]
         problem = Problem("p", "Prove it.", "algebra", None, None, None)
@@ -220,28 +206,10 @@ class ParallelBankTests(unittest.TestCase):
             ) -> Path:
                 return root / getattr(selected_arm, "name") / f"seed_{seed}"
 
-            source_dir = output_dir(config, config.arms["baseline"], "p", 1)
             bank_dir = output_dir(config, arm, "p", 1)
-            source_dir.mkdir(parents=True)
-            (source_dir / META_FILENAME).write_text("{}", encoding="utf-8")
-            (source_dir / SEED_AUDIT_FILENAME).write_text(
-                json.dumps(
-                    {
-                        "problem_id": "p",
-                        "arm": "baseline",
-                        "seed": 1,
-                        "solver_model": config.model,
-                        "audit_model": config.audit_model,
-                        "audit_score": scores[0],
-                        "note": "source",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            for run, score in enumerate(scores[1:], start=2):
+            for run, score in enumerate(scores, start=1):
+                _write_member(bank_dir, run)
                 run_dir = bank_run_output_dir(bank_dir, run)
-                run_dir.mkdir(parents=True)
-                (run_dir / META_FILENAME).write_text("{}", encoding="utf-8")
                 (run_dir / SEED_AUDIT_FILENAME).write_text(
                     json.dumps(
                         {
@@ -258,6 +226,15 @@ class ParallelBankTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+            (bank_dir / META_FILENAME).write_text(
+                json.dumps(
+                    {
+                        "parallel_bank_protocol": PARALLEL_BANK_PROTOCOL,
+                        "parallel_run_count": 8,
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             with patch("src.audit.seed_output_dir", side_effect=output_dir):
                 anyio.run(
@@ -272,27 +249,49 @@ class ParallelBankTests(unittest.TestCase):
             record = json.loads(
                 (bank_dir / SEED_AUDIT_FILENAME).read_text(encoding="utf-8")
             )
+            self.assertEqual(record["parallel_bank_protocol"], PARALLEL_BANK_PROTOCOL)
             self.assertEqual(record["candidate_pass_count"], 2)
             self.assertEqual(record["first_success_run"], 3)
-            self.assertEqual(record["budget_cuts"]["1x"]["audit_score"], 0)
-            self.assertEqual(record["budget_cuts"]["2x"]["audit_score"], 0)
-            self.assertEqual(record["budget_cuts"]["4x"]["audit_score"], 5)
-            self.assertEqual(record["budget_cuts"]["8x"]["audit_score"], 7)
-            self.assertEqual(record["runs"][0]["source_arm"], "baseline")
+            self.assertAlmostEqual(record["pass_at_k"]["1"], 0.25)
+            self.assertAlmostEqual(record["pass_at_k"]["2"], 13 / 28)
+            self.assertAlmostEqual(record["pass_at_k"]["4"], 55 / 70)
+            self.assertEqual(record["pass_at_k"]["8"], 1.0)
+            self.assertEqual(record["budget_cuts"], {})
 
-    def test_compiled_audit_excludes_retired_flat_parallel_seeds(self) -> None:
+    def test_compiled_audit_excludes_retired_protocol_and_seeds(self) -> None:
         config = load_config(CONFIG_PATH)
         arm = config.arms["baseline-parallel"]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             arm_root = root / config.model_dirname / arm.name / "p"
-            for seed in (1, 4, 8):
+            for seed, protocol in ((1, "retired"), (2, PARALLEL_BANK_PROTOCOL)):
                 seed_dir = arm_root / f"seed_{seed}"
                 seed_dir.mkdir(parents=True)
                 (seed_dir / SEED_AUDIT_FILENAME).write_text(
-                    json.dumps({"problem_id": "p", "seed": seed}),
+                    json.dumps(
+                        {
+                            "problem_id": "p",
+                            "seed": seed,
+                            "parallel_bank_protocol": protocol,
+                        }
+                    ),
                     encoding="utf-8",
                 )
+            with patch("src.storage.RESULTS_ROOT", root):
+                path, count = compile_arm_audit(config, arm)
+            self.assertEqual(count, 0)
+
+            seed_1 = arm_root / "seed_1" / SEED_AUDIT_FILENAME
+            seed_1.write_text(
+                json.dumps(
+                    {
+                        "problem_id": "p",
+                        "seed": 1,
+                        "parallel_bank_protocol": PARALLEL_BANK_PROTOCOL,
+                    }
+                ),
+                encoding="utf-8",
+            )
             with patch("src.storage.RESULTS_ROOT", root):
                 path, count = compile_arm_audit(config, arm)
             records = [json.loads(line) for line in path.read_text().splitlines()]

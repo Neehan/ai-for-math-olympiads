@@ -1,4 +1,4 @@
-"""Generation-staging pruning tests for interrupted replicated banks."""
+"""Generation-staging pruning tests for interrupted search banks."""
 
 import tempfile
 import unittest

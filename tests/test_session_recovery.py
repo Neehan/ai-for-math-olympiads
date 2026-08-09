@@ -1017,18 +1017,13 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await run_all([lambda: task() for _ in range(8)], limit=8)
         self.assertEqual(peak, 8)
 
-    def test_parallel_banks_are_three_seed_matched_eight_run_replicates(self) -> None:
+    def test_expensive_search_controls_use_one_eight_run_bank(self) -> None:
         config = load_config(CONFIG_PATH)
         baseline = config.arms["baseline"].seeds
         banks = config.arms["baseline-parallel"].seeds
         self.assertEqual(config.max_concurrency, 8)
         self.assertEqual(baseline, [1, 2, 3])
-        self.assertEqual(banks, baseline)
-
-        hint = config.arms["hint"].seeds
-        hint_banks = config.arms["hint-parallel"].seeds
-        self.assertEqual(hint, [1, 2, 3])
-        self.assertEqual(hint_banks, hint)
+        self.assertEqual(banks, [1])
 
     def test_uniform_strategy_bank_is_exactly_budget_matched(self) -> None:
         config = load_config(CONFIG_PATH)
@@ -1037,7 +1032,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         executor = (
             total - config.uniform_strategy_plan_tokens
         ) // config.uniform_strategy_branches
-        self.assertEqual(arm.seeds, [1, 2, 3])
+        self.assertEqual(arm.seeds, [1])
         self.assertEqual(config.uniform_strategy_branches, 8)
         self.assertEqual(config.uniform_strategy_plan_tokens, 80_000)
         self.assertEqual(executor, 190_000)

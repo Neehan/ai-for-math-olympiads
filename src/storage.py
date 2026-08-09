@@ -7,7 +7,7 @@ Per-seed output layout (nothing mixed):
         scratch/         copy of the proof executor's scratch dir
         plan_scratch/    Uniform Strategy planner scratch
         strategies.json  parsed strategy set and executor-run allocation
-        run_<kk>/        one bank member's artifacts (or run_01 reference)
+        run_<kk>/        one fresh bank member's artifacts
         meta.json        attempt metadata; written LAST = completion marker
 """
 
@@ -34,6 +34,7 @@ from src.constants import (
     MODE_UNIFORM_STRATEGY,
     OUTLINES_FILE_ENV,
     OUTLINES_URL,
+    PARALLEL_BANK_PROTOCOL,
     PHASE_CRITIQUE,
     PHASE_PLAN,
     PHASE_PLAN_WRAP_UP,
@@ -47,7 +48,6 @@ from src.constants import (
     SOLUTION_CUT_FILENAME_FORMAT,
     SOLUTION_FILENAME,
     BANK_RUN_DIR_FORMAT,
-    RUN_REFERENCE_FILENAME,
     UNIFORM_STRATEGIES_FILENAME,
     ZSTD_LEVEL,
 )
@@ -194,6 +194,31 @@ def _validate_bank_member_meta(
 def seed_done(output_dir: Path) -> bool:
     """True if the attempt completed (meta.json is written last)."""
     return (output_dir / META_FILENAME).exists()
+
+
+def parallel_bank_done(output_dir: Path) -> bool:
+    """True only when the current fresh-eight bank marker is present.
+
+    Generation containers intentionally receive metadata but not prior
+    solutions, so the last-written bank marker is the resumability certificate.
+    Candidate artifacts are checked again before aggregation and audit.
+    """
+    meta_path = output_dir / META_FILENAME
+    if not meta_path.exists():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if (
+        meta.get("parallel_bank_protocol") != PARALLEL_BANK_PROTOCOL
+        or meta.get("parallel_run_count") != 8
+    ):
+        return False
+    return all(
+        (bank_run_output_dir(output_dir, run) / META_FILENAME).exists()
+        for run in range(1, 9)
+    )
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -456,36 +481,12 @@ def write_parallel_bank_meta(
     problem: Problem,
     bank_seed: int,
     bank_dir: Path,
-    source_arm: ArmConfig,
-    source_dir: Path,
 ) -> None:
-    """Write one replicated 8-run Parallel bank after runs 02..08 finish.
-
-    run_01 is the already-frozen matched baseline/hint attempt. It is referenced
-    rather than copied, so one stochastic attempt can never acquire two mutable
-    result records. Runs 02..08 are fresh independent attempts stored locally.
-    """
-    if arm.mode != MODE_PARALLEL or arm.seeds != source_arm.seeds:
-        raise ValueError("Parallel bank and source arm are not seed-matched")
-    source_meta_path = source_dir / META_FILENAME
-    if not source_meta_path.exists():
-        raise FileNotFoundError(
-            f"Parallel run_01 source is incomplete: {source_meta_path}"
-        )
-    source_meta = json.loads(source_meta_path.read_text(encoding="utf-8"))
-    _validate_bank_member_meta(
-        source_meta,
-        {
-            "problem_id": problem.problem_id,
-            "arm": source_arm.name,
-            "model": config.model,
-            "seed": bank_seed,
-            "budget_output_tokens": config.unit_output_tokens,
-        },
-        "Parallel run_01 source",
-    )
-    run_metas: list[dict[str, Any]] = [source_meta]
-    for run in range(2, 9):
+    """Write one fresh-IID 8-run Parallel bank after all members finish."""
+    if arm.mode != MODE_PARALLEL or arm.budget_units != 8:
+        raise ValueError("Parallel bank must use mode='parallel' and budget_units=8")
+    run_metas: list[dict[str, Any]] = []
+    for run in range(1, 9):
         path = bank_run_output_dir(bank_dir, run) / META_FILENAME
         if not path.exists():
             raise FileNotFoundError(f"Parallel run_{run:02d} is incomplete: {path}")
@@ -506,26 +507,6 @@ def write_parallel_bank_meta(
             f"Parallel run_{run:02d}",
         )
         run_metas.append(run_meta)
-
-    source_rel = source_dir.relative_to(RESULTS_ROOT).as_posix()
-    run_01_dir = bank_run_output_dir(bank_dir, 1)
-    run_01_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write_bytes(
-        run_01_dir / RUN_REFERENCE_FILENAME,
-        (
-            json.dumps(
-                {
-                    "source_arm": source_arm.name,
-                    "source_problem_id": problem.problem_id,
-                    "source_seed": bank_seed,
-                    "source_result_path": source_rel,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n"
-        ).encode("utf-8"),
-    )
 
     output_tokens_spent = sum(
         int(meta.get("output_tokens_spent", 0)) for meta in run_metas
@@ -562,14 +543,9 @@ def write_parallel_bank_meta(
         run_records.append(
             {
                 "run": run,
-                "source_result_path": source_rel if run == 1 else None,
-                "local_result_path": (
-                    None
-                    if run == 1
-                    else bank_run_output_dir(bank_dir, run)
-                    .relative_to(RESULTS_ROOT)
-                    .as_posix()
-                ),
+                "local_result_path": bank_run_output_dir(bank_dir, run)
+                .relative_to(RESULTS_ROOT)
+                .as_posix(),
                 "output_tokens_spent": int(run_meta.get("output_tokens_spent", 0)),
                 "gradeable_solution_emitted": bool(
                     run_meta.get("gradeable_solution_emitted")
@@ -596,10 +572,9 @@ def write_parallel_bank_meta(
         "output_tokens_spent": output_tokens_spent,
         "output_tokens_over_budget": max(0, output_tokens_spent - total_budget),
         "provider_usage_totals": provider_usage_totals,
+        "parallel_bank_protocol": PARALLEL_BANK_PROTOCOL,
         "parallel_run_count": 8,
         "parallel_run_budget_output_tokens_each": config.unit_output_tokens,
-        "run_01_source_arm": source_arm.name,
-        "run_01_source_result_path": source_rel,
         "runs": run_records,
         "process_resume_count": process_resume_count,
         "session_reconnect_count": len(reconnects),
@@ -611,10 +586,7 @@ def write_parallel_bank_meta(
     }
     _atomic_write_bytes(
         bank_dir / SOLUTION_FILENAME,
-        (
-            "Parallel 8-run bank. run_01 references the matched frozen "
-            f"{source_arm.name} attempt; grade run_01 through run_08.\n"
-        ).encode("utf-8"),
+        b"Fresh-IID Parallel-8 bank; grade run_01 through run_08.\n",
     )
     _atomic_write_bytes(
         bank_dir / META_FILENAME,
@@ -874,6 +846,18 @@ def seed_audited(output_dir: Path) -> bool:
     return (output_dir / SEED_AUDIT_FILENAME).exists()
 
 
+def parallel_bank_audited(output_dir: Path) -> bool:
+    """True only for a bank audit produced under the current fresh-eight protocol."""
+    path = output_dir / SEED_AUDIT_FILENAME
+    if not path.exists():
+        return False
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return record.get("parallel_bank_protocol") == PARALLEL_BANK_PROTOCOL
+
+
 def write_seed_audit(output_dir: Path, record: dict[str, object]) -> None:
     """Write one attempt's judge verdict (audit.json) atomically."""
     _atomic_write_bytes(
@@ -928,7 +912,13 @@ def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, i
             continue
         if seed not in arm.seeds:
             continue
-        records.append(json.loads(audit_file.read_text(encoding="utf-8")))
+        record = json.loads(audit_file.read_text(encoding="utf-8"))
+        if (
+            arm.mode == MODE_PARALLEL
+            and record.get("parallel_bank_protocol") != PARALLEL_BANK_PROTOCOL
+        ):
+            continue
+        records.append(record)
     path = arm_root / ARM_AUDIT_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)

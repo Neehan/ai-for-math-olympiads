@@ -35,6 +35,9 @@ PLAN_SCRATCH_SUBDIR: str = "plan_scratch"
 UNIFORM_STRATEGIES_FILENAME: str = "strategies.json"
 BANK_RUN_DIR_FORMAT: str = "run_{run:02d}"
 RUN_REFERENCE_FILENAME: str = "reference.json"
+# Versioned bank marker: old baseline-plus-seven layouts must never silently
+# certify a fresh-IID-eight Parallel bank after the protocol change.
+PARALLEL_BANK_PROTOCOL: str = "fresh_iid_8_v1"
 ZSTD_LEVEL: int = 9
 
 # --- Audit ----------------------------------------------------------------

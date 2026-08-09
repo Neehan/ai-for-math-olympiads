@@ -6,7 +6,7 @@ Usage:
 
 An attempt = one (problem, seed) pair. Mode 'single' runs one solve phase;
 mode 'sequential' runs solve -> (critique -> revise)*; mode 'parallel' forms
-an eight-run bank from the matched frozen 1x attempt plus seven fresh runs;
+one bank of eight fresh independent 1x attempts;
 mode 'uniform_strategy' runs one shared planner followed by eight fresh proof
 executors. Completed attempts (meta.json present) are skipped, so an
 interrupted run resumes cleanly.
@@ -48,6 +48,7 @@ from src.constants import (
     PHASE_SOLVE,
     PHASE_WRAP_UP,
     RESULTS_ROOT,
+    RUN_REFERENCE_FILENAME,
     SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
@@ -75,6 +76,7 @@ from src.solver import (
 from src.storage import (
     bank_run_output_dir,
     load_problems,
+    parallel_bank_done,
     seed_done,
     seed_output_dir,
     write_parallel_bank_meta,
@@ -86,18 +88,6 @@ from src.storage import (
 from src.token_pool import TokenPool
 
 log = logging.getLogger("run")
-
-
-def parallel_source_arm_name(arm: ArmConfig) -> str:
-    """Return the frozen 1x arm supplying run_01 of a Parallel bank."""
-    by_bank = {
-        "baseline-parallel": "baseline",
-        "hint-parallel": "hint",
-    }
-    try:
-        return by_bank[arm.name]
-    except KeyError as error:
-        raise ValueError(f"Unsupported Parallel arm {arm.name!r}") from error
 
 
 async def _checkpointed_phase(
@@ -359,9 +349,9 @@ async def _solve_parallel_run(
     run: int,
     pool: TokenPool,
 ) -> None:
-    """Run one fresh 1x member (run_02..run_08) of a Parallel bank."""
-    if not 2 <= run <= 8:
-        raise ValueError("Fresh Parallel runs must be numbered 02..08")
+    """Run one fresh 1x member (run_01..run_08) of a Parallel bank."""
+    if not 1 <= run <= 8:
+        raise ValueError("Fresh Parallel runs must be numbered 01..08")
     bank_dir = seed_output_dir(config, arm, problem.problem_id, bank_seed)
     output_dir = bank_run_output_dir(bank_dir, run)
     if seed_done(output_dir):
@@ -475,19 +465,15 @@ async def solve_parallel_bank(
     bank_seed: int,
     pool: TokenPool,
 ) -> None:
-    """Build one 8x bank: matched frozen run_01 plus seven fresh 1x runs."""
-    source_arm = config.arms[parallel_source_arm_name(arm)]
-    source_dir = seed_output_dir(
-        config, source_arm, problem.problem_id, bank_seed
-    )
-    if not seed_done(source_dir):
-        raise FileNotFoundError(
-            f"Parallel bank requires completed {source_arm.name} run_01: "
-            f"{source_dir / META_FILENAME}"
-        )
+    """Build one 8x bank from eight fresh independent 1x attempts."""
     bank_dir = seed_output_dir(config, arm, problem.problem_id, bank_seed)
+    # A pre-protocol bank may have placed a baseline pointer in run_01. It is
+    # not evidence and must not coexist with the new fresh run_01 artifacts.
+    (bank_run_output_dir(bank_dir, 1) / RUN_REFERENCE_FILENAME).unlink(
+        missing_ok=True
+    )
     tasks = []
-    for run in range(2, 9):
+    for run in range(1, 9):
         if seed_done(bank_run_output_dir(bank_dir, run)):
             continue
         tasks.append(
@@ -495,18 +481,16 @@ async def solve_parallel_bank(
                 config, arm, problem, bank_seed, r, pool
             )
         )
-    await run_all(tasks, min(config.max_concurrency, 7))
+    await run_all(tasks, min(config.max_concurrency, 8))
     write_parallel_bank_meta(
         config,
         arm,
         problem,
         bank_seed,
         bank_dir,
-        source_arm,
-        source_dir,
     )
     log.info(
-        "%s/%s bank seed %d done (run_01 reused, 7 fresh) -> %s",
+        "%s/%s bank seed %d done (8 fresh IID runs) -> %s",
         arm.name,
         problem.problem_id,
         bank_seed,
@@ -1166,27 +1150,22 @@ async def main() -> None:
     # Fail fast BEFORE spending tokens if any selected problem lacks the hint.
     for problem in problems:
         hint_for(problem, arm)
+
+    def generation_done(selected_arm: ArmConfig, output_dir: Path) -> bool:
+        return (
+            parallel_bank_done(output_dir)
+            if selected_arm.mode == MODE_PARALLEL
+            else seed_done(output_dir)
+        )
+
     pending = [
         (problem, seed)
         for problem in problems
         for seed in seeds
-        if not seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
+        if not generation_done(
+            arm, seed_output_dir(config, arm, problem.problem_id, seed)
+        )
     ]
-    if arm.mode == MODE_PARALLEL:
-        source_arm = config.arms[parallel_source_arm_name(arm)]
-        missing_sources = [
-            seed_output_dir(config, source_arm, problem.problem_id, seed)
-            for problem, seed in pending
-            if not seed_done(
-                seed_output_dir(config, source_arm, problem.problem_id, seed)
-            )
-        ]
-        if missing_sources:
-            preview = ", ".join(str(path) for path in missing_sources[:3])
-            raise FileNotFoundError(
-                f"Parallel run_01 sources are incomplete ({len(missing_sources)}): "
-                f"{preview}"
-            )
     total = len(problems) * len(seeds)
     log.info(
         "Arm %s: %d attempts to run, %d already done",

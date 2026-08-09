@@ -12,12 +12,11 @@
   "max_concurrency": 8,
   "arms": {
     "baseline": { "hint": "none", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
-    "baseline-parallel": { "hint": "none", "mode": "parallel", "budget_units": 8, "seeds": [1, 2, 3] },
+    "baseline-parallel": { "hint": "none", "mode": "parallel", "budget_units": 8, "seeds": [1] },
     "baseline-sequential": { "hint": "none", "mode": "sequential", "budget_units": 8, "seeds": [1, 2, 3] },
-    "baseline-uniform-strategy": { "hint": "none", "mode": "uniform_strategy", "budget_units": 8, "seeds": [1, 2, 3] },
+    "baseline-uniform-strategy": { "hint": "none", "mode": "uniform_strategy", "budget_units": 8, "seeds": [1] },
     "placebo-hint": { "hint": "h1", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
     "hint": { "hint": "h2", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
-    "hint-parallel": { "hint": "h2", "mode": "parallel", "budget_units": 8, "seeds": [1, 2, 3] },
     "hint-sequential": { "hint": "h2", "mode": "sequential", "budget_units": 8, "seeds": [1, 2, 3] },
     "outline": { "hint": "h3", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
     "outline-sequential": { "hint": "h3", "mode": "sequential", "budget_units": 8, "seeds": [1, 2, 3] }

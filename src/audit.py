@@ -20,6 +20,7 @@ import dataclasses
 import json
 import logging
 import os
+from math import comb
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ from src.constants import (
     MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
+    PARALLEL_BANK_PROTOCOL,
     PERMISSION_MODE,
     RESULTS_ROOT,
     SEED_AUDIT_FILENAME,
@@ -54,7 +56,7 @@ from src.constants import (
 )
 from src.models import ArmConfig, ExperimentConfig, Problem, ReconnectEvent
 from src.prompts import audit_prompt
-from src.run import parallel_source_arm_name, select_problems, select_seeds
+from src.run import select_problems, select_seeds
 from src.solver import (
     ResumableClaudeSession,
     StderrTail,
@@ -70,6 +72,8 @@ from src.storage import (
     compile_arm_audit,
     cut_solution_path,
     load_problems,
+    parallel_bank_audited,
+    parallel_bank_done,
     seed_audited,
     seed_done,
     seed_output_dir,
@@ -417,17 +421,15 @@ async def audit_parallel_bank(
     seed: int,
     pool: TokenPool,
 ) -> None:
-    """Audit one replicated Parallel bank, including its frozen run_01."""
+    """Audit all eight fresh candidates in one Parallel-8 bank."""
     bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
-    source_arm = config.arms[parallel_source_arm_name(arm)]
-    source_dir = seed_output_dir(config, source_arm, problem.problem_id, seed)
-    if not seed_done(source_dir):
-        raise FileNotFoundError(f"Parallel run_01 source is incomplete: {source_dir}")
-    if not seed_audited(source_dir):
-        await audit_seed(config, source_arm, problem, seed, pool)
+    if not parallel_bank_done(bank_dir):
+        raise FileNotFoundError(
+            f"Parallel bank is incomplete or uses a retired protocol: {bank_dir}"
+        )
 
     tasks = []
-    for run in range(2, 9):
+    for run in range(1, 9):
         run_dir = bank_run_output_dir(bank_dir, run)
         if not seed_done(run_dir):
             raise FileNotFoundError(f"Parallel run_{run:02d} is incomplete: {run_dir}")
@@ -444,21 +446,20 @@ async def audit_parallel_bank(
                 record_extra={"parallel_bank_seed": seed, "parallel_run": r},
             )
         )
-    await run_all(tasks, min(config.max_concurrency, 7))
+    await run_all(tasks, min(config.max_concurrency, 8))
 
     runs: list[dict[str, Any]] = []
     for run in range(1, 9):
-        run_dir = source_dir if run == 1 else bank_run_output_dir(bank_dir, run)
-        expected_arm = source_arm.name if run == 1 else arm.name
+        run_dir = bank_run_output_dir(bank_dir, run)
         expected = {
             "problem_id": problem.problem_id,
-            "arm": expected_arm,
+            "arm": arm.name,
             "seed": seed,
             "solver_model": config.model,
             "audit_model": config.audit_model,
+            "parallel_bank_seed": seed,
+            "parallel_run": run,
         }
-        if run > 1:
-            expected.update({"parallel_bank_seed": seed, "parallel_run": run})
         record = _bank_audit_record(
             run_dir / SEED_AUDIT_FILENAME,
             expected,
@@ -467,7 +468,6 @@ async def audit_parallel_bank(
         runs.append(
             {
                 "run": run,
-                "source_arm": source_arm.name if run == 1 else None,
                 "audit_score": int(record["audit_score"]),
                 "note": str(record["note"]),
             }
@@ -477,6 +477,14 @@ async def audit_parallel_bank(
     first_success = next(
         (run for run, score in enumerate(scores, start=1) if score >= 5), None
     )
+    pass_at_k = {
+        str(k): (
+            1.0
+            if 8 - pass_count < k
+            else 1.0 - comb(8 - pass_count, k) / comb(8, k)
+        )
+        for k in (1, 2, 4, 8)
+    }
     write_seed_audit(
         bank_dir,
         {
@@ -485,6 +493,7 @@ async def audit_parallel_bank(
             "seed": seed,
             "solver_model": config.model,
             "audit_model": config.audit_model,
+            "parallel_bank_protocol": PARALLEL_BANK_PROTOCOL,
             "audit_score": max(scores),
             "note": (
                 f"Parallel candidate coverage: {pass_count}/8 proofs scored at "
@@ -493,9 +502,9 @@ async def audit_parallel_bank(
             "candidate_pass_count": pass_count,
             "candidate_count": 8,
             "first_success_run": first_success,
-            "run_01_source_arm": source_arm.name,
+            "pass_at_k": pass_at_k,
             "runs": runs,
-            "budget_cuts": _prefix_summary(runs, (1, 2, 4, 8)),
+            "budget_cuts": {},
         },
     )
     log.info(
@@ -678,11 +687,25 @@ async def main() -> None:
     problems = select_problems(load_problems(), args.problems, args.domain)
     seeds = select_seeds(arm, args.seeds)
 
+    def generation_done(output_dir: Path) -> bool:
+        return (
+            parallel_bank_done(output_dir)
+            if arm.mode == MODE_PARALLEL
+            else seed_done(output_dir)
+        )
+
+    def audit_done(output_dir: Path) -> bool:
+        return (
+            parallel_bank_audited(output_dir)
+            if arm.mode == MODE_PARALLEL
+            else seed_audited(output_dir)
+        )
+
     generated = [
         (problem, seed)
         for problem in problems
         for seed in seeds
-        if seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
+        if generation_done(seed_output_dir(config, arm, problem.problem_id, seed))
     ]
     ungenerated = len(problems) * len(seeds) - len(generated)
     if ungenerated:
@@ -692,7 +715,7 @@ async def main() -> None:
     pending = [
         (problem, seed)
         for problem, seed in generated
-        if not seed_audited(seed_output_dir(config, arm, problem.problem_id, seed))
+        if not audit_done(seed_output_dir(config, arm, problem.problem_id, seed))
     ]
     log.info(
         "Arm %s: %d attempts to audit, %d already audited",
