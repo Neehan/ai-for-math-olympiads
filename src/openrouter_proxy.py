@@ -87,7 +87,18 @@ class RoutingProxyHandler(BaseHTTPRequestHandler):
     allowed_model: ClassVar[str]
 
     def log_message(self, format: str, *args: object) -> None:
-        log.info("%s - %s", self.address_string(), format % args)
+        # BaseHTTPRequestHandler emits one access line for every successful
+        # streamed request. Agent sessions make many such calls, so logging
+        # their 2xx responses at INFO obscures the experiment's own progress.
+        # Keep failed local/proxied requests visible without flooding stdout.
+        if len(args) < 2 or not isinstance(args[1], (int, str)):
+            return
+        try:
+            status = int(args[1])
+        except ValueError:
+            return
+        if status >= 400:
+            log.warning("%s - %s", self.address_string(), format % args)
 
     def _send_json_error(self, status: int, message: str) -> None:
         payload = json.dumps({"error": {"message": message}}).encode("utf-8")

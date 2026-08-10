@@ -71,6 +71,26 @@ class OpenRouterRoutingTests(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8787/api")
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "secret")
 
+    def test_proxy_suppresses_success_access_logs(self) -> None:
+        from src.openrouter_proxy import RoutingProxyHandler
+
+        handler = object.__new__(RoutingProxyHandler)
+        with self.assertNoLogs("openrouter_proxy", level="INFO"):
+            handler.log_message(
+                '"%s" %s %s', "POST /api/v1/messages", "200", "-"
+            )
+
+    def test_proxy_preserves_failed_access_logs(self) -> None:
+        from src.openrouter_proxy import RoutingProxyHandler
+
+        handler = object.__new__(RoutingProxyHandler)
+        with patch.object(
+            RoutingProxyHandler, "address_string", return_value="127.0.0.1"
+        ):
+            with self.assertLogs("openrouter_proxy", level="WARNING") as captured:
+                handler.log_message('"%s" %s %s', "POST /bad", "405", "-")
+        self.assertIn('"POST /bad" 405 -', captured.output[0])
+
 
 if __name__ == "__main__":
     unittest.main()

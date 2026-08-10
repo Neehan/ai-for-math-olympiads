@@ -363,6 +363,121 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         sleep.assert_awaited_once()
 
+    async def test_zero_turn_success_retries_same_transcript(self) -> None:
+        class ZeroThenProofSDKClient:
+            instances: list["ZeroThenProofSDKClient"] = []
+            queries: list[str] = []
+
+            def __init__(self, options: ClaudeAgentOptions) -> None:
+                self.options = options
+                self.session_id = options.session_id or options.resume
+                if self.session_id is None:
+                    raise AssertionError("test sessions must have an explicit id")
+                self.ordinal = len(self.instances) + 1
+                self.instances.append(self)
+
+            async def connect(self) -> None:
+                return None
+
+            async def disconnect(self) -> None:
+                return None
+
+            async def query(self, prompt: str) -> None:
+                self.queries.append(prompt)
+
+            async def interrupt(self) -> None:
+                raise AssertionError("unexpected interrupt")
+
+            async def receive_response(self):  # type: ignore[no-untyped-def]
+                if self.ordinal == 1:
+                    yield ResultMessage(
+                        subtype="success",
+                        duration_ms=1,
+                        duration_api_ms=1,
+                        is_error=False,
+                        num_turns=0,
+                        session_id=self.session_id,
+                        stop_reason="end_turn",
+                        total_cost_usd=0.0,
+                        usage={"output_tokens": 0},
+                        result="No response requested.",
+                    )
+                    return
+                yield StreamEvent(
+                    uuid="recovered-start",
+                    session_id=self.session_id,
+                    event={
+                        "type": "message_start",
+                        "message": {"id": "recovered-message"},
+                    },
+                )
+                yield StreamEvent(
+                    uuid="recovered-delta",
+                    session_id=self.session_id,
+                    event={
+                        "type": "message_delta",
+                        "usage": {"output_tokens": 6},
+                    },
+                )
+                yield AssistantMessage(
+                    content=[TextBlock("## Final Solution\nRecovered proof.")],
+                    model="test-model",
+                    usage={"output_tokens": 1},
+                    message_id="recovered-message",
+                    session_id=self.session_id,
+                    uuid="recovered-assistant",
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=2,
+                    duration_api_ms=2,
+                    is_error=False,
+                    num_turns=1,
+                    session_id=self.session_id,
+                    stop_reason="end_turn",
+                    total_cost_usd=0.01,
+                    usage={"output_tokens": 6},
+                    result="## Final Solution\nRecovered proof.",
+                )
+
+        pool = TokenPool(["token-a"], "TEST_TOKEN")
+        tracker = BudgetTracker(100, 0)
+
+        def options_factory(
+            token: str,
+            session_id: str | None,
+            resume_id: str | None,
+            stderr: StderrTail,
+        ) -> ClaudeAgentOptions:
+            del stderr
+            return ClaudeAgentOptions(
+                env={OAUTH_TOKEN_ENV: token},
+                session_id=session_id,
+                resume=resume_id,
+                include_partial_messages=True,
+            )
+
+        with (
+            patch("src.solver.ClaudeSDKClient", ZeroThenProofSDKClient),
+            patch("src.solver.anyio.sleep", new=AsyncMock()) as sleep,
+        ):
+            async with ResumableClaudeSession(pool, options_factory) as session:
+                result = await run_phase(session, "solve", "solve", tracker, 100)
+
+        self.assertEqual(result.text, "## Final Solution\nRecovered proof.")
+        self.assertEqual(result.output_tokens, 6)
+        self.assertEqual(len(result.reconnects), 1)
+        self.assertEqual(result.reconnects[0].reason, "transport")
+        self.assertEqual(len(ZeroThenProofSDKClient.instances), 2)
+        self.assertEqual(
+            ZeroThenProofSDKClient.queries,
+            [
+                "solve",
+                f"{SESSION_RECOVERY_PROMPT}\n\nPending request:\nsolve",
+            ],
+        )
+        sleep.assert_awaited_once()
+
     async def test_nontransient_api_error_is_not_retried(self) -> None:
         class FatalSDKClient(FakeTransportRecoverySDKClient):
             async def receive_response(self):  # type: ignore[no-untyped-def]
@@ -887,10 +1002,13 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 resume=resume_id,
             )
 
-        with patch("src.solver.ClaudeSDKClient", QuotaErrorSDKClient):
+        with (
+            patch("src.solver.ClaudeSDKClient", QuotaErrorSDKClient),
+            patch("src.solver.anyio.sleep", new=AsyncMock()),
+        ):
             async with ResumableClaudeSession(pool, options_factory) as session:
                 with self.assertRaisesRegex(
-                    RuntimeError, "no fresh completed provider response"
+                    RuntimeError, "transport failure persisted"
                 ):
                     await run_phase(session, "solve", "solve", tracker, 100)
 
@@ -1080,7 +1198,8 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             session_recovery_policy(),
             {
-                "transport_recovery": "same_transcript_continue_v3",
+                "transport_recovery": "same_transcript_continue_v4",
+                "empty_success_recovery": "bounded_same_transcript_retry",
                 "transport_recovery_max_retries": 6,
                 "transport_recovery_base_delay_seconds": 2.0,
                 "transport_recovery_max_delay_seconds": 30.0,

@@ -122,7 +122,8 @@ def _assistant_transport_error(message: AssistantMessage) -> str | None:
 def session_recovery_policy() -> dict[str, object]:
     """Non-secret live recovery controls recorded with every result."""
     return {
-        "transport_recovery": "same_transcript_continue_v3",
+        "transport_recovery": "same_transcript_continue_v4",
+        "empty_success_recovery": "bounded_same_transcript_retry",
         "transport_recovery_max_retries": TRANSPORT_RECOVERY_MAX_RETRIES,
         "transport_recovery_base_delay_seconds": (
             TRANSPORT_RECOVERY_BASE_DELAY_SECONDS
@@ -190,6 +191,7 @@ class ResumableClaudeSession:
         self._reconnects: list[ReconnectEvent] = list(reconnects or [])
         self._connection_id: str | None = None
         self._pending_prompt: str | None = None
+        self._interrupt_requested = False
         # A resumed CLI can replay the transcript tail before it answers the
         # pending query.  run_phase consumes this guard only after observing a
         # genuinely new provider message and a nonzero terminal result.
@@ -391,6 +393,7 @@ class ResumableClaudeSession:
         if self._client is None:
             raise RuntimeError("Session is not open")
         self._pending_prompt = prompt
+        self._interrupt_requested = False
         await self._client.query(prompt)
 
     async def receive_response(self) -> AsyncIterator[object]:
@@ -404,6 +407,7 @@ class ResumableClaudeSession:
             transport_failure: str | None = None
             completed_response = False
             leg_saw_provider_output = False
+            leg_saw_fatal_result = False
             try:
                 async for message in self._client.receive_response():
                     message_session_id = getattr(message, "session_id", None)
@@ -459,6 +463,7 @@ class ResumableClaudeSession:
                                 # The rejected leg's error terminator is not an
                                 # experimental completion.
                                 continue
+                            leg_saw_fatal_result = True
                         else:
                             usage = message.usage or {}
                             output_tokens = usage.get("output_tokens")
@@ -489,6 +494,24 @@ class ResumableClaudeSession:
                         transport_failure = diagnostic
                     elif not spend_limited:
                         raise
+
+            # Claude CLI can terminate a resumed query with a synthetic
+            # zero-turn success (usually "No response requested.") after an
+            # upstream empty-stream failure.  It is neither a valid model
+            # completion nor a fatal API result.  Treat it as the same bounded
+            # transport failure so the pending prompt is retried on the stable
+            # transcript instead of making the whole benchmark task stop.
+            if (
+                rate_limit_reset is None
+                and not spend_limited
+                and transport_failure is None
+                and not completed_response
+                and not leg_saw_fatal_result
+                and not self._interrupt_requested
+            ):
+                transport_failure = (
+                    "provider returned no completed response with fresh output"
+                )
 
             if rate_limit_reset is not None:
                 self._recovery_signal_count += 1
@@ -548,6 +571,7 @@ class ResumableClaudeSession:
         """Interrupt the currently active CLI process at the output cutoff."""
         if self._client is None:
             raise RuntimeError("Session is not open")
+        self._interrupt_requested = True
         await self._client.interrupt()
 
 
