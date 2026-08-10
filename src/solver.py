@@ -51,6 +51,7 @@ from src.constants import (
     OAUTH_TOKEN_ENV,
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
+    OPENROUTER_PROXY_URL_ENV,
     PERMISSION_MODE,
     PROVIDER_MIN_TASK_BUDGET_TOKENS,
     PROCESS_RECOVERY_PROMPT,
@@ -71,6 +72,7 @@ from src.models import (
     TokenSpendLimit,
     ToolCall,
 )
+from src.openrouter_routing import route_for
 from src.prompts import system_prompt
 from src.token_pool import TokenPool
 
@@ -778,6 +780,12 @@ def token_env_name(model: str) -> str:
 
 def provider_transport_policy(model: str) -> dict[str, object]:
     """Non-secret transport controls that define a reproducible attempt."""
+    openrouter_route = route_for(model)
+    if openrouter_route is not None:
+        return {
+            "policy": "openrouter_frozen_route_v1",
+            "route": openrouter_route,
+        }
     if uses_vllm(model):
         return {
             "policy": "vllm_native_anthropic_stream_v1",
@@ -842,7 +850,9 @@ def provider_env(
         }
     if uses_openrouter(model):
         return {
-            ANTHROPIC_BASE_URL_ENV: OPENROUTER_BASE_URL,
+            ANTHROPIC_BASE_URL_ENV: os.environ.get(
+                OPENROUTER_PROXY_URL_ENV, OPENROUTER_BASE_URL
+            ).rstrip("/"),
             ANTHROPIC_AUTH_TOKEN_ENV: api_key,
             ANTHROPIC_API_KEY_ENV: "",
             **cap,

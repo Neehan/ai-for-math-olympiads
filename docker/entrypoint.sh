@@ -154,4 +154,24 @@ if [ -d /c ]; then
     chown -R appuser /c
 fi
 export HOME=/home/appuser
+if [ "$PROVIDER_KIND" = "openrouter" ]; then
+    export HARNESS_OPENROUTER_PROXY_URL=http://127.0.0.1:8787/api
+    gosu appuser python -m src.openrouter_proxy &
+    proxy_pid=$!
+    python - <<'PY'
+import time
+import urllib.request
+
+for _ in range(100):
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8787/health", timeout=1) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("OpenRouter routing shim failed to start")
+PY
+    kill -0 "$proxy_pid"
+fi
 exec gosu appuser python -m "src.$STAGE" "$@"

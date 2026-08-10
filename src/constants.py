@@ -194,6 +194,7 @@ CLI_PATH_ENV: str = "HARNESS_CLI_PATH"
 # Anthropic-compatible endpoint; bare ids use the Anthropic API directly.
 OPENROUTER_BASE_URL: str = "https://openrouter.ai/api"
 OPENROUTER_KEY_ENV: str = "OPENROUTER_API_KEY"
+OPENROUTER_PROXY_URL_ENV: str = "HARNESS_OPENROUTER_PROXY_URL"
 LITELLM_MODEL_PREFIX: str = "litellm/"
 LITELLM_BASE_URL_ENV: str = "LITELLM_BASE_URL"
 LITELLM_API_KEY_ENV: str = "LITELLM_API_KEY"

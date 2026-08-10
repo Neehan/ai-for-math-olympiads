@@ -52,6 +52,7 @@ from src.constants import (
     SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
+from src.openrouter_routing import route_for
 from src.prompts import (
     critique_prompt,
     revise_prompt,
@@ -845,10 +846,14 @@ def run_checkpoint_identity(
         "max_turns_per_phase": config.max_turns_per_phase,
         "protocol_fingerprint": protocol_fingerprint(),
     }
-    # Local proxy/server routes have explicit transport controls. Version only
-    # those routes so existing Anthropic/OpenRouter checkpoints retain their
-    # original identities.
-    if uses_litellm(config.model) or uses_vllm(config.model):
+    # Local proxy/server routes and frozen OpenRouter aliases have explicit
+    # transport controls. Ordinary Anthropic/OpenRouter ids retain their
+    # original checkpoint identities.
+    if (
+        uses_litellm(config.model)
+        or uses_vllm(config.model)
+        or route_for(config.model) is not None
+    ):
         identity["provider_transport_policy"] = provider_transport_policy(config.model)
     return identity
 
