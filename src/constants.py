@@ -180,6 +180,8 @@ PERMISSION_MODE: PermissionMode = "bypassPermissions"
 # thinking turns); the attempt budget is enforced by BudgetTracker, not this.
 MAX_OUTPUT_TOKENS_ENV: str = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 MAX_OUTPUT_TOKENS_PER_RESPONSE: int = 64000
+# Shared Claude CLI transcript-compaction threshold for every solver model.
+AUTO_COMPACT_WINDOW: str = "900k"
 # Claude's task-budget API rejects smaller values for current frontier models.
 # A late wrap-up may have fewer experiment tokens remaining; in that case the
 # provider receives this minimum while BudgetTracker still enforces the exact

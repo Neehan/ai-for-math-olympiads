@@ -29,6 +29,7 @@ from src.constants import (
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_AUTH_TOKEN_ENV,
     ANTHROPIC_BASE_URL_ENV,
+    AUTO_COMPACT_WINDOW,
     CLAUDE_API_TIMEOUT_ENV,
     CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV,
     CLAUDE_ENABLE_STREAM_WATCHDOG_ENV,
@@ -1219,6 +1220,19 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 MAX_OUTPUT_TOKENS_ENV: "64000",
             },
         )
+
+    def test_build_options_sets_shared_auto_compact_window(self) -> None:
+        config = load_config(CONFIG_PATH)
+        with tempfile.TemporaryDirectory() as scratch:
+            options = build_options(
+                config,
+                scratch,
+                200_000,
+                "oauth-token",
+                StderrTail(),
+                session_id="00000000-0000-0000-0000-000000000000",
+            )
+        self.assertEqual(options.extra_args["autocompact"], AUTO_COMPACT_WINDOW)
 
     def test_vllm_model_uses_native_anthropic_tunnel(self) -> None:
         model = "vllm/qed-nano"

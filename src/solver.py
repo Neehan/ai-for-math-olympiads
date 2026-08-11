@@ -29,6 +29,7 @@ from claude_agent_sdk import (
 from src.constants import (
     AGENT_SETTINGS_PATH,
     ALLOWED_TOOLS,
+    AUTO_COMPACT_WINDOW,
     CLAUDE_CONFIG_DIR_ENV,
     CLI_PATH_ENV,
     DISALLOWED_TOOLS,
@@ -939,7 +940,7 @@ def build_options(
             else sorted(set(DISALLOWED_TOOLS) | set(ALLOWED_TOOLS))
         ),
         settings=str(AGENT_SETTINGS_PATH),
-        extra_args={"setting-sources": ""},
+        extra_args={"setting-sources": "", "autocompact": AUTO_COMPACT_WINDOW},
         permission_mode=PERMISSION_MODE,
         max_turns=max_turns if max_turns is not None else config.max_turns_per_phase,
         # The provider rejects task budgets below 20k.  This is only its
