@@ -15,7 +15,6 @@ from src.constants import (
     REVISE_PROMPT_FILE,
     SYSTEM_PROMPT_FILE,
     TASK_PROMPT_FILE,
-    UNIFORM_STRATEGY_EXECUTE_PROMPT_FILE,
     UNIFORM_STRATEGY_PLAN_PROMPT_FILE,
     UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE,
     WRAP_UP_PROMPT_FILE,
@@ -131,16 +130,14 @@ def uniform_strategy_execute_prompt(
     scratch_dir: str,
     budget_tokens: int,
 ) -> str:
-    """Give a fresh executor only the statement and its assigned strategy."""
-    return _render(
-        _load(UNIFORM_STRATEGY_EXECUTE_PROMPT_FILE),
-        {
-            "budget_tokens": f"{budget_tokens:,}",
-            "scratch_dir": scratch_dir,
-            "proposed_strategy": proposed_strategy.strip(),
-            "statement": problem.statement.strip(),
-        },
-    )
+    """Use the exact oracle-hint task wrapper for a planner strategy.
+
+    Keeping one rendering path prevents executor-level wording, formatting, or
+    authority cues from differing between Uniform Search and the hint arm.
+    Strategy provenance remains recorded in bank metadata, not exposed through
+    a different solver instruction.
+    """
+    return task_prompt(problem, proposed_strategy.strip(), scratch_dir, budget_tokens)
 
 
 def audit_prompt(problem: Problem, solution_text: str) -> str:

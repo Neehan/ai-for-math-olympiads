@@ -16,7 +16,7 @@ Single source of experiment knobs: `model` (solver), `audit_model` (judge; must 
 - **Parallel:** one prespecified bank contains eight fresh IID 1× attempts. Auditing reports valid-proof coverage `c/8` and the standard unbiased pass@k estimate at `k∈{1,2,4,8}`. This is a separate search stress test, not a budget-prefix curve or a ≥2/3 reliability arm.
 - **Sequential:** one 8× trajectory per seed, cut post hoc. Every phase's full write-up is preserved in the logs (phases are separate records; nothing is overwritten), and the harness snapshots `solution_1x.md` / `solution_2x.md` / `solution_4x.md` — the last COMPLETE non-critique write-up emitted before cumulative output tokens crossed each threshold, i.e. exactly what a hard-stopped run at that budget would have been graded on. `meta.json` records which phase each cut came from. The audit stage grades every snapshot as a standalone proof, so each curve point has its own score + note; a budget with no complete write-up scores 0 with an explanatory note. Caveat to state in the paper: the model knows its full 8× budget, so pacing at lower cuts approximates (rather than replays) a true smaller-budget run — the curve's 1× point should come from the real `baseline` arm.
 - **Repeats:** single and Sequential arms use seeds 1–3. Parallel and Uniform each use one top-level bank seed; members live under `seed_1/run_01` through `run_08`.
-- **Uniform Strategy Search-8:** the planner receives 5% from each executor allocation, so an 80k shared planner produces `m≤8` strategies and eight fresh executors receive 190k each: `80k + 8×190k = 1.6M = 8×`. Executors are allocated round-robin across strategies, differing by at most one when `m` does not divide eight. Unused tokens do not transfer. Bank audit reports oracle-audited candidate coverage (any valid proof), not selected-proof accuracy.
+- **Uniform Strategy Search-8:** the planner receives 5% from each executor allocation, so an 80k shared planner produces `m≤8` strategies and eight fresh executors receive 190k each: `80k + 8×190k = 1.6M = 8×`. Executors are allocated round-robin across strategies, differing by at most one when `m` does not divide eight. Every executor receives its assigned planner output through the exact same shared task and hint templates as the oracle-hint arm, including the instruction to treat the hint as correct; generated strategies are not externally verified, and this matched authority cue is part of the prespecified control. Unused tokens do not transfer. Bank audit reports oracle-audited candidate coverage (any valid proof), not selected-proof accuracy.
 
 ## Compute budget enforcement
 
@@ -38,7 +38,7 @@ In Docker, the entrypoint prefetches all three BEFORE the egress firewall closes
 
 ## Prompts — `prompts/*.md`
 
-All prompts are editable markdown files, including the three `uniform_strategy_*.md` templates. Placeholders use `{{name}}` and are filled by literal replacement (LaTeX braces can never break rendering); an unfilled placeholder fails loud. A hint arm fails fast before spending tokens if a selected problem lacks its hint.
+All prompts are editable markdown files. Uniform planning has dedicated plan and wrap-up templates, while Uniform executors deliberately reuse the ordinary task and hint templates. Placeholders use `{{name}}` and are filled by literal replacement (LaTeX braces can never break rendering); an unfilled placeholder fails loud. A hint arm fails fast before spending tokens if a selected problem lacks its hint.
 
 ## Isolation (contamination control)
 

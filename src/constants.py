@@ -60,7 +60,6 @@ REVISE_PROMPT_FILE: str = "revise.md"
 WRAP_UP_PROMPT_FILE: str = "wrap_up.md"
 UNIFORM_STRATEGY_PLAN_PROMPT_FILE: str = "uniform_strategy_plan.md"
 UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE: str = "uniform_strategy_plan_wrap_up.md"
-UNIFORM_STRATEGY_EXECUTE_PROMPT_FILE: str = "uniform_strategy_execute.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
 
 # --- Problem/hint data sources -------------------------------------------

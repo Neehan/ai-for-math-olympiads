@@ -3,7 +3,11 @@
 import unittest
 
 from src.models import Problem
-from src.prompts import uniform_strategy_plan_prompt
+from src.prompts import (
+    task_prompt,
+    uniform_strategy_execute_prompt,
+    uniform_strategy_plan_prompt,
+)
 
 
 class UniformStrategyPromptTests(unittest.TestCase):
@@ -19,6 +23,22 @@ class UniformStrategyPromptTests(unittest.TestCase):
         self.assertNotIn("20,000", prompt)
         self.assertNotIn("18,000", prompt)
         self.assertNotIn("2,000", prompt)
+
+    def test_executor_prompt_is_identical_to_oracle_hint_prompt(self) -> None:
+        problem = Problem("test", "Prove the claim.", "algebra", None, None, None)
+        strategy = "Use an extremal counterexample."
+        prompt = uniform_strategy_execute_prompt(
+            problem,
+            strategy,
+            "/tmp/scratch",
+            190_000,
+        )
+
+        self.assertEqual(
+            prompt,
+            task_prompt(problem, strategy, "/tmp/scratch", 190_000),
+        )
+        self.assertIn("The following hint is correct", prompt)
 
 
 if __name__ == "__main__":
