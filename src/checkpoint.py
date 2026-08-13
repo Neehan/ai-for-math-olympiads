@@ -37,10 +37,10 @@ _SCRATCH_RE = re.compile(r"^[0-9a-f]{8}$")
 
 
 @cache
-def protocol_fingerprint() -> str:
+def protocol_fingerprint(settings_path: Path = AGENT_SETTINGS_PATH) -> str:
     """Hash every mounted prompt/tool-policy file that can affect a session."""
     digest = hashlib.sha256()
-    for path in [AGENT_SETTINGS_PATH, *sorted(PROMPTS_DIR.glob("*.md"))]:
+    for path in [settings_path, *sorted(PROMPTS_DIR.glob("*.md"))]:
         digest.update(path.name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())

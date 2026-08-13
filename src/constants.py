@@ -14,6 +14,7 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 CONFIG_PATH: Path = REPO_ROOT / "config.json"
 PROMPTS_DIR: Path = REPO_ROOT / "prompts"
 AGENT_SETTINGS_PATH: Path = REPO_ROOT / "agent_settings.json"
+VLLM_AGENT_SETTINGS_PATH: Path = REPO_ROOT / "agent_settings_small.json"
 RESULTS_ROOT: Path = REPO_ROOT / "results"
 # Per-attempt Claude transcript/config store. Keeping it under that attempt's
 # opaque scratch dir prevents concurrent conversations from sharing ~/.claude.
@@ -179,8 +180,11 @@ PERMISSION_MODE: PermissionMode = "bypassPermissions"
 # thinking turns); the attempt budget is enforced by BudgetTracker, not this.
 MAX_OUTPUT_TOKENS_ENV: str = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 MAX_OUTPUT_TOKENS_PER_RESPONSE: int = 64000
-# Shared Claude CLI transcript-compaction threshold for every solver model.
+# Claude CLI transcript-compaction threshold for non-vLLM solver models.
 AUTO_COMPACT_WINDOW: str = "900k"
+# The local proof models expose a 262k context. Compact at 200k, leaving about
+# 62k for the summary, current prompt, tools, and the next response.
+VLLM_AUTO_COMPACT_WINDOW: str = "200k"
 # Claude's task-budget API rejects smaller values for current frontier models.
 # A late wrap-up may have fewer experiment tokens remaining; in that case the
 # provider receives this minimum while BudgetTracker still enforces the exact

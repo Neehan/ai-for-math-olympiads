@@ -25,6 +25,7 @@ from claude_agent_sdk import (
 from src.concurrency import run_all
 from src.config import load_config
 from src.constants import (
+    AGENT_SETTINGS_PATH,
     CONFIG_PATH,
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_AUTH_TOKEN_ENV,
@@ -41,6 +42,8 @@ from src.constants import (
     OAUTH_TOKEN_ENV,
     SESSION_RECOVERY_PROMPT,
     VLLM_API_KEY_ENV,
+    VLLM_AGENT_SETTINGS_PATH,
+    VLLM_AUTO_COMPACT_WINDOW,
     VLLM_BASE_URL_ENV,
 )
 from src.solver import (
@@ -48,6 +51,7 @@ from src.solver import (
     ResumableClaudeSession,
     StderrTail,
     build_options,
+    agent_runtime_policy,
     provider_env,
     provider_model_name,
     provider_transport_policy,
@@ -1247,6 +1251,33 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 session_id="00000000-0000-0000-0000-000000000000",
             )
         self.assertEqual(options.extra_args["autocompact"], AUTO_COMPACT_WINDOW)
+        self.assertEqual(options.settings, str(AGENT_SETTINGS_PATH))
+
+    def test_vllm_uses_small_profile_and_two_hundred_k_compaction(self) -> None:
+        for model in ("vllm/glm-4.7-flash", "vllm/muse-glimmer"):
+            with self.subTest(model=model):
+                config = replace(load_config(CONFIG_PATH), model=model)
+                with tempfile.TemporaryDirectory() as scratch:
+                    with patch.dict(os.environ, {VLLM_API_KEY_ENV: "local-key"}):
+                        options = build_options(
+                            config,
+                            scratch,
+                            200_000,
+                            "http://host.docker.internal:8000",
+                            StderrTail(),
+                            session_id="00000000-0000-0000-0000-000000000000",
+                        )
+                self.assertEqual(options.settings, str(VLLM_AGENT_SETTINGS_PATH))
+                self.assertEqual(
+                    options.extra_args["autocompact"], VLLM_AUTO_COMPACT_WINDOW
+                )
+                self.assertIn("DesignSync", options.disallowed_tools)
+                self.assertIn("ListAgents", options.disallowed_tools)
+                self.assertIn("ReportFindings", options.disallowed_tools)
+                self.assertEqual(
+                    agent_runtime_policy(config.model)["settings_profile"],
+                    "agent_settings_small.json",
+                )
 
     def test_vllm_model_uses_native_anthropic_tunnel(self) -> None:
         model = "vllm/qed-nano"
@@ -1303,6 +1334,11 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             vllm_identity["provider_transport_policy"],
             provider_transport_policy("vllm/qed-nano"),
         )
+        self.assertEqual(
+            vllm_identity["agent_runtime_policy"]["autocompact"], "200k"
+        )
+        self.assertNotIn("agent_runtime_policy", anthropic_identity)
+        self.assertNotIn("agent_runtime_policy", litellm_identity)
 
     def test_wrap_options_are_one_turn_tool_free_and_capped_at_twenty_k(
         self,

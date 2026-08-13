@@ -6,7 +6,7 @@
 # The container is removed on exit (--rm); results land in ./results/ via the
 # bind mount. Problems and hints are fetched from the dataset URLs by the
 # entrypoint (never stored in the image); prompts/, config.json, and
-# agent_settings.json are mounted read-only so editing them needs no rebuild.
+# agent settings profiles are mounted read-only so editing them needs no rebuild.
 #
 # The run stage mounts a staging dir holding only meta.json resume markers
 # (never prior solutions/logs). On exit, only newly completed attempts are
@@ -81,8 +81,10 @@ else
     ACTIVE_MODEL=$AUDIT_MODEL_NAME
 fi
 network_args=()
+ACTIVE_AGENT_SETTINGS=agent_settings.json
 case "$ACTIVE_MODEL" in
     vllm/*)
+        ACTIVE_AGENT_SETTINGS=agent_settings_small.json
         if [ -z "${VLLM_API_KEY:-}" ] || [ -z "${VLLM_BASE_URL:-}" ]; then
             echo "ERROR: $ACTIVE_MODEL requires VLLM_API_KEY and VLLM_BASE_URL in .env." >&2
             exit 1
@@ -128,8 +130,8 @@ case "$ACTIVE_MODEL" in
 esac
 
 CHECKPOINT_NAMESPACE=$(python -c \
-    'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:]).encode()); files=[pathlib.Path("config.json"),pathlib.Path("agent_settings.json"),*sorted(pathlib.Path("prompts").glob("*.md"))]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
-    "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME")
+    'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*sorted(pathlib.Path("prompts").glob("*.md"))]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
+    "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$ACTIVE_AGENT_SETTINGS")
 CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$CHECKPOINT_NAMESPACE"
 mkdir -p "$CHECKPOINT_MOUNT"
 chmod 700 .session-checkpoints .session-checkpoints/runtime "$CHECKPOINT_MOUNT"
@@ -186,6 +188,7 @@ docker run --rm --cap-add=NET_ADMIN \
     -v "$PWD/prompts:/app/prompts:ro" \
     -v "$PWD/config.json:/app/config.json:ro" \
     -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
+    -v "$PWD/agent_settings_small.json:/app/agent_settings_small.json:ro" \
     -v "$RESULTS_MOUNT:/app/results" \
     -v "$CHECKPOINT_MOUNT:/c" \
     -e HARNESS_CHECKPOINT_ROOT=/c \

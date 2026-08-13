@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir .
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# prompts/, config.json, agent_settings.json, and results/ are bind-mounted
+# prompts/, config.json, both agent settings profiles, and results/ are bind-mounted
 # at run time (see run.sh); problems/hints are fetched by the entrypoint
 # before the firewall closes and never stored in the image.
 ENTRYPOINT ["/entrypoint.sh"]

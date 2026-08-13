@@ -98,10 +98,20 @@ the audit stage:
 
 Results are written under `results/vllm-qed-nano/`.
 
+For a server advertising Muse-Glimmer, use the same endpoint configuration
+with `--model vllm/muse-glimmer`; its results land under
+`results/vllm-muse-glimmer/`.
+
 ## Context and compaction
 
-The server declares a 262,144-token context, so QED-Nano will compact a long
-sequential trajectory more frequently than a larger-context model. This does
+All `vllm/*` routes use `agent_settings_small.json` and compact at 200k,
+leaving roughly 62k headroom in a 262,144-token context. Other providers keep
+the full settings profile and 900k threshold. The VLLM profile and threshold
+are recorded in checkpoint identity, so checkpoints from different policies
+cannot mix silently.
+
+QED-Nano will therefore compact a long sequential trajectory more frequently
+than a larger-context model. This does
 not uniquely invalidate its 8x arm: the 1.6M-output-token sequential protocol
 already exceeds even Opus's context and therefore already relies on the same
 Claude CLI compaction mechanism. Hold the CLI version and compaction settings

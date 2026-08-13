@@ -66,6 +66,8 @@ from src.solver import (
     BudgetTracker,
     ResumableClaudeSession,
     STOP_BUDGET_EXHAUSTED,
+    agent_runtime_policy,
+    agent_settings_path,
     build_options,
     process_recovery_prompt,
     provider_transport_policy,
@@ -844,7 +846,9 @@ def run_checkpoint_identity(
         ),
         "uniform_strategy_branches": config.uniform_strategy_branches,
         "max_turns_per_phase": config.max_turns_per_phase,
-        "protocol_fingerprint": protocol_fingerprint(),
+        "protocol_fingerprint": protocol_fingerprint(
+            agent_settings_path(config.model)
+        ),
     }
     # Local proxy/server routes and frozen OpenRouter aliases have explicit
     # transport controls. Ordinary Anthropic/OpenRouter ids retain their
@@ -855,6 +859,8 @@ def run_checkpoint_identity(
         or route_for(config.model) is not None
     ):
         identity["provider_transport_policy"] = provider_transport_policy(config.model)
+    if uses_vllm(config.model):
+        identity["agent_runtime_policy"] = agent_runtime_policy(config.model)
     return identity
 
 

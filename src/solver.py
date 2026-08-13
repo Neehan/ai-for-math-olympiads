@@ -7,10 +7,13 @@ interrupting the session the moment cumulative output tokens exceed the budget.
 """
 
 import hashlib
+import json
 import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Callable
+from functools import cache
+from pathlib import Path
 
 import anyio
 from claude_agent_sdk import (
@@ -62,7 +65,9 @@ from src.constants import (
     TRANSPORT_RECOVERY_BASE_DELAY_SECONDS,
     TRANSPORT_RECOVERY_MAX_DELAY_SECONDS,
     TRANSPORT_RECOVERY_MAX_RETRIES,
+    VLLM_AGENT_SETTINGS_PATH,
     VLLM_API_KEY_ENV,
+    VLLM_AUTO_COMPACT_WINDOW,
     VLLM_BASE_URL_ENV,
     VLLM_MODEL_PREFIX,
 )
@@ -776,6 +781,48 @@ def uses_vllm(model: str) -> bool:
     return model.startswith(VLLM_MODEL_PREFIX)
 
 
+def agent_settings_path(model: str) -> Path:
+    """Return the frozen Claude CLI settings profile for this model route."""
+    return VLLM_AGENT_SETTINGS_PATH if uses_vllm(model) else AGENT_SETTINGS_PATH
+
+
+def auto_compact_window(model: str) -> str:
+    """Return the transcript threshold appropriate to the model context."""
+    return VLLM_AUTO_COMPACT_WINDOW if uses_vllm(model) else AUTO_COMPACT_WINDOW
+
+
+@cache
+def _named_settings_denies(path: Path) -> tuple[str, ...]:
+    """Read named tool denies; Bash patterns remain enforced by --settings."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    permissions = raw.get("permissions")
+    if not isinstance(permissions, dict):
+        raise ValueError(f"{path}: missing permissions object")
+    denies = permissions.get("deny")
+    if not isinstance(denies, list) or not all(
+        isinstance(item, str) for item in denies
+    ):
+        raise ValueError(f"{path}: permissions.deny must be a string list")
+    return tuple(item for item in denies if "(" not in item)
+
+
+def disallowed_tools_for_model(model: str) -> list[str]:
+    """Strip the smaller VLLM profile's named tools from its advertised set."""
+    denied = set(DISALLOWED_TOOLS)
+    if uses_vllm(model):
+        denied.update(_named_settings_denies(agent_settings_path(model)))
+    return sorted(denied)
+
+
+def agent_runtime_policy(model: str) -> dict[str, object]:
+    """Non-secret agent controls included in VLLM checkpoint identity."""
+    return {
+        "settings_profile": agent_settings_path(model).name,
+        "autocompact": auto_compact_window(model),
+        "disallowed_tools": disallowed_tools_for_model(model),
+    }
+
+
 def provider_model_name(model: str) -> str:
     """Translate a harness model id into the model alias sent to the provider."""
     if uses_litellm(model):
@@ -913,7 +960,7 @@ def build_options(
 ) -> ClaudeAgentOptions:
     """Construct agent options for one attempt.
 
-    Tool policy comes from agent_settings.json (deny list) plus
+    Tool policy comes from the route-specific settings profile plus
     disallowed_tools; network isolation comes from the container firewall.
     oauth_token is the pool-assigned key for this attempt's session.
 
@@ -935,12 +982,15 @@ def build_options(
         system_prompt=system_prompt(),
         allowed_tools=list(ALLOWED_TOOLS) if tools_enabled else [],
         disallowed_tools=(
-            list(DISALLOWED_TOOLS)
+            disallowed_tools_for_model(config.model)
             if tools_enabled
             else sorted(set(DISALLOWED_TOOLS) | set(ALLOWED_TOOLS))
         ),
-        settings=str(AGENT_SETTINGS_PATH),
-        extra_args={"setting-sources": "", "autocompact": AUTO_COMPACT_WINDOW},
+        settings=str(agent_settings_path(config.model)),
+        extra_args={
+            "setting-sources": "",
+            "autocompact": auto_compact_window(config.model),
+        },
         permission_mode=PERMISSION_MODE,
         max_turns=max_turns if max_turns is not None else config.max_turns_per_phase,
         # The provider rejects task budgets below 20k.  This is only its

@@ -35,13 +35,11 @@ from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
 from src.concurrency import run_all
 from src.config import load_config, override_models
 from src.constants import (
-    AGENT_SETTINGS_PATH,
     ALLOWED_TOOLS,
     AUDIT_SCORE_INVALID,
     AUDIT_SCORES,
     CLI_PATH_ENV,
     CONFIG_PATH,
-    DISALLOWED_TOOLS,
     LOG_FORMAT,
     LOG_LEVEL,
     META_FILENAME,
@@ -60,10 +58,15 @@ from src.run import select_problems, select_seeds
 from src.solver import (
     ResumableClaudeSession,
     StderrTail,
+    agent_runtime_policy,
+    agent_settings_path,
+    auto_compact_window,
+    disallowed_tools_for_model,
     isolated_session_env,
     process_recovery_prompt,
     provider_model_name,
     token_env_name,
+    uses_vllm,
 )
 from src.storage import (
     archive_audit_scratches,
@@ -120,9 +123,16 @@ def _audit_options(
         stderr=stderr_tail,
         env=isolated_session_env(config.audit_model, oauth_token, scratch_dir),
         allowed_tools=list(ALLOWED_TOOLS),
-        disallowed_tools=list(DISALLOWED_TOOLS),
-        settings=str(AGENT_SETTINGS_PATH),
-        extra_args={"setting-sources": ""},
+        disallowed_tools=disallowed_tools_for_model(config.audit_model),
+        settings=str(agent_settings_path(config.audit_model)),
+        extra_args={
+            "setting-sources": "",
+            **(
+                {"autocompact": auto_compact_window(config.audit_model)}
+                if uses_vllm(config.audit_model)
+                else {}
+            ),
+        },
         permission_mode=PERMISSION_MODE,
         max_turns=config.audit_max_turns,
         cwd=scratch_dir,
@@ -293,7 +303,14 @@ async def audit_seed(
             "output_dir": output_dir.relative_to(RESULTS_ROOT).as_posix(),
             "record_extra": record_extra or {},
             "audit_max_turns": config.audit_max_turns,
-            "protocol_fingerprint": protocol_fingerprint(),
+            "protocol_fingerprint": protocol_fingerprint(
+                agent_settings_path(config.audit_model)
+            ),
+            **(
+                {"agent_runtime_policy": agent_runtime_policy(config.audit_model)}
+                if uses_vllm(config.audit_model)
+                else {}
+            ),
         }
     )
     try:
