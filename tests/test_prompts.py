@@ -7,6 +7,7 @@ from src.prompts import (
     task_prompt,
     uniform_strategy_execute_prompt,
     uniform_strategy_plan_prompt,
+    uniform_strategy_plan_wrap_up_prompt,
 )
 
 
@@ -20,6 +21,9 @@ class UniformStrategyPromptTests(unittest.TestCase):
         self.assertIn("approximately 26,500 to explore", prompt)
         self.assertIn("reserving approximately 3,500", prompt)
         self.assertIn("between 1 and 8 strategies", prompt)
+        self.assertIn("standalone plan for the entire problem", prompt)
+        self.assertIn("load-bearing proof mechanisms differ", prompt)
+        self.assertIn("Return fewer than 8", prompt)
         self.assertNotIn("20,000", prompt)
         self.assertNotIn("18,000", prompt)
         self.assertNotIn("2,000", prompt)
@@ -38,7 +42,16 @@ class UniformStrategyPromptTests(unittest.TestCase):
             prompt,
             task_prompt(problem, strategy, "/tmp/scratch", 190_000),
         )
-        self.assertIn("The following hint is correct", prompt)
+        self.assertIn("following proposed strategy", prompt)
+        self.assertIn("repair any issues you find", prompt)
+        self.assertNotIn("following hint is correct", prompt)
+
+    def test_planner_wrap_up_repeats_whole_proof_constraints(self) -> None:
+        prompt = uniform_strategy_plan_wrap_up_prompt(4_000, 8)
+
+        self.assertIn("semantically distinct whole-proof strategies", prompt)
+        self.assertIn("combine complementary components", prompt)
+        self.assertIn("return fewer entries rather than fragments", prompt)
 
 
 if __name__ == "__main__":

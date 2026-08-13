@@ -130,12 +130,12 @@ def uniform_strategy_execute_prompt(
     scratch_dir: str,
     budget_tokens: int,
 ) -> str:
-    """Use the exact oracle-hint task wrapper for a planner strategy.
+    """Use the exact strategy task wrapper for a planner strategy.
 
     Keeping one rendering path prevents executor-level wording, formatting, or
-    authority cues from differing between Uniform Search and the hint arm.
-    Strategy provenance remains recorded in bank metadata, not exposed through
-    a different solver instruction.
+    authority cues from differing between Uniform Search and the privileged
+    strategy arm. Strategy provenance remains recorded in bank metadata, not
+    exposed through a different solver instruction.
     """
     return task_prompt(problem, proposed_strategy.strip(), scratch_dir, budget_tokens)
 

@@ -1,4 +1,4 @@
-The following hint is correct. Use it as the basis of your solution; you remain responsible for proving every step.
+Use the following proposed strategy as the basis of your solution. Check it carefully and repair any issues you find; you remain responsible for proving every step.
 
-Hint:
+Proposed strategy:
 {{hint}}
