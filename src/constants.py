@@ -219,9 +219,9 @@ CLAUDE_STREAM_IDLE_TIMEOUT_MS: int = 3_600_000
 CLAUDE_DISABLE_NONSTREAMING_FALLBACK_ENV: str = (
     "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK"
 )
-# Claude Code otherwise retries each failed request ten times. A failed request
-# can consume backend inference without returning usage, so canonical
-# token-matched runs must not transparently spend another request.
+# Claude Code otherwise retries each failed request ten times. Disable those
+# opaque retries so only the harness's auditable same-transcript recovery can
+# continue a failed request while preserving eligible-output accounting.
 CLAUDE_MAX_API_RETRIES_ENV: str = "CLAUDE_CODE_MAX_RETRIES"
 CLAUDE_MAX_API_RETRIES: int = 0
 # The proxy must not blindly replay a request after an interrupted stream: it

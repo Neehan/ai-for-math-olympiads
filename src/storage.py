@@ -88,16 +88,19 @@ def _merge_provider_usage_totals(destination: dict[str, int], source: object) ->
 def _token_accounting_status(
     phases: list[PhaseResult], process_resume_count: int
 ) -> str:
-    """Conservatively disclose paths that can lose an unreported token suffix."""
+    """Describe eligible-output accounting without invalidating recovery.
+
+    The experiment budget counts output delivered into the persisted transcript
+    (stream usage plus completed per-query Result usage). Provider-side work
+    that produced no transcript-visible output is transport overhead, not an
+    experimental token. Recovery provenance remains available separately in
+    ``process_resume_count`` and ``session_reconnects``.
+    """
     transport_recovered = any(
         event.reason == "transport" for phase in phases for event in phase.reconnects
     )
-    if process_resume_count and transport_recovered:
-        return "process_and_transport_recovered_unreported_suffix_possible"
-    if process_resume_count:
-        return "process_recovered_unreported_suffix_possible"
-    if transport_recovered:
-        return "transport_recovered_unreported_suffix_possible"
+    if process_resume_count or transport_recovered:
+        return "recovered_eligible_output_accounted"
     return "provider_reported_complete"
 
 
@@ -530,12 +533,8 @@ def write_parallel_bank_meta(
         event.get("reason") == "transport" for event in reconnects
     )
     accounting_status = (
-        "process_and_transport_recovered_unreported_suffix_possible"
-        if process_resume_count and transport_recovered
-        else "process_recovered_unreported_suffix_possible"
-        if process_resume_count
-        else "transport_recovered_unreported_suffix_possible"
-        if transport_recovered
+        "recovered_eligible_output_accounted"
+        if process_resume_count or transport_recovered
         else "provider_reported_complete"
     )
     run_records = []
@@ -738,16 +737,9 @@ def write_uniform_strategy_bank_meta(
             *run_reconnects,
         ],
         "token_accounting_status": (
-            "process_and_transport_recovered_unreported_suffix_possible"
+            "recovered_eligible_output_accounted"
             if process_resume_count
-            and (
-                any(event.reason == "transport" for event in plan_reconnects)
-                or any(event.get("reason") == "transport" for event in run_reconnects)
-            )
-            else "process_recovered_unreported_suffix_possible"
-            if process_resume_count
-            else "transport_recovered_unreported_suffix_possible"
-            if (
+            or (
                 any(event.reason == "transport" for event in plan_reconnects)
                 or any(event.get("reason") == "transport" for event in run_reconnects)
             )

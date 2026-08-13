@@ -31,18 +31,24 @@ def _phase(
 
 
 class StorageSelectionTests(unittest.TestCase):
-    def test_transport_recovery_is_disclosed_in_token_status(self) -> None:
+    def test_recovery_is_valid_accounted_output_with_separate_provenance(self) -> None:
         phase = _phase("solve", "proof", 100)
         phase.reconnects.append(
             ReconnectEvent("transport", None, "credential_1", "credential_1")
         )
         self.assertEqual(
             _token_accounting_status([phase], 0),
-            "transport_recovered_unreported_suffix_possible",
+            "recovered_eligible_output_accounted",
         )
         self.assertEqual(
             _token_accounting_status([phase], 1),
-            "process_and_transport_recovered_unreported_suffix_possible",
+            "recovered_eligible_output_accounted",
+        )
+
+    def test_unrecovered_output_uses_provider_complete_status(self) -> None:
+        self.assertEqual(
+            _token_accounting_status([_phase("solve", "proof", 100)], 0),
+            "provider_reported_complete",
         )
 
     def test_full_solution_skips_empty_terminal_revision(self) -> None:

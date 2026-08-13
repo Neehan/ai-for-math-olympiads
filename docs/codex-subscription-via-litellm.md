@@ -189,13 +189,16 @@ CODEX_LITELLM_MODEL=gpt-5.6-luna ./scripts/codex_pool.sh verify 3
   streams under long concurrent GPT runs; this choice is recorded in result
   metadata and the checkpoint identity.
 - The harness disables Claude Code's non-streaming fallback and automatic API
-  retries, and the sidecar disables LiteLLM router retries. A failed request
-  may have consumed backend inference without returning usage, so silently
-  issuing another request would violate exact token matching. The attempt
-  remains checkpointed and fails loud instead.
-- Process-resumed results remain useful for development, but metadata marks
-  them `process_recovered_unreported_suffix_possible`; canonical token-matched
-  analyses must include only `provider_reported_complete` attempts.
+  retries, and the sidecar disables LiteLLM router retries. Transient failures
+  are handled only by the harness's bounded same-transcript recovery, which
+  deduplicates stable message IDs and preserves accumulated eligible-output
+  accounting.
+- The experimental budget counts output delivered into the persisted
+  transcript: streamed usage plus completed per-query Result usage. Backend
+  work that returned no usable transcript output is infrastructure overhead,
+  not experimental output. Recovered attempts are valid and marked
+  `recovered_eligible_output_accounted`; `process_resume_count` and
+  `session_reconnects` retain the exact operational provenance.
 - The non-secret LiteLLM transport policy is recorded in every result and in
   the GPT checkpoint identity. Changing it starts a new GPT checkpoint lineage
   instead of silently mixing sessions collected under different timeout or
