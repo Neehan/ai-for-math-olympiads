@@ -8,6 +8,14 @@ model_list:
       # pinned compatibility image safely folds it into the first user turn.
       supports_system_message: false
 
+  - model_name: gpt-5.6-luna
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.6-luna
+      # Keep the same Claude Agent SDK compatibility path as GPT-5.4.
+      supports_system_message: false
+
 router_settings:
   # Canonical experiments permit exactly one upstream inference request. A
   # failed request can consume compute without returning usage, so retries

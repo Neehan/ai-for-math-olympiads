@@ -4,8 +4,9 @@ Run only `scripts/codex_pool.sh`; the Python files in
 `scripts/codex_pool_internal/` are private helpers called by that script.
 
 This setup runs one isolated LiteLLM sidecar per authorized Codex
-subscription on a single machine. The experiment harness addresses the model
-as `litellm/gpt-5.4`, assigns concurrent sessions across healthy sidecars, and
+subscription on a single machine. The experiment harness addresses GPT-5.4 as
+`litellm/gpt-5.4` or GPT-5.6 Luna as `litellm/gpt-5.6-luna`, assigns concurrent
+sessions across healthy sidecars, and
 uses its existing cooldown/recovery logic when a sidecar reports a limit.
 
 Each sidecar has its own OAuth volume. Raw credentials are never baked into an
@@ -146,6 +147,24 @@ For auditing GPT-generated proofs, select a different judge as usual:
 
 The `litellm/` prefix is harness routing metadata. LiteLLM receives the actual
 model alias `gpt-5.4`, while result paths use `litellm-gpt-5.4`.
+
+GPT-5.6 Luna uses the same frozen Responses translation, tool policy, output
+budgets, and 900k transcript-compaction threshold:
+
+```bash
+./run.sh run \
+  --arm baseline \
+  --model litellm/gpt-5.6-luna \
+  --domain combinatorics \
+  --seeds 1
+```
+
+To smoke-test Luna through each subscription before a run, override only the
+verification model:
+
+```bash
+CODEX_LITELLM_MODEL=gpt-5.6-luna ./scripts/codex_pool.sh verify 3
+```
 
 ## Routing and recovery
 

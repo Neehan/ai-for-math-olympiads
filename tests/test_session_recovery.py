@@ -1221,6 +1221,20 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    def test_gpt_5_6_luna_uses_the_same_litellm_transport(self) -> None:
+        model = "litellm/gpt-5.6-luna"
+        sidecar = "http://olympiad-codex-litellm-1:4000/"
+        with patch.dict(os.environ, {LITELLM_API_KEY_ENV: "sk-local"}):
+            env = provider_env(model, sidecar)
+        self.assertEqual(provider_model_name(model), "gpt-5.6-luna")
+        self.assertEqual(token_env_name(model), LITELLM_BASE_URL_ENV)
+        self.assertEqual(
+            provider_transport_policy(model),
+            provider_transport_policy("litellm/gpt-5.4"),
+        )
+        self.assertEqual(env[ANTHROPIC_BASE_URL_ENV], sidecar.rstrip("/"))
+        self.assertEqual(env[MAX_OUTPUT_TOKENS_ENV], "64000")
+
     def test_build_options_sets_shared_auto_compact_window(self) -> None:
         config = load_config(CONFIG_PATH)
         with tempfile.TemporaryDirectory() as scratch:
