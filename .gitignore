@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+paper/
 
 # Distribution / packaging
 .Python
@@ -241,3 +242,11 @@ local_data/
 # Run outputs: kept local for now (archival decision deferred — committing
 # them also embeds problem statements and hints in repo history).
 results/
+
+# latex
+main.aux
+main.bbl
+main.fdb_latexmk
+main.fls
+main.log
+main.pdf
