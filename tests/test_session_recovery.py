@@ -36,6 +36,7 @@ from src.constants import (
     CLAUDE_ENABLE_STREAM_WATCHDOG_ENV,
     CLAUDE_MAX_API_RETRIES_ENV,
     CLAUDE_STREAM_IDLE_TIMEOUT_ENV,
+    GPT_5_4_MINI_AUTO_COMPACT_WINDOW,
     LITELLM_API_KEY_ENV,
     LITELLM_BASE_URL_ENV,
     MAX_OUTPUT_TOKENS_ENV,
@@ -50,6 +51,7 @@ from src.solver import (
     BudgetTracker,
     ResumableClaudeSession,
     StderrTail,
+    auto_compact_window,
     build_options,
     agent_runtime_policy,
     provider_env,
@@ -1225,19 +1227,23 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    def test_gpt_5_6_luna_uses_the_same_litellm_transport(self) -> None:
-        model = "litellm/gpt-5.6-luna"
+    def test_other_gpt_models_use_the_same_litellm_transport(self) -> None:
         sidecar = "http://olympiad-codex-litellm-1:4000/"
-        with patch.dict(os.environ, {LITELLM_API_KEY_ENV: "sk-local"}):
-            env = provider_env(model, sidecar)
-        self.assertEqual(provider_model_name(model), "gpt-5.6-luna")
-        self.assertEqual(token_env_name(model), LITELLM_BASE_URL_ENV)
-        self.assertEqual(
-            provider_transport_policy(model),
-            provider_transport_policy("litellm/gpt-5.4"),
-        )
-        self.assertEqual(env[ANTHROPIC_BASE_URL_ENV], sidecar.rstrip("/"))
-        self.assertEqual(env[MAX_OUTPUT_TOKENS_ENV], "64000")
+        for provider_name in ("gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna"):
+            with self.subTest(provider_name=provider_name):
+                model = f"litellm/{provider_name}"
+                with patch.dict(os.environ, {LITELLM_API_KEY_ENV: "sk-local"}):
+                    env = provider_env(model, sidecar)
+                self.assertEqual(provider_model_name(model), provider_name)
+                self.assertEqual(token_env_name(model), LITELLM_BASE_URL_ENV)
+                self.assertEqual(
+                    provider_transport_policy(model),
+                    provider_transport_policy("litellm/gpt-5.4"),
+                )
+                self.assertEqual(
+                    env[ANTHROPIC_BASE_URL_ENV], sidecar.rstrip("/")
+                )
+                self.assertEqual(env[MAX_OUTPUT_TOKENS_ENV], "64000")
 
     def test_build_options_sets_shared_auto_compact_window(self) -> None:
         config = load_config(CONFIG_PATH)
@@ -1252,6 +1258,14 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(options.extra_args["autocompact"], AUTO_COMPACT_WINDOW)
         self.assertEqual(options.settings, str(AGENT_SETTINGS_PATH))
+
+    def test_gpt_5_4_mini_uses_three_hundred_k_compaction(self) -> None:
+        for model in ("litellm/gpt-5.4-mini", "openai/gpt-5.4-mini"):
+            with self.subTest(model=model):
+                self.assertEqual(
+                    auto_compact_window(model),
+                    GPT_5_4_MINI_AUTO_COMPACT_WINDOW,
+                )
 
     def test_vllm_uses_small_profile_and_two_hundred_k_compaction(self) -> None:
         for model in ("vllm/glm-4.7-flash", "vllm/muse-glimmer"):

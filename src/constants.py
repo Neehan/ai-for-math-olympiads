@@ -182,6 +182,9 @@ MAX_OUTPUT_TOKENS_ENV: str = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 MAX_OUTPUT_TOKENS_PER_RESPONSE: int = 64000
 # Claude CLI transcript-compaction threshold for non-vLLM solver models.
 AUTO_COMPACT_WINDOW: str = "900k"
+# GPT-5.4 mini has a 400k context window; compact early enough to retain room
+# for the prompt, tools, summary, and another response.
+GPT_5_4_MINI_AUTO_COMPACT_WINDOW: str = "300k"
 # The local proof models expose a 262k context. Compact at 200k, leaving about
 # 62k for the summary, current prompt, tools, and the next response.
 VLLM_AUTO_COMPACT_WINDOW: str = "200k"

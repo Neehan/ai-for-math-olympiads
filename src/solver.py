@@ -36,6 +36,7 @@ from src.constants import (
     CLAUDE_CONFIG_DIR_ENV,
     CLI_PATH_ENV,
     DISALLOWED_TOOLS,
+    GPT_5_4_MINI_AUTO_COMPACT_WINDOW,
     ANTHROPIC_API_KEY_ENV,
     ANTHROPIC_AUTH_TOKEN_ENV,
     ANTHROPIC_BASE_URL_ENV,
@@ -788,7 +789,11 @@ def agent_settings_path(model: str) -> Path:
 
 def auto_compact_window(model: str) -> str:
     """Return the transcript threshold appropriate to the model context."""
-    return VLLM_AUTO_COMPACT_WINDOW if uses_vllm(model) else AUTO_COMPACT_WINDOW
+    if uses_vllm(model):
+        return VLLM_AUTO_COMPACT_WINDOW
+    if provider_model_name(model).rsplit("/", 1)[-1] == "gpt-5.4-mini":
+        return GPT_5_4_MINI_AUTO_COMPACT_WINDOW
+    return AUTO_COMPACT_WINDOW
 
 
 @cache

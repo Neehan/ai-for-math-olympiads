@@ -4,9 +4,10 @@ Run only `scripts/codex_pool.sh`; the Python files in
 `scripts/codex_pool_internal/` are private helpers called by that script.
 
 This setup runs one isolated LiteLLM sidecar per authorized Codex
-subscription on a single machine. The experiment harness addresses GPT-5.4 as
-`litellm/gpt-5.4` or GPT-5.6 Luna as `litellm/gpt-5.6-luna`, assigns concurrent
-sessions across healthy sidecars, and
+subscription on a single machine. The experiment harness addresses GPT-5.4,
+GPT-5.4 mini, GPT-5.5, and GPT-5.6 Luna as `litellm/gpt-5.4`,
+`litellm/gpt-5.4-mini`, `litellm/gpt-5.5`, and `litellm/gpt-5.6-luna`, assigns
+concurrent sessions across healthy sidecars, and
 uses its existing cooldown/recovery logic when a sidecar reports a limit.
 
 Each sidecar has its own OAuth volume. Raw credentials are never baked into an
@@ -148,22 +149,23 @@ For auditing GPT-generated proofs, select a different judge as usual:
 The `litellm/` prefix is harness routing metadata. LiteLLM receives the actual
 model alias `gpt-5.4`, while result paths use `litellm-gpt-5.4`.
 
-GPT-5.6 Luna uses the same frozen Responses translation, tool policy, output
-budgets, and 900k transcript-compaction threshold:
+GPT-5.4 mini, GPT-5.5, and GPT-5.6 Luna use the same frozen Responses
+translation, tool policy, and output budgets. GPT-5.4 mini compacts at 300k to
+fit its 400k context; the million-context models compact at 900k:
 
 ```bash
 ./run.sh run \
   --arm baseline \
-  --model litellm/gpt-5.6-luna \
+  --model litellm/gpt-5.5 \
   --domain combinatorics \
   --seeds 1
 ```
 
-To smoke-test Luna through each subscription before a run, override only the
-verification model:
+To smoke-test a non-default model through each subscription before a run,
+override only the verification model, for example:
 
 ```bash
-CODEX_LITELLM_MODEL=gpt-5.6-luna ./scripts/codex_pool.sh verify 3
+CODEX_LITELLM_MODEL=gpt-5.5 ./scripts/codex_pool.sh verify 3
 ```
 
 ## Routing and recovery
