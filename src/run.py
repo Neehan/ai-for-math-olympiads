@@ -49,6 +49,7 @@ from src.constants import (
     PHASE_WRAP_UP,
     RESULTS_ROOT,
     RUN_REFERENCE_FILENAME,
+    SEQUENTIAL_MIN_ROUNDS_BEFORE_CONVERGENCE,
     SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
@@ -864,6 +865,14 @@ def run_checkpoint_identity(
     return identity
 
 
+def _sequential_self_converged(round_num: int, no_gap_streak: int) -> bool:
+    """Whether the pre-registered sequential stopping rule is satisfied."""
+    return (
+        round_num >= SEQUENTIAL_MIN_ROUNDS_BEFORE_CONVERGENCE
+        and no_gap_streak >= SEQUENTIAL_NO_GAP_STREAK_TO_STOP
+    )
+
+
 async def solve_seed(
     config: ExperimentConfig,
     arm: ArmConfig,
@@ -970,7 +979,7 @@ async def solve_seed(
 
                 while (
                     not tracker.soft_exhausted
-                    and no_gap_streak < SEQUENTIAL_NO_GAP_STREAK_TO_STOP
+                    and not _sequential_self_converged(round_num, no_gap_streak)
                 ):
                     last_label = phases[-1].label
                     if last_label in {PHASE_SOLVE, PHASE_REVISE}:
@@ -991,13 +1000,14 @@ async def solve_seed(
                             no_gap_streak += 1
                         else:
                             no_gap_streak = 0
-                        if no_gap_streak >= SEQUENTIAL_NO_GAP_STREAK_TO_STOP:
+                        if _sequential_self_converged(round_num, no_gap_streak):
                             log.info(
-                                "%s/%s seed %d: stopping after %d consecutive "
-                                "no-gap critiques (%d/%d tokens)",
+                                "%s/%s seed %d: stopping after round %d and %d "
+                                "consecutive no-gap critiques (%d/%d tokens)",
                                 arm.name,
                                 problem.problem_id,
                                 seed,
+                                round_num,
                                 no_gap_streak,
                                 tracker.spent,
                                 budget_tokens,
@@ -1029,7 +1039,7 @@ async def solve_seed(
 
                 termination_reason = (
                     "self_converged"
-                    if no_gap_streak >= SEQUENTIAL_NO_GAP_STREAK_TO_STOP
+                    if _sequential_self_converged(round_num, no_gap_streak)
                     else "token_limit"
                 )
 
@@ -1060,7 +1070,10 @@ async def solve_seed(
                         recovered_no_gap_streak = 0
             termination_reason = (
                 "self_converged"
-                if recovered_no_gap_streak >= SEQUENTIAL_NO_GAP_STREAK_TO_STOP
+                if _sequential_self_converged(
+                    sum(phase.label == PHASE_CRITIQUE for phase in phases),
+                    recovered_no_gap_streak,
+                )
                 else "token_limit"
             )
 

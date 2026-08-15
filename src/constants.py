@@ -102,10 +102,12 @@ PHASE_PLAN: str = "plan"
 PHASE_PLAN_WRAP_UP: str = "plan_wrap_up"
 
 # Sequential self-refinement stops only after the model reaches the prompt's
-# exact no-gap verdict twice in a row. One optimistic critique is
-# not enough to terminate a trajectory.
+# exact no-gap verdict twice in a row, and never before the minimum number of
+# critique/revision rounds.  The floor prevents a confidently wrong proof from
+# ending a scaling trajectory after only one or two self-critiques.
 NO_GENUINE_GAP_MARKER: str = "NO GENUINE GAP FOUND"
 SEQUENTIAL_NO_GAP_STREAK_TO_STOP: int = 2
+SEQUENTIAL_MIN_ROUNDS_BEFORE_CONVERGENCE: int = 10
 
 # Mechanical recovery instruction used only after the provider rejects a
 # live request for quota/spend reasons. Keeping it fixed makes reconnects an

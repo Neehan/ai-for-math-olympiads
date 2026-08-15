@@ -17,6 +17,7 @@ results/<model>/<arm>/audit.jsonl, one line per (problem, seed).
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -226,8 +227,8 @@ async def audit_seed(
     """Grade one completed attempt (full solution + any budget-cut snapshots).
 
     Sequential arms carry solution_<m>x.md snapshots for the saturation curve;
-    each is judged as its own standalone proof, so every curve point has an
-    audit_score + note. A missing snapshot (no complete write-up within that
+    each unique standalone proof is judged once, and byte-identical snapshots
+    reuse that verdict. A missing snapshot (no complete write-up within that
     budget) is scored invalid with an explanatory note, no judge call spent.
     """
     if arm.mode == MODE_PARALLEL and output_dir_override is None:
@@ -325,6 +326,10 @@ async def audit_seed(
             checkpoint,
             "full",
         )
+        full_digest = hashlib.sha256(solution.encode("utf-8")).hexdigest()
+        verdict_cache: dict[
+            str, tuple[dict[str, object], list[ReconnectEvent], str]
+        ] = {full_digest: (verdict, full_reconnects, "full")}
 
         cuts: dict[str, dict[str, object]] = {}
         for multiplier in cut_multipliers:
@@ -338,16 +343,31 @@ async def audit_seed(
                 }
                 continue
             role = f"cut_{multiplier}x"
-            cut_scratch = checkpoint.scratch_dir(role)
-            scratch_paths[role] = cut_scratch
-            cut_verdict, cut_reconnects = await _judge(
-                config,
-                audit_prompt(problem, cut_text),
-                pool,
-                str(cut_scratch),
-                checkpoint,
-                role,
-            )
+            cut_digest = hashlib.sha256(cut_text.encode("utf-8")).hexdigest()
+            cached = verdict_cache.get(cut_digest)
+            if cached is None:
+                cut_scratch = checkpoint.scratch_dir(role)
+                scratch_paths[role] = cut_scratch
+                cut_verdict, cut_reconnects = await _judge(
+                    config,
+                    audit_prompt(problem, cut_text),
+                    pool,
+                    str(cut_scratch),
+                    checkpoint,
+                    role,
+                )
+                verdict_cache[cut_digest] = (cut_verdict, cut_reconnects, role)
+                reused_from: str | None = None
+            else:
+                cut_verdict, cut_reconnects, reused_from = cached
+                log.info(
+                    "%s/%s seed %d: reusing %s audit for identical %s proof",
+                    arm.name,
+                    problem.problem_id,
+                    seed,
+                    reused_from,
+                    role,
+                )
             cuts[f"{multiplier}x"] = {
                 "audit_score": cut_verdict["score"],
                 "note": cut_verdict["note"],
@@ -355,6 +375,12 @@ async def audit_seed(
                 "session_reconnects": [
                     dataclasses.asdict(event) for event in cut_reconnects
                 ],
+                "solution_sha256": cut_digest,
+                **(
+                    {"audit_reused_from": reused_from}
+                    if reused_from is not None
+                    else {}
+                ),
             }
 
         checkpoint.prepare_completion(
@@ -369,6 +395,7 @@ async def audit_seed(
             "audit_model": config.audit_model,
             "audit_score": verdict["score"],
             "note": verdict["note"],
+            "solution_sha256": full_digest,
             "session_reconnect_count": len(full_reconnects),
             "session_reconnects": [
                 dataclasses.asdict(event) for event in full_reconnects

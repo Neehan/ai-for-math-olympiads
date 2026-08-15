@@ -242,6 +242,7 @@ local_data/
 # Run outputs: kept local for now (archival decision deferred — committing
 # them also embeds problem statements and hints in repo history).
 results/
+results-archive/
 
 # latex
 main.aux

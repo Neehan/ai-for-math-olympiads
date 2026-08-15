@@ -45,6 +45,8 @@ from src.constants import (
     SCRATCH_SUBDIR,
     SESSION_STATE_SUBDIR,
     SEED_AUDIT_FILENAME,
+    SEQUENTIAL_MIN_ROUNDS_BEFORE_CONVERGENCE,
+    SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
     SOLUTION_CUT_FILENAME_FORMAT,
     SOLUTION_FILENAME,
     BANK_RUN_DIR_FORMAT,
@@ -469,6 +471,14 @@ def write_seed_outputs(
         meta["plan_scratch_dir_name"] = plan_scratch_path.name
     if termination_reason is not None:
         meta["termination_reason"] = termination_reason
+    if arm.mode == MODE_SEQUENTIAL:
+        meta["completed_critique_rounds"] = sum(
+            phase.label == PHASE_CRITIQUE for phase in phases
+        )
+        meta["sequential_stopping_policy"] = {
+            "minimum_critique_rounds": SEQUENTIAL_MIN_ROUNDS_BEFORE_CONVERGENCE,
+            "consecutive_no_gap_critiques": SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
+        }
     if meta_extra:
         meta.update(meta_extra)
     _atomic_write_bytes(
