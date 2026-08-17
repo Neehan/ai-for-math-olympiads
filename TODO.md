@@ -1,20 +1,29 @@
-# Pilot TODO
+# ICLR TODO
 
-## Runs
+## Freeze before more full runs
 
-- [ ] Complete Opus hint-Sequential, seeds 1–3, on its remaining unaided 8× survivors: China 15, China 5, and Romania 6.
-- [ ] Complete GPT-5.4 hint-Sequential, seeds 1–3, on its remaining unaided 8× survivors: Iran 8, Romania 6, and Serbia 3.
-- [ ] Run GPT-5.4 Parallel-8 and Uniform-8 on its six unaided 8× survivors: All-Russian 12, IMO 3, Iran 6, Iran 8, Romania 6, and Serbia 3.
+- [ ] Freeze one primary endpoint: paired reliable coverage at the final 8× cap for fresh unaided versus oracle-sketch Self-Refine on each model's baseline-failure cohort.
+- [ ] Use each Self-Refine arm's own 1×/2×/4×/8× artifacts; show the baseline screen separately and call intermediate cuts anytime prefixes.
+- [ ] Freeze hashes for the 35 problems, sketches, prompts, stopping rules, model endpoints, run order, audit threshold, and analysis code; log realized tokens and rounds.
+- [ ] Validate anytime 2×/4× cuts against independent hard-stopped runs on a locked subset; otherwise keep only the final 8× comparison primary.
+
+## Search and content controls
+
+- [ ] Audit and document `baseline-uniform-strategy` as a proof-domain adaptation of **coarse-grained TTS-Uniform without entropy filtering**: one shared 80k-token strategy extractor, uniform allocation of eight fresh 190k-token executors, and no oracle selection.
+- [ ] Publish the exact extraction and execution prompts and state every adaptation: whole-proof coverage, semantic deduplication, an eight-strategy cap, proof auditing instead of answer entropy, and no majority-vote aggregation.
+- [ ] Run Parallel-8 and the TTS-Uniform-C adaptation on the same frozen baseline-failure cohort; report `c/8` and pass@$k$ only for IID Parallel, and raw executor/strategy yield for the dependent uniform-allocation bank.
+- [ ] Freeze a matched mathematical placebo for every problem and, on a locked subset, a same-length sketch with the decisive route clause removed.
 
 ## Audits
 
-- [ ] Audit each unique Uniform plan for viability, blinded to executor outcome; grade the resulting proof separately.
-- [ ] Label every baseline-Sequential and hint-Sequential checkpoint on fitting problems as U/P/S with the frozen rubric; independently double-annotate U/P decisions.
-- [ ] Have olympiad medalists verify every passing proof used in a headline result.
+- [ ] Have two blinded olympiad experts adjudicate every first-passage proof, every final 8× proof, and every proof or plan used in a headline dissociation case.
+- [ ] Audit route presence in unaided and TTS-Uniform-C trajectories and adherence in oracle-sketch trajectories; allow valid routes different from the reference solution.
+- [ ] Double-label U/P states with a frozen rubric and audit a random failure sample large enough to estimate automated-audit false negatives.
 
-## Analysis
+## Analysis and paper
 
-- [ ] Primary: compare baseline-Sequential with hint-Sequential on the frozen unaided 8× survivor cohort, using each arm's own 1×/2×/4×/8× checkpoints.
-- [ ] Secondary: compare Parallel-8, Uniform-8, and hint-Sequential on unaided 8× survivors.
-- [ ] Report raw 0/3–3/3 outcomes; distinguish checkpoint/terminal performance from cumulative discovery.
-- [ ] Retire standalone hint from primary plots, but preserve its artifacts as development evidence.
+- [ ] Report raw 0/3–3/3 cells, current-checkpoint and cumulative coverage, exact paired uncertainty over problems, and sensitivity at scores ≥6, 7, and 3/3 reliability.
+- [ ] Bound every null claim to the tested controller and maximum allocation; never equate early self-convergence with consuming the full 8× budget.
+- [ ] Complete the 35-problem, five-family panel and a locked external replication, including at least one open-weight model.
+- [ ] Keep the state model in the main paper only if frozen out-of-sample U/P predictions beat simpler time-only and two-state baselines; otherwise move it and the proofs to the appendix.
+- [ ] Rebuild every table and TeX figure from an immutable artifact manifest in a clean container.
