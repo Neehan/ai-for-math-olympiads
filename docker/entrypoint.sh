@@ -1,8 +1,8 @@
 #!/bin/sh
 # Egress firewall + harness launch. Requires --cap-add=NET_ADMIN.
 #
-# Usage: entrypoint.sh <run|audit> [args...] — both the solver stage and the
-# audit stage run behind the SAME firewall: a judge with tools and internet
+# Internal usage: entrypoint.sh <run|audit|state-audit> [args...] — every solver and
+# audit stage runs behind the SAME firewall: a judge with tools and internet
 # could fetch official solutions from public archives, and its archived
 # scratch would contaminate future runs.
 #
@@ -14,11 +14,12 @@
 # firewall is self-tested before any token is spent.
 set -eu
 
-STAGE="${1:?usage: entrypoint.sh <run|audit> [args...]}"
+STAGE="${1:?usage: entrypoint.sh <run|audit|state-audit> [args...]}"
 shift
 case "$STAGE" in
-    run|audit) ;;
-    *) echo "unknown stage '$STAGE' (expected run or audit)" >&2; exit 2 ;;
+    run|audit) MODULE="$STAGE" ;;
+    state-audit) MODULE="state_audit" ;;
+    *) echo "unknown stage '$STAGE' (expected run, audit, or state-audit)" >&2; exit 2 ;;
 esac
 
 # Prefetch the problem/hint datasets BEFORE the firewall closes: HuggingFace
@@ -44,6 +45,19 @@ PY
 export PROBLEMS_FILE=/run/contest/problems.jsonl
 export HINTS_FILE=/run/contest/hints.jsonl
 export OUTLINES_FILE=/run/contest/outlines.jsonl
+if [ "$STAGE" = "state-audit" ]; then
+    python - <<'PY'
+import urllib.request
+from src.constants import SOLUTIONS_URL
+
+with urllib.request.urlopen(SOLUTIONS_URL, timeout=60) as response:
+    data = response.read()
+with open("/run/contest/solutions.jsonl", "wb") as handle:
+    handle.write(data)
+print("reference solutions prefetched")
+PY
+    export SOLUTIONS_FILE=/run/contest/solutions.jsonl
+fi
 
 PROVIDER_KIND="${HARNESS_PROVIDER_KIND:?HARNESS_PROVIDER_KIND is required}"
 case "$PROVIDER_KIND" in
@@ -153,6 +167,9 @@ chown -R appuser /run/contest
 if [ -d /c ]; then
     chown -R appuser /c
 fi
+if [ -d /app/state-results ]; then
+    chown -R appuser /app/state-results
+fi
 export HOME=/home/appuser
 if [ "$PROVIDER_KIND" = "openrouter" ]; then
     export HARNESS_OPENROUTER_PROXY_URL=http://127.0.0.1:8787/api
@@ -174,4 +191,4 @@ else:
 PY
     kill -0 "$proxy_pid"
 fi
-exec gosu appuser python -m "src.$STAGE" "$@"
+exec gosu appuser python -m "src.$MODULE" "$@"

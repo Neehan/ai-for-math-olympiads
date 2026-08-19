@@ -16,6 +16,9 @@ PROMPTS_DIR: Path = REPO_ROOT / "prompts"
 AGENT_SETTINGS_PATH: Path = REPO_ROOT / "agent_settings.json"
 VLLM_AGENT_SETTINGS_PATH: Path = REPO_ROOT / "agent_settings_small.json"
 RESULTS_ROOT: Path = REPO_ROOT / "results"
+# Reference-informed state annotations are deliberately isolated from proof
+# outputs so a later tool-enabled correctness judge can never inspect them.
+STATE_RESULTS_ROOT: Path = REPO_ROOT / "state-results"
 # Per-attempt Claude transcript/config store. Keeping it under that attempt's
 # opaque scratch dir prevents concurrent conversations from sharing ~/.claude.
 SESSION_STATE_SUBDIR: str = ".claude-runtime"
@@ -46,6 +49,8 @@ ZSTD_LEVEL: int = 9
 # per-arm compiled file: one JSON line per (problem, seed) with score + note.
 SEED_AUDIT_FILENAME: str = "audit.json"
 ARM_AUDIT_FILENAME: str = "audit.jsonl"
+SEED_STATE_AUDIT_FILENAME: str = "state_audit.json"
+ARM_STATE_AUDIT_FILENAME: str = "state_audit.jsonl"
 # Grading scale (prompts/audit.md): 7 complete, 6/5 small fixable gap, 0 else.
 AUDIT_SCORES: tuple[int, ...] = (0, 5, 6, 7)
 AUDIT_SCORE_INVALID: int = 0
@@ -62,6 +67,7 @@ WRAP_UP_PROMPT_FILE: str = "wrap_up.md"
 UNIFORM_STRATEGY_PLAN_PROMPT_FILE: str = "uniform_strategy_plan.md"
 UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE: str = "uniform_strategy_plan_wrap_up.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
+STATE_AUDIT_PROMPT_FILE: str = "state_audit.md"
 
 # --- Problem/hint data sources -------------------------------------------
 # Never committed (contest identity); fetched straight into memory, or from
@@ -72,9 +78,11 @@ _DATASET_BASE: str = (
 PROBLEMS_URL: str = f"{_DATASET_BASE}/hard_problems.jsonl"
 HINTS_URL: str = f"{_DATASET_BASE}/hard_hints.jsonl"
 OUTLINES_URL: str = f"{_DATASET_BASE}/hard_outlines.jsonl"
+SOLUTIONS_URL: str = f"{_DATASET_BASE}/hard_solutions.jsonl"
 PROBLEMS_FILE_ENV: str = "PROBLEMS_FILE"
 HINTS_FILE_ENV: str = "HINTS_FILE"
 OUTLINES_FILE_ENV: str = "OUTLINES_FILE"
+SOLUTIONS_FILE_ENV: str = "SOLUTIONS_FILE"
 FETCH_TIMEOUT_SECONDS: int = 60
 
 # --- Arm vocabulary -------------------------------------------------------

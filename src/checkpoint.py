@@ -27,6 +27,7 @@ from src.constants import (
     CHECKPOINT_ROOT_ENV,
     DEFER_CHECKPOINT_CLEANUP_ENV,
     PROMPTS_DIR,
+    STATE_AUDIT_PROMPT_FILE,
 )
 from src.models import PhaseResult, ReconnectEvent, ToolCall
 from src.solver import BudgetTracker
@@ -37,10 +38,23 @@ _SCRATCH_RE = re.compile(r"^[0-9a-f]{8}$")
 
 
 @cache
-def protocol_fingerprint(settings_path: Path = AGENT_SETTINGS_PATH) -> str:
-    """Hash every mounted prompt/tool-policy file that can affect a session."""
+def protocol_fingerprint(
+    settings_path: Path = AGENT_SETTINGS_PATH,
+    extra_prompt_files: tuple[str, ...] = (),
+) -> str:
+    """Hash prompts affecting normal runs, plus explicitly requested extras.
+
+    State annotation is a separate post-hoc stage.  Its prompt is excluded by
+    default so introducing or revising it cannot strand paid solver/auditor
+    checkpoints; the state-audit stage explicitly opts it into its own hash.
+    """
     digest = hashlib.sha256()
-    for path in [settings_path, *sorted(PROMPTS_DIR.glob("*.md"))]:
+    prompts = [
+        path
+        for path in sorted(PROMPTS_DIR.glob("*.md"))
+        if path.name != STATE_AUDIT_PROMPT_FILE or path.name in extra_prompt_files
+    ]
+    for path in [settings_path, *prompts]:
         digest.update(path.name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())

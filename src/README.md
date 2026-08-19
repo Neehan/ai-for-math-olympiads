@@ -33,8 +33,9 @@ Problems and hints are NOT in this repo — committing them would leak contest i
 - `hard_problems.jsonl` — statements. Only `problem_id`, `statement`, and `domain` (for `--domain` filtering) are kept; contest-identifying metadata is dropped at load and the prompt carries the statement alone.
 - `hard_hints.jsonl` — hint ladder source: `placebo` field → **h1** (not authored yet — placebo arms fail fast before spending a token), scalar `hint` field → **h2** (the frozen ≤25-word oracle strategy hint, inserted verbatim). The retired five-tag development file is archived on HuggingFace as `hard_hints-v1.jsonl` and is never fetched by the harness.
 - `hard_outlines.jsonl` — audited strategy outlines → **h3** (numbered steps; the `outline` and `outline-sequential` arms).
+- `hard_solutions.jsonl` — full references used only by the state-annotation half of sequential `audit`. The proof matching the frozen outline must be `reference_solutions[0]`, and exactly that entry must carry `route_id: "hard_hint"`; both conditions are enforced before any model call.
 
-In Docker, the entrypoint prefetches all three BEFORE the egress firewall closes (HuggingFace stays blocked while agents run — an agent that could fetch the hints file would be contaminated); the loader consumes and deletes the temp copies before any agent spawns, so no trace remains.
+In Docker, the entrypoint prefetches the first three files BEFORE the egress firewall closes (HuggingFace stays blocked while agents run — an agent that could fetch the hints file would be contaminated). For a sequential arm, `audit` grades correctness in one container, then launches state annotation in a second container that alone receives the full-solution file. Each loader consumes and deletes its temp copy before any agent spawns.
 
 ## Prompts — `prompts/*.md`
 
@@ -60,6 +61,8 @@ All prompts are editable markdown files. Uniform planning has dedicated plan and
 ## Audit (grading)
 
 After generation, `./run.sh audit --arm <slug>` grades every completed attempt — in the same firewalled container as generation, because a judge with tools and internet could fetch official solutions from public archives and its archived scratch would contaminate future runs. The judge (`audit_model`, config-enforced to differ from the solver) is given only the problem statement and the standalone `solution.md` (the hint is not included), grades only the `## Final Solution` section, and returns a structured verdict plus a `note` saying why the solution is valid or exactly what is missing/wrong (schema-enforced, always parses). The scale (`prompts/audit.md`, with calibration examples): **7** complete and rigorous; **6** complete in essence with exactly one small local obvious-fix gap; **5** complete in essence with two or three such gaps; **0** anything else — no other partial credit (a solution missing one of two required bounds scores 0). The judge HAS scratch tools, to audit rather than solve: it may recompute a bound or test a small case in its own opaque scratch dir (archived as `audit_scratch/` beside the attempt), but the prompt forbids filling gaps — a failing check is evidence of error, a passing check never substitutes for written proof. Sequential attempts' budget-cut snapshots are each judged as standalone proofs. The judge prompt is `prompts/audit.md`, editable like the rest. Verdicts land as `audit.json` per seed (resumable marker) and are compiled by scanning the arm's whole results tree into `results/<model>/<arm>/audit.jsonl` (a `--problems`-filtered re-audit can never truncate it). Audits share the token pool and rate-limit rotation.
+
+For `baseline-sequential` and `hint-sequential`, the same `./run.sh audit` command then reuses those proof verdicts and writes separate `state_audit.json` / `state_audit.jsonl` records under `state-results/`, which is never mounted into correctness-audit containers. Passing proofs become `S` mechanically; missing solution text receives `state: null`; only nonempty score-below-5 artifacts invoke the tool-free outline annotator. Its prompt contains the problem, three-step outline, explicitly indexed matching reference solution, and submitted solution. For each outline step it returns one `present` boolean and one short reason saying whether the submission explicitly recognizes that ingredient and its role, regardless of whether the attempted proof is correct. The harness derives `P` from 3/3 recognition and `U` otherwise, then supplies a static state note. Problem statements are cross-checked across data files, and identical snapshots reuse one annotation. Other arms receive correctness grading only.
 
 ## Running
 
@@ -123,6 +126,7 @@ test -f .env || cp .env.example .env   # configure the active provider
 ./run.sh audit --arm baseline
 ./run.sh audit --arm hint --domain combinatorics
 ./run.sh audit --arm baseline --seeds 1
+./run.sh audit --arm baseline-sequential --seeds 1  # correctness + states
 
 # dev only — NO firewall, never for canonical data
 python -m src.run --arm baseline

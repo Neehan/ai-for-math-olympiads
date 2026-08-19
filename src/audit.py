@@ -109,6 +109,8 @@ def _audit_options(
     *,
     session_id: str | None = None,
     resume_session_id: str | None = None,
+    output_schema: dict[str, object] = AUDIT_OUTPUT_SCHEMA,
+    allow_tools: bool = True,
 ) -> ClaudeAgentOptions:
     """Judge session options: scratch tools to CHECK (audit, not solve),
     structured 0/5/6/7 output, opaque scratch cwd (never the repo root).
@@ -123,8 +125,11 @@ def _audit_options(
         effort=config.effort,  # type: ignore[arg-type]
         stderr=stderr_tail,
         env=isolated_session_env(config.audit_model, oauth_token, scratch_dir),
-        allowed_tools=list(ALLOWED_TOOLS),
-        disallowed_tools=disallowed_tools_for_model(config.audit_model),
+        allowed_tools=list(ALLOWED_TOOLS) if allow_tools else [],
+        disallowed_tools=[
+            *disallowed_tools_for_model(config.audit_model),
+            *([] if allow_tools else ALLOWED_TOOLS),
+        ],
         settings=str(agent_settings_path(config.audit_model)),
         extra_args={
             "setting-sources": "",
@@ -137,7 +142,7 @@ def _audit_options(
         permission_mode=PERMISSION_MODE,
         max_turns=config.audit_max_turns,
         cwd=scratch_dir,
-        output_format={"type": "json_schema", "schema": AUDIT_OUTPUT_SCHEMA},
+        output_format={"type": "json_schema", "schema": output_schema},
         session_id=session_id,
         resume=resume_session_id,
     )
@@ -150,6 +155,9 @@ async def _judge(
     scratch_dir: str,
     checkpoint: AttemptCheckpoint,
     role: str,
+    *,
+    output_schema: dict[str, object] = AUDIT_OUTPUT_SCHEMA,
+    allow_tools: bool = True,
 ) -> tuple[dict[str, object], list[ReconnectEvent]]:
     """Run one judge call and return its validated structured verdict."""
     saved = checkpoint.call_result(role)
@@ -179,6 +187,8 @@ async def _judge(
             stderr,
             session_id=session_id,
             resume_session_id=resume_id,
+            output_schema=output_schema,
+            allow_tools=allow_tools,
         ),
         session_id=checkpoint.session_id(role),
         reconnects=checkpoint.reconnects(role),

@@ -13,6 +13,7 @@ from src.constants import (
     HINT_PROMPT_FILE,
     PROMPTS_DIR,
     REVISE_PROMPT_FILE,
+    STATE_AUDIT_PROMPT_FILE,
     SYSTEM_PROMPT_FILE,
     TASK_PROMPT_FILE,
     UNIFORM_STRATEGY_PLAN_PROMPT_FILE,
@@ -145,4 +146,22 @@ def audit_prompt(problem: Problem, solution_text: str) -> str:
     return _render(
         _load(AUDIT_PROMPT_FILE),
         {"statement": problem.statement.strip(), "solution": solution_text.strip()},
+    )
+
+
+def state_audit_prompt(
+    problem: Problem,
+    outline: str,
+    reference_solution: str,
+    solution_text: str,
+) -> str:
+    """Reference-guided outline annotation for one unsolved solution artifact."""
+    return _render(
+        _load(STATE_AUDIT_PROMPT_FILE),
+        {
+            "statement": problem.statement.strip(),
+            "outline": outline.strip(),
+            "reference_solution": reference_solution.strip(),
+            "solution": solution_text.strip(),
+        },
     )

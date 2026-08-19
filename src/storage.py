@@ -23,6 +23,7 @@ import zstandard
 
 from src.constants import (
     ARM_AUDIT_FILENAME,
+    ARM_STATE_AUDIT_FILENAME,
     AUDIT_SCRATCH_SUBDIR,
     FETCH_TIMEOUT_SECONDS,
     HINTS_FILE_ENV,
@@ -42,11 +43,15 @@ from src.constants import (
     PROBLEMS_FILE_ENV,
     PROBLEMS_URL,
     RESULTS_ROOT,
+    STATE_RESULTS_ROOT,
     SCRATCH_SUBDIR,
     SESSION_STATE_SUBDIR,
     SEED_AUDIT_FILENAME,
+    SEED_STATE_AUDIT_FILENAME,
     SEQUENTIAL_MIN_ROUNDS_BEFORE_CONVERGENCE,
     SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
+    SOLUTIONS_FILE_ENV,
+    SOLUTIONS_URL,
     SOLUTION_CUT_FILENAME_FORMAT,
     SOLUTION_FILENAME,
     BANK_RUN_DIR_FORMAT,
@@ -169,11 +174,70 @@ def load_problems() -> list[Problem]:
     return problems
 
 
+def _outline_reference(record: dict[str, Any]) -> str:
+    """Select index 0 after verifying its explicit outline-matching marker."""
+    problem_id = record.get("problem_id")
+    references = record.get("reference_solutions")
+    if not isinstance(problem_id, str) or not isinstance(references, list):
+        raise ValueError("Malformed hard-solutions record")
+    aligned = [
+        reference
+        for reference in references
+        if isinstance(reference, dict) and reference.get("route_id") == "hard_hint"
+    ]
+    if len(aligned) != 1:
+        raise ValueError(
+            f"{problem_id}: expected exactly one reference with route_id='hard_hint'; "
+            f"found {len(aligned)}"
+        )
+    first = references[0] if references else None
+    if not isinstance(first, dict) or first.get("route_id") != "hard_hint":
+        raise ValueError(
+            f"{problem_id}: the hard_hint reference must be reference_solutions[0]"
+        )
+    solution = first.get("solution")
+    if not isinstance(solution, str) or not solution.strip():
+        raise ValueError(f"{problem_id}: outline reference solution is empty")
+    return solution.strip()
+
+
+def load_state_audit_references() -> dict[str, tuple[str, str]]:
+    """Load problem statements and explicitly outline-matching full solutions.
+
+    This source is fetched only by the state-audit stage; generation and the
+    correctness judge never receive it.  Returning the stored statement lets
+    the caller verify the problem-id join before constructing any prompt.
+    """
+    references: dict[str, tuple[str, str]] = {}
+    for record in _fetch_jsonl(SOLUTIONS_FILE_ENV, SOLUTIONS_URL):
+        problem_id = record.get("problem_id")
+        statement = record.get("statement")
+        if not isinstance(problem_id, str) or not isinstance(statement, str):
+            raise ValueError("Malformed hard-solutions identity")
+        if problem_id in references:
+            raise ValueError(f"Duplicate hard-solutions problem_id: {problem_id}")
+        references[problem_id] = (statement.strip(), _outline_reference(record))
+    return references
+
+
 def seed_output_dir(
     config: ExperimentConfig, arm: ArmConfig, problem_id: str, seed: int
 ) -> Path:
     """Result directory for one (model, arm, problem, seed) attempt."""
     return RESULTS_ROOT / config.model_dirname / arm.name / problem_id / f"seed_{seed}"
+
+
+def state_output_dir(
+    config: ExperimentConfig, arm: ArmConfig, problem_id: str, seed: int
+) -> Path:
+    """Reference-informed annotation directory, isolated from solver outputs."""
+    return (
+        STATE_RESULTS_ROOT
+        / config.model_dirname
+        / arm.name
+        / problem_id
+        / f"seed_{seed}"
+    )
 
 
 def bank_run_output_dir(bank_dir: Path, run: int) -> Path:
@@ -868,6 +932,15 @@ def write_seed_audit(output_dir: Path, record: dict[str, object]) -> None:
     )
 
 
+def write_seed_state_audit(state_dir: Path, record: dict[str, object]) -> None:
+    """Write one compact route-state annotation atomically."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(
+        state_dir / SEED_STATE_AUDIT_FILENAME,
+        (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+
+
 def archive_audit_scratches(output_dir: Path, scratch_paths: dict[str, Path]) -> None:
     """Archive each isolated judge call's visible scratch beside the attempt.
 
@@ -925,4 +998,28 @@ def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, i
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
     _atomic_write_bytes(path, (lines + "\n").encode("utf-8"))
+    return path, len(records)
+
+
+def compile_arm_state_audit(
+    config: ExperimentConfig, arm: ArmConfig
+) -> tuple[Path, int]:
+    """Compile every configured-seed state annotation without truncation."""
+    arm_root = STATE_RESULTS_ROOT / config.model_dirname / arm.name
+    records: list[dict[str, object]] = []
+    for state_file in sorted(
+        arm_root.glob(f"*/seed_*/{SEED_STATE_AUDIT_FILENAME}")
+    ):
+        seed_name = state_file.parent.name
+        try:
+            seed = int(seed_name.removeprefix("seed_"))
+        except ValueError:
+            continue
+        if seed not in arm.seeds:
+            continue
+        records.append(json.loads(state_file.read_text(encoding="utf-8")))
+    path = arm_root / ARM_STATE_AUDIT_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+    _atomic_write_bytes(path, (lines + "\n").encode("utf-8") if lines else b"")
     return path, len(records)

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Build the image and run ONE harness stage (run = generation, audit =
-# grading) in a throwaway container. Both stages sit behind the same egress
-# firewall — a judge with internet could fetch official solutions.
+# Build the image and run the generation or audit pipeline in throwaway
+# containers behind the same egress firewall. For a sequential arm, one
+# public `audit` command first grades correctness, then launches a separate
+# internal container for route-state annotation. The separation ensures the
+# correctness judge can never inspect the reference solutions used later.
 #
 # The container is removed on exit (--rm); results land in ./results/ via the
 # bind mount. Problems and hints are fetched from the dataset URLs by the
@@ -35,7 +37,7 @@ if [ -f .env ]; then
 fi
 IMAGE=olympiad-harness
 docker build -q -t "$IMAGE" -f docker/Dockerfile . >/dev/null
-mkdir -p results
+mkdir -p results state-results
 
 # Mount only this stage/model/arm's opaque checkpoint namespace.  Mounting the
 # whole bank would let a tool-using solver inspect interrupted work from a
@@ -130,7 +132,7 @@ case "$ACTIVE_MODEL" in
 esac
 
 CHECKPOINT_NAMESPACE=$(python -c \
-    'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*sorted(pathlib.Path("prompts").glob("*.md"))]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
+    'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); prompts=sorted(pathlib.Path("prompts").glob("*.md")); prompts=[p for p in prompts if p.name!="state_audit.md"]; files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*prompts]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
     "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$ACTIVE_AGENT_SETTINGS")
 CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$CHECKPOINT_NAMESPACE"
 mkdir -p "$CHECKPOINT_MOUNT"
@@ -195,3 +197,30 @@ docker run --rm --cap-add=NET_ADMIN \
     -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
     -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
     "$IMAGE" "$@"
+
+# State annotation is part of the public audit pipeline for sequential arms,
+# but runs in a fresh container whose dataset includes reference solutions.
+if [ "$1" = "audit" ] && \
+    { [ "$ARM_NAME" = "baseline-sequential" ] || [ "$ARM_NAME" = "hint-sequential" ]; }; then
+    STATE_CHECKPOINT_NAMESPACE=$(python -c \
+        'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*sorted(pathlib.Path("prompts").glob("*.md"))]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
+        "state-audit" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$ACTIVE_AGENT_SETTINGS")
+    STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$STATE_CHECKPOINT_NAMESPACE"
+    mkdir -p "$STATE_CHECKPOINT_MOUNT"
+    chmod 700 "$STATE_CHECKPOINT_MOUNT"
+    docker run --rm --cap-add=NET_ADMIN \
+        ${token_args[@]+"${token_args[@]}"} \
+        ${network_args[@]+"${network_args[@]}"} \
+        -v "$PWD/prompts:/app/prompts:ro" \
+        -v "$PWD/config.json:/app/config.json:ro" \
+        -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
+        -v "$PWD/agent_settings_small.json:/app/agent_settings_small.json:ro" \
+        -v "$PWD/results:/app/results:ro" \
+        -v "$PWD/state-results:/app/state-results" \
+        -v "$STATE_CHECKPOINT_MOUNT:/c" \
+        -e HARNESS_CHECKPOINT_ROOT=/c \
+        -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
+        -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
+        "$IMAGE" state-audit "${@:2}"
+    python src/cleanup_checkpoints.py "$STATE_CHECKPOINT_MOUNT" "$PWD/state-results"
+fi
