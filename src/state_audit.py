@@ -350,6 +350,18 @@ async def main() -> None:
 
     state_path, state_count = compile_arm_state_audit(config, arm)
     log.info("Compiled %d state records -> %s", state_count, state_path)
+    failed = [
+        (problem.problem_id, seed)
+        for problem, seed in pending
+        if not (
+            seed_output_dir(config, arm, problem.problem_id, seed)
+            / SEED_STATE_AUDIT_FILENAME
+        ).exists()
+    ]
+    if failed:
+        raise SystemExit(
+            f"{len(failed)} state-audit task(s) failed; rerun the same command"
+        )
 
 
 if __name__ == "__main__":
