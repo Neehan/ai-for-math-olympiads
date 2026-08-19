@@ -37,7 +37,7 @@ if [ -f .env ]; then
 fi
 IMAGE=olympiad-harness
 docker build -q -t "$IMAGE" -f docker/Dockerfile . >/dev/null
-mkdir -p results state-results
+mkdir -p results
 
 # Mount only this stage/model/arm's opaque checkpoint namespace.  Mounting the
 # whole bank would let a tool-using solver inspect interrupted work from a
@@ -202,10 +202,7 @@ docker run --rm --cap-add=NET_ADMIN \
 # but runs in a fresh container whose dataset includes reference solutions.
 if [ "$1" = "audit" ] && \
     { [ "$ARM_NAME" = "baseline-sequential" ] || [ "$ARM_NAME" = "hint-sequential" ]; }; then
-    STATE_CHECKPOINT_NAMESPACE=$(python -c \
-        'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*sorted(pathlib.Path("prompts").glob("*.md"))]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
-        "state-audit" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$ACTIVE_AGENT_SETTINGS")
-    STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$STATE_CHECKPOINT_NAMESPACE"
+    STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/state-audit"
     mkdir -p "$STATE_CHECKPOINT_MOUNT"
     chmod 700 "$STATE_CHECKPOINT_MOUNT"
     docker run --rm --cap-add=NET_ADMIN \
@@ -215,12 +212,11 @@ if [ "$1" = "audit" ] && \
         -v "$PWD/config.json:/app/config.json:ro" \
         -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
         -v "$PWD/agent_settings_small.json:/app/agent_settings_small.json:ro" \
-        -v "$PWD/results:/app/results:ro" \
-        -v "$PWD/state-results:/app/state-results" \
+        -v "$PWD/results:/app/results" \
         -v "$STATE_CHECKPOINT_MOUNT:/c" \
         -e HARNESS_CHECKPOINT_ROOT=/c \
         -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
         -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
         "$IMAGE" state-audit "${@:2}"
-    python src/cleanup_checkpoints.py "$STATE_CHECKPOINT_MOUNT" "$PWD/state-results"
+    python src/cleanup_checkpoints.py "$STATE_CHECKPOINT_MOUNT" "$PWD/results"
 fi

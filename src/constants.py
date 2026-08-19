@@ -16,9 +16,6 @@ PROMPTS_DIR: Path = REPO_ROOT / "prompts"
 AGENT_SETTINGS_PATH: Path = REPO_ROOT / "agent_settings.json"
 VLLM_AGENT_SETTINGS_PATH: Path = REPO_ROOT / "agent_settings_small.json"
 RESULTS_ROOT: Path = REPO_ROOT / "results"
-# Reference-informed state annotations are deliberately isolated from proof
-# outputs so a later tool-enabled correctness judge can never inspect them.
-STATE_RESULTS_ROOT: Path = REPO_ROOT / "state-results"
 # Per-attempt Claude transcript/config store. Keeping it under that attempt's
 # opaque scratch dir prevents concurrent conversations from sharing ~/.claude.
 SESSION_STATE_SUBDIR: str = ".claude-runtime"

@@ -112,9 +112,6 @@ class StateAuditSeedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = root / "results" / "solver" / arm.name / "p" / "seed_1"
-            state_output = (
-                root / "state-results" / "solver" / arm.name / "p" / "seed_1"
-            )
             output.mkdir(parents=True)
             (output / "solution.md").write_text(solved, encoding="utf-8")
             (output / "solution_2x.md").write_text(unsolved, encoding="utf-8")
@@ -167,17 +164,13 @@ class StateAuditSeedTests(unittest.TestCase):
                 return _FakeCheckpoint(identity, root / "checkpoint")
 
             with (
-                patch("src.state_audit.STATE_RESULTS_ROOT", root / "state-results"),
+                patch("src.state_audit.RESULTS_ROOT", root / "results"),
                 patch("src.state_audit.seed_output_dir", return_value=output),
-                patch(
-                    "src.state_audit.state_output_dir", return_value=state_output
-                ),
                 patch(
                     "src.state_audit.AttemptCheckpoint",
                     side_effect=checkpoint_factory,
                 ),
                 patch("src.state_audit._judge", judge),
-                patch("src.state_audit.protocol_fingerprint", return_value="test"),
             ):
                 anyio.run(
                     state_audit_seed,
@@ -198,17 +191,39 @@ class StateAuditSeedTests(unittest.TestCase):
             self.assertIn("1. First route step.", rendered_prompt)
             self.assertIn(unsolved.strip(), rendered_prompt)
             record = json.loads(
-                (state_output / "state_audit.json").read_text(encoding="utf-8")
+                (output / "state_audit.json").read_text(encoding="utf-8")
             )
-            self.assertIsNone(record["checkpoints"]["1x"]["state"])
-            self.assertEqual(record["checkpoints"]["1x"]["steps"], [])
-            self.assertEqual(record["checkpoints"]["2x"]["state"], "P")
-            self.assertEqual(record["checkpoints"]["4x"]["state"], "P")
             self.assertEqual(
-                record["checkpoints"]["4x"]["state_audit_reused_from"], "2x"
+                set(record),
+                {
+                    "problem_id",
+                    "arm",
+                    "seed",
+                    "solver_model",
+                    "audit_model",
+                    "state",
+                    "steps",
+                    "note",
+                    "solution_sha256",
+                    "budget_cuts",
+                },
             )
-            self.assertEqual(record["checkpoints"]["8x"]["state"], "S")
-            self.assertEqual(record["checkpoints"]["8x"]["steps"], [])
+            self.assertEqual(set(record["budget_cuts"]), {"1x", "2x", "4x"})
+            self.assertIsNone(record["budget_cuts"]["1x"]["state"])
+            self.assertEqual(record["budget_cuts"]["1x"]["steps"], [])
+            self.assertNotIn("solution_sha256", record["budget_cuts"]["1x"])
+            self.assertEqual(record["budget_cuts"]["2x"]["state"], "P")
+            self.assertEqual(record["budget_cuts"]["4x"]["state"], "P")
+            self.assertEqual(
+                record["budget_cuts"]["2x"]["solution_sha256"],
+                hashlib.sha256(unsolved.encode("utf-8")).hexdigest(),
+            )
+            self.assertEqual(record["state"], "S")
+            self.assertEqual(record["steps"], [])
+            self.assertEqual(
+                record["solution_sha256"],
+                hashlib.sha256(solved.encode("utf-8")).hexdigest(),
+            )
 
 
 if __name__ == "__main__":

@@ -43,7 +43,6 @@ from src.constants import (
     PROBLEMS_FILE_ENV,
     PROBLEMS_URL,
     RESULTS_ROOT,
-    STATE_RESULTS_ROOT,
     SCRATCH_SUBDIR,
     SESSION_STATE_SUBDIR,
     SEED_AUDIT_FILENAME,
@@ -225,19 +224,6 @@ def seed_output_dir(
 ) -> Path:
     """Result directory for one (model, arm, problem, seed) attempt."""
     return RESULTS_ROOT / config.model_dirname / arm.name / problem_id / f"seed_{seed}"
-
-
-def state_output_dir(
-    config: ExperimentConfig, arm: ArmConfig, problem_id: str, seed: int
-) -> Path:
-    """Reference-informed annotation directory, isolated from solver outputs."""
-    return (
-        STATE_RESULTS_ROOT
-        / config.model_dirname
-        / arm.name
-        / problem_id
-        / f"seed_{seed}"
-    )
 
 
 def bank_run_output_dir(bank_dir: Path, run: int) -> Path:
@@ -1005,7 +991,7 @@ def compile_arm_state_audit(
     config: ExperimentConfig, arm: ArmConfig
 ) -> tuple[Path, int]:
     """Compile every configured-seed state annotation without truncation."""
-    arm_root = STATE_RESULTS_ROOT / config.model_dirname / arm.name
+    arm_root = RESULTS_ROOT / config.model_dirname / arm.name
     records: list[dict[str, object]] = []
     for state_file in sorted(
         arm_root.glob(f"*/seed_*/{SEED_STATE_AUDIT_FILENAME}")

@@ -10,7 +10,6 @@ derived by code, not selected by the annotator.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import hashlib
 import json
 import logging
@@ -20,7 +19,7 @@ from typing import Any
 import anyio
 
 from src.audit import _judge
-from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
+from src.checkpoint import AttemptCheckpoint
 from src.concurrency import run_all
 from src.config import load_config, override_models
 from src.constants import (
@@ -28,15 +27,14 @@ from src.constants import (
     LOG_FORMAT,
     LOG_LEVEL,
     MODE_SEQUENTIAL,
-    STATE_RESULTS_ROOT,
+    RESULTS_ROOT,
     SEED_AUDIT_FILENAME,
     SEED_STATE_AUDIT_FILENAME,
-    STATE_AUDIT_PROMPT_FILE,
 )
 from src.models import ArmConfig, ExperimentConfig, Problem
 from src.prompts import state_audit_prompt
 from src.run import select_problems, select_seeds
-from src.solver import agent_runtime_policy, agent_settings_path, token_env_name, uses_vllm
+from src.solver import token_env_name
 from src.storage import (
     budget_cut_multipliers,
     compile_arm_state_audit,
@@ -45,7 +43,6 @@ from src.storage import (
     load_state_audit_references,
     seed_done,
     seed_output_dir,
-    state_output_dir,
     seed_solution_text,
     write_seed_state_audit,
 )
@@ -53,7 +50,6 @@ from src.token_pool import TokenPool
 
 log = logging.getLogger("state_audit")
 
-STATE_AUDIT_PROTOCOL = "frozen_three_step_outline_recognition_v1"
 STATE_AUDIT_ARMS = {"baseline-sequential", "hint-sequential"}
 
 STATE_AUDIT_OUTPUT_SCHEMA: dict[str, object] = {
@@ -83,20 +79,6 @@ STATE_AUDIT_OUTPUT_SCHEMA: dict[str, object] = {
 }
 
 
-def _state_protocol_fingerprint(config: ExperimentConfig) -> str:
-    return protocol_fingerprint(
-        agent_settings_path(config.audit_model), (STATE_AUDIT_PROMPT_FILE,)
-    )
-
-
-def _sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def _sha256_text(value: str) -> str:
-    return _sha256_bytes(value.encode("utf-8"))
-
-
 def _outline(problem: Problem) -> str:
     outline = (problem.hint_h3 or "").strip()
     steps = [line for line in outline.splitlines() if line.strip()]
@@ -123,21 +105,24 @@ def derive_state(verdict: dict[str, object]) -> str:
     return "P" if all(bool(step["present"]) for step in steps) else "U"
 
 
-def _missing_checkpoint(proof_score: int) -> dict[str, object]:
+def _missing_checkpoint() -> dict[str, object]:
     return {
         "state": None,
         "steps": [],
-        "proof_score": proof_score,
         "note": "No complete solution text was emitted at this budget; state is unobserved.",
     }
 
 
-def _solved_checkpoint(proof_score: int) -> dict[str, object]:
+def _solution_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _solved_checkpoint(text: str) -> dict[str, object]:
     return {
         "state": "S",
         "steps": [],
-        "proof_score": proof_score,
-        "note": f"Correctness audit score {proof_score}; state assigned mechanically as solved.",
+        "note": "Correctness audit passed; state assigned mechanically as solved.",
+        "solution_sha256": _solution_sha256(text),
     }
 
 
@@ -169,38 +154,6 @@ def _proof_artifacts(
     return artifacts
 
 
-def _current_state_record(
-    path: Path,
-    *,
-    config: ExperimentConfig,
-    arm: ArmConfig,
-    problem: Problem,
-    seed: int,
-    outline_sha256: str,
-    reference_solution_sha256: str,
-    proof_audit_sha256: str,
-) -> bool:
-    if not path.exists():
-        return False
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
-    expected = {
-        "problem_id": problem.problem_id,
-        "arm": arm.name,
-        "seed": seed,
-        "solver_model": config.model,
-        "state_audit_model": config.audit_model,
-        "state_audit_protocol": STATE_AUDIT_PROTOCOL,
-        "outline_sha256": outline_sha256,
-        "reference_solution_sha256": reference_solution_sha256,
-        "proof_audit_sha256": proof_audit_sha256,
-        "protocol_fingerprint": _state_protocol_fingerprint(config),
-    }
-    return all(record.get(key) == value for key, value in expected.items())
-
-
 async def state_audit_seed(
     config: ExperimentConfig,
     arm: ArmConfig,
@@ -211,54 +164,26 @@ async def state_audit_seed(
 ) -> None:
     """Annotate every checkpoint of one already correctness-audited trajectory."""
     output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
-    state_dir = state_output_dir(config, arm, problem.problem_id, seed)
     proof_path = output_dir / SEED_AUDIT_FILENAME
-    proof_bytes = proof_path.read_bytes()
-    proof_audit: dict[str, Any] = json.loads(proof_bytes)
+    proof_audit: dict[str, Any] = json.loads(proof_path.read_text(encoding="utf-8"))
     outline = _outline(problem)
-    outline_digest = _sha256_text(outline)
-    reference_digest = _sha256_text(reference_solution)
-    proof_digest = _sha256_bytes(proof_bytes)
-    state_path = state_dir / SEED_STATE_AUDIT_FILENAME
+    state_path = output_dir / SEED_STATE_AUDIT_FILENAME
     artifacts = _proof_artifacts(arm, output_dir, proof_audit)
-    if _current_state_record(
-        state_path,
-        config=config,
-        arm=arm,
-        problem=problem,
-        seed=seed,
-        outline_sha256=outline_digest,
-        reference_solution_sha256=reference_digest,
-        proof_audit_sha256=proof_digest,
-    ):
+    if state_path.exists():
         return
     checkpoint = AttemptCheckpoint(
         {
             "stage": "state_audit",
             "solver_model": config.model,
             "state_audit_model": config.audit_model,
-            "effort": config.effort,
-            "arm": dataclasses.asdict(arm),
+            "arm": arm.name,
             "problem_id": problem.problem_id,
-            "problem_statement": problem.statement,
             "seed": seed,
-            "outline": outline,
-            "outline_sha256": outline_digest,
-            "reference_solution_sha256": reference_digest,
-            "proof_audit_sha256": proof_digest,
-            "state_audit_protocol": STATE_AUDIT_PROTOCOL,
-            "audit_max_turns": config.audit_max_turns,
-            "protocol_fingerprint": _state_protocol_fingerprint(config),
-            **(
-                {"agent_runtime_policy": agent_runtime_policy(config.audit_model)}
-                if uses_vllm(config.audit_model)
-                else {}
-            ),
         }
     )
     try:
         records: dict[str, dict[str, object]] = {}
-        verdict_cache: dict[str, tuple[dict[str, object], str]] = {}
+        verdict_cache: dict[str, dict[str, object]] = {}
         for label, text, proof_score in artifacts:
             if text is None or not text.strip():
                 if proof_score >= 5:
@@ -266,14 +191,13 @@ async def state_audit_seed(
                         f"{problem.problem_id} {label}: passing proof audit has "
                         "no solution text"
                     )
-                records[label] = _missing_checkpoint(proof_score)
+                records[label] = _missing_checkpoint()
                 continue
-            digest = _sha256_text(text)
             if proof_score >= 5:
-                records[label] = _solved_checkpoint(proof_score)
+                records[label] = _solved_checkpoint(text)
                 continue
 
-            cached = verdict_cache.get(digest)
+            cached = verdict_cache.get(text)
             if cached is None:
                 role = f"state_{label}"
                 scratch = checkpoint.scratch_dir(role)
@@ -289,10 +213,9 @@ async def state_audit_seed(
                     output_schema=STATE_AUDIT_OUTPUT_SCHEMA,
                     allow_tools=False,
                 )
-                verdict_cache[digest] = (verdict, label)
-                reused_from: str | None = None
+                verdict_cache[text] = verdict
             else:
-                verdict, reused_from = cached
+                verdict = cached
 
             state = derive_state(verdict)
             raw_steps = verdict["steps"]
@@ -301,36 +224,30 @@ async def state_audit_seed(
             record: dict[str, object] = {
                 "state": state,
                 "steps": list(raw_steps),
-                "proof_score": proof_score,
                 "note": (
                     "All three frozen outline steps are explicitly recognized."
                     if state == "P"
                     else "At least one frozen outline step is not recognized."
                 ),
+                "solution_sha256": _solution_sha256(text),
             }
-            if reused_from is not None:
-                record["state_audit_reused_from"] = reused_from
             records[label] = record
 
-        fingerprint = _state_protocol_fingerprint(config)
+        final_label = f"{arm.budget_units}x"
+        final_checkpoint = records.pop(final_label)
         final_record: dict[str, object] = {
             "problem_id": problem.problem_id,
             "arm": arm.name,
             "seed": seed,
             "solver_model": config.model,
-            "proof_audit_model": proof_audit.get("audit_model"),
-            "state_audit_model": config.audit_model,
-            "state_audit_protocol": STATE_AUDIT_PROTOCOL,
-            "outline_sha256": outline_digest,
-            "reference_solution_sha256": reference_digest,
-            "proof_audit_sha256": proof_digest,
-            "protocol_fingerprint": fingerprint,
-            "checkpoints": records,
+            "audit_model": config.audit_model,
+            **final_checkpoint,
+            "budget_cuts": records,
         }
         checkpoint.prepare_completion(
-            state_path.relative_to(STATE_RESULTS_ROOT).as_posix()
+            state_path.relative_to(RESULTS_ROOT).as_posix()
         )
-        write_seed_state_audit(state_dir, final_record)
+        write_seed_state_audit(output_dir, final_record)
         checkpoint.complete()
         log.info("%s/%s seed %d: state audit complete", arm.name, problem.problem_id, seed)
     finally:
@@ -404,20 +321,7 @@ async def main() -> None:
     pending: list[tuple[Problem, int]] = []
     for problem, seed in proof_audited:
         output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
-        proof_path = output_dir / SEED_AUDIT_FILENAME
-        outline_digest = _sha256_text(_outline(problem))
-        reference_solution = state_references[problem.problem_id][1]
-        if not _current_state_record(
-            state_output_dir(config, arm, problem.problem_id, seed)
-            / SEED_STATE_AUDIT_FILENAME,
-            config=config,
-            arm=arm,
-            problem=problem,
-            seed=seed,
-            outline_sha256=outline_digest,
-            reference_solution_sha256=_sha256_text(reference_solution),
-            proof_audit_sha256=_sha256_bytes(proof_path.read_bytes()),
-        ):
+        if not (output_dir / SEED_STATE_AUDIT_FILENAME).exists():
             pending.append((problem, seed))
 
     log.info(

@@ -167,9 +167,6 @@ chown -R appuser /run/contest
 if [ -d /c ]; then
     chown -R appuser /c
 fi
-if [ -d /app/state-results ]; then
-    chown -R appuser /app/state-results
-fi
 export HOME=/home/appuser
 if [ "$PROVIDER_KIND" = "openrouter" ]; then
     export HARNESS_OPENROUTER_PROXY_URL=http://127.0.0.1:8787/api

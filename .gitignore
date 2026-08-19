@@ -243,7 +243,6 @@ local_data/
 # them also embeds problem statements and hints in repo history).
 results/
 results-archive/
-state-results/
 
 # latex
 main.aux
