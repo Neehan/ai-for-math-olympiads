@@ -6,10 +6,24 @@ from typing import Any
 
 
 GLM47_FP8_ALIAS = "openrouter/glm-4.7-fp8"
+DEEPSEEK_V4_FLASH_0731 = "deepseek/deepseek-v4-flash-0731"
 
 
 def route_for(model: str) -> dict[str, Any] | None:
     """Return an exact upstream model/provider route for a harness alias."""
+    if model == DEEPSEEK_V4_FLASH_0731:
+        return {
+            "model": DEEPSEEK_V4_FLASH_0731,
+            "provider": {
+                # Exclude the two cheapest but slow endpoints. These four are
+                # the inexpensive high-throughput endpoints frozen for this run.
+                "only": ["relace", "baidu", "streamlake", "deepinfra"],
+                "allow_fallbacks": True,
+                "require_parameters": False,
+                "sort": "throughput",
+                "max_price": {"prompt": 0.08, "completion": 0.18},
+            },
+        }
     if model != GLM47_FP8_ALIAS:
         return None
     return {

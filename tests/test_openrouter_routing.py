@@ -8,7 +8,11 @@ from unittest.mock import patch
 from src.config import load_config
 from src.constants import CONFIG_PATH
 from src.models import Problem
-from src.openrouter_routing import GLM47_FP8_ALIAS, route_for
+from src.openrouter_routing import (
+    DEEPSEEK_V4_FLASH_0731,
+    GLM47_FP8_ALIAS,
+    route_for,
+)
 from src.run import run_checkpoint_identity
 from src.solver import provider_env, provider_model_name, provider_transport_policy
 
@@ -32,6 +36,26 @@ class OpenRouterRoutingTests(unittest.TestCase):
             {"policy": "openrouter_frozen_route_v1", "route": expected},
         )
 
+    def test_deepseek_v4_flash_uses_only_frozen_fast_cheap_providers(self) -> None:
+        expected = {
+            "model": DEEPSEEK_V4_FLASH_0731,
+            "provider": {
+                "only": ["relace", "baidu", "streamlake", "deepinfra"],
+                "allow_fallbacks": True,
+                "require_parameters": False,
+                "sort": "throughput",
+                "max_price": {"prompt": 0.08, "completion": 0.18},
+            },
+        }
+        self.assertEqual(route_for(DEEPSEEK_V4_FLASH_0731), expected)
+        self.assertEqual(
+            provider_transport_policy(DEEPSEEK_V4_FLASH_0731),
+            {"policy": "openrouter_frozen_route_v1", "route": expected},
+        )
+
+    def test_unknown_openrouter_model_has_no_frozen_route(self) -> None:
+        self.assertIsNone(route_for("vendor/unconfigured-model"))
+
     def test_shim_injects_route_and_rejects_model_substitution(self) -> None:
         from src.openrouter_proxy import is_messages_path, routed_body, upstream_path
 
@@ -52,15 +76,34 @@ class OpenRouterRoutingTests(unittest.TestCase):
         self.assertTrue(is_messages_path("/api/v1/messages?beta=true"))
         self.assertFalse(is_messages_path("/api/v1/chat/completions"))
 
+    def test_shim_injects_deepseek_provider_pool(self) -> None:
+        from src.openrouter_proxy import routed_body
+
+        original = json.dumps(
+            {
+                "model": DEEPSEEK_V4_FLASH_0731,
+                "messages": [{"role": "user", "content": "x"}],
+            }
+        ).encode()
+        routed = json.loads(routed_body(original, DEEPSEEK_V4_FLASH_0731))
+        expected_route = route_for(DEEPSEEK_V4_FLASH_0731)
+        assert expected_route is not None
+        self.assertEqual(routed["model"], DEEPSEEK_V4_FLASH_0731)
+        self.assertEqual(routed["provider"], expected_route["provider"])
+
     def test_frozen_route_is_part_of_checkpoint_identity(self) -> None:
-        config = replace(load_config(CONFIG_PATH), model=GLM47_FP8_ALIAS)
-        arm = config.arms["baseline"]
-        problem = Problem("test", "statement", "combinatorics", None, None, None)
-        identity = run_checkpoint_identity(config, arm, problem, 1)
-        self.assertEqual(
-            identity["provider_transport_policy"],
-            provider_transport_policy(GLM47_FP8_ALIAS),
-        )
+        for model in (GLM47_FP8_ALIAS, DEEPSEEK_V4_FLASH_0731):
+            with self.subTest(model=model):
+                config = replace(load_config(CONFIG_PATH), model=model)
+                arm = config.arms["baseline"]
+                problem = Problem(
+                    "test", "statement", "combinatorics", None, None, None
+                )
+                identity = run_checkpoint_identity(config, arm, problem, 1)
+                self.assertEqual(
+                    identity["provider_transport_policy"],
+                    provider_transport_policy(model),
+                )
 
     @patch.dict(
         "os.environ",
