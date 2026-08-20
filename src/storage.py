@@ -1003,15 +1003,26 @@ def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, i
 def compile_arm_state_audit(
     config: ExperimentConfig, arm: ArmConfig
 ) -> tuple[Path, int]:
-    """Compile every configured-seed state annotation without truncation."""
+    """Compile every configured-seed proof-artifact state without truncation."""
     arm_root = RESULTS_ROOT / config.model_dirname / arm.name
     records: list[dict[str, object]] = []
-    for state_file in sorted(
-        arm_root.glob(f"*/seed_*/{SEED_STATE_AUDIT_FILENAME}")
-    ):
-        seed_name = state_file.parent.name
+    state_files = list(
+        arm_root.glob(
+            (
+                f"*/seed_*/run_*/{SEED_STATE_AUDIT_FILENAME}"
+                if arm.mode in {MODE_PARALLEL, MODE_UNIFORM_STRATEGY}
+                else f"*/seed_*/{SEED_STATE_AUDIT_FILENAME}"
+            )
+        )
+    )
+    for state_file in sorted(state_files):
+        seed_dir = (
+            state_file.parent.parent
+            if state_file.parent.name.startswith("run_")
+            else state_file.parent
+        )
         try:
-            seed = int(seed_name.removeprefix("seed_"))
+            seed = int(seed_dir.name.removeprefix("seed_"))
         except ValueError:
             continue
         if seed not in arm.seeds:

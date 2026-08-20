@@ -10,8 +10,12 @@ from unittest.mock import AsyncMock, patch
 import anyio
 
 from src.models import ArmConfig, ExperimentConfig, Problem
-from src.state_audit import derive_state, state_audit_seed
-from src.storage import _outline_reference
+from src.state_audit import _bank_targets, derive_state, state_audit_seed
+from src.storage import (
+    _outline_reference,
+    bank_run_output_dir,
+    compile_arm_state_audit,
+)
 from src.token_pool import TokenPool
 
 
@@ -96,6 +100,69 @@ class StateDerivationTests(unittest.TestCase):
 
 
 class StateAuditSeedTests(unittest.TestCase):
+    def test_single_arm_has_one_final_state_and_no_budget_cuts(self) -> None:
+        arm = ArmConfig("baseline", "none", "single", 1, [1])
+        config = _config(arm)
+        problem = Problem(
+            "p",
+            "Prove it.",
+            "algebra",
+            None,
+            None,
+            "1. First route step.\n2. Second route step.\n3. Third route step.",
+        )
+        solution = "## Final Solution\nAn incomplete proof.\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "results" / "solver" / arm.name / "p" / "seed_1"
+            output.mkdir(parents=True)
+            (output / "solution.md").write_text(solution, encoding="utf-8")
+            (output / "audit.json").write_text(
+                json.dumps({"audit_score": 0, "budget_cuts": {}}),
+                encoding="utf-8",
+            )
+            judge = AsyncMock(
+                return_value=(
+                    {
+                        "steps": [
+                            {"present": True, "reason": "Present."},
+                            {"present": False, "reason": "Missing."},
+                            {"present": True, "reason": "Present."},
+                        ]
+                    },
+                    [],
+                )
+            )
+
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                return _FakeCheckpoint(identity, root / "checkpoint")
+
+            with (
+                patch("src.state_audit.RESULTS_ROOT", root / "results"),
+                patch("src.state_audit.seed_output_dir", return_value=output),
+                patch(
+                    "src.state_audit.AttemptCheckpoint",
+                    side_effect=checkpoint_factory,
+                ),
+                patch("src.state_audit._judge", judge),
+            ):
+                anyio.run(
+                    state_audit_seed,
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                    "A reference proof.",
+                )
+
+            record = json.loads(
+                (output / "state_audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["state"], "U")
+            self.assertEqual(record["budget_cuts"], {})
+            self.assertEqual(judge.await_count, 1)
+
     def test_missing_solved_and_duplicate_unsolved_artifacts(self) -> None:
         arm = ArmConfig("baseline-sequential", "none", "sequential", 8, [1])
         config = _config(arm)
@@ -224,6 +291,66 @@ class StateAuditSeedTests(unittest.TestCase):
                 record["solution_sha256"],
                 hashlib.sha256(solved.encode("utf-8")).hexdigest(),
             )
+
+    def test_parallel_bank_resolves_each_executor_proof(self) -> None:
+        arm = ArmConfig("baseline-parallel", "none", "parallel", 8, [1])
+        with tempfile.TemporaryDirectory() as directory:
+            bank = Path(directory) / "seed_1"
+            bank.mkdir(parents=True)
+            (bank / "audit.json").write_text(
+                json.dumps(
+                    {
+                        "audit_score": 7,
+                        "runs": [
+                            {"run": 1, "audit_score": 7},
+                            {"run": 2, "audit_score": 7},
+                        ],
+                        "budget_cuts": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for run in (1, 2):
+                run_dir = bank_run_output_dir(bank, run)
+                run_dir.mkdir(parents=True)
+                (run_dir / "audit.json").write_text(
+                    json.dumps({"audit_score": 7, "budget_cuts": {}}),
+                    encoding="utf-8",
+                )
+
+            targets = _bank_targets(arm, bank, 1)
+            self.assertEqual(
+                [target.name for target, _ in targets], ["run_01", "run_02"]
+            )
+            self.assertEqual(
+                [extra["parallel_run"] for _, extra in targets], [1, 2]
+            )
+
+    def test_parallel_executor_states_compile_at_arm_level(self) -> None:
+        arm = ArmConfig("baseline-parallel", "none", "parallel", 8, [1])
+        config = _config(arm)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "results"
+            bank = root / "solver" / arm.name / "p" / "seed_1"
+            for run in (1, 2):
+                run_dir = bank_run_output_dir(bank, run)
+                run_dir.mkdir(parents=True)
+                (run_dir / "state_audit.json").write_text(
+                    json.dumps(
+                        {
+                            "problem_id": "p",
+                            "seed": 1,
+                            "parallel_run": run,
+                            "state": "S" if run == 1 else "U",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            with patch("src.storage.RESULTS_ROOT", root):
+                path, count = compile_arm_state_audit(config, arm)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(count, 2)
+            self.assertEqual([record["parallel_run"] for record in records], [1, 2])
 
 
 if __name__ == "__main__":

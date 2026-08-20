@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build the image and run the generation or audit pipeline in throwaway
-# containers behind the same egress firewall. For a sequential arm, one
-# public `audit` command first grades correctness, then launches a separate
-# internal container for route-state annotation. The separation ensures the
-# correctness judge can never inspect the reference solutions used later.
+# containers behind the same egress firewall. One public `audit` command first
+# grades correctness, then launches a separate
+# internal container for route-state annotation. Keeping the stages separate
+# prevents state annotations from influencing correctness verdicts.
 #
 # The container is removed on exit (--rm); results land in ./results/ via the
 # bind mount. Problems and hints are fetched from the dataset URLs by the
@@ -198,10 +198,9 @@ docker run --rm --cap-add=NET_ADMIN \
     -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
     "$IMAGE" "$@"
 
-# State annotation is part of the public audit pipeline for sequential arms,
-# but runs in a fresh container whose dataset includes reference solutions.
-if [ "$1" = "audit" ] && \
-    { [ "$ARM_NAME" = "baseline-sequential" ] || [ "$ARM_NAME" = "hint-sequential" ]; }; then
+# State annotation is part of the public audit pipeline for every arm, but
+# runs in a fresh container whose dataset includes reference solutions.
+if [ "$1" = "audit" ]; then
     STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/state-audit"
     mkdir -p "$STATE_CHECKPOINT_MOUNT"
     chmod 700 "$STATE_CHECKPOINT_MOUNT"

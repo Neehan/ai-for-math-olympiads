@@ -1,4 +1,4 @@
-"""Annotate observable U/P/S route states for sequential proof checkpoints.
+"""Annotate observable U/P/S route states for every audited proof artifact.
 
 Correctness remains owned by ``audit.json``.  This stage reuses those immutable
 scores: passing checkpoints become S without another model call; missing
@@ -26,7 +26,9 @@ from src.constants import (
     CONFIG_PATH,
     LOG_FORMAT,
     LOG_LEVEL,
+    MODE_PARALLEL,
     MODE_SEQUENTIAL,
+    MODE_UNIFORM_STRATEGY,
     RESULTS_ROOT,
     SEED_AUDIT_FILENAME,
     SEED_STATE_AUDIT_FILENAME,
@@ -36,11 +38,13 @@ from src.prompts import state_audit_prompt
 from src.run import select_problems, select_seeds
 from src.solver import token_env_name
 from src.storage import (
+    bank_run_output_dir,
     budget_cut_multipliers,
     compile_arm_state_audit,
     cut_solution_path,
     load_problems,
     load_state_audit_references,
+    parallel_bank_done,
     seed_done,
     seed_output_dir,
     seed_solution_text,
@@ -49,8 +53,6 @@ from src.storage import (
 from src.token_pool import TokenPool
 
 log = logging.getLogger("state_audit")
-
-STATE_AUDIT_ARMS = {"baseline-sequential", "hint-sequential"}
 
 STATE_AUDIT_OUTPUT_SCHEMA: dict[str, object] = {
     "type": "object",
@@ -136,7 +138,12 @@ def _proof_artifacts(
     raw_cuts = proof_audit.get("budget_cuts", {})
     if not isinstance(raw_cuts, dict):
         raise ValueError("Proof audit has malformed budget_cuts")
-    for multiplier in budget_cut_multipliers(arm.budget_units):
+    cut_multipliers = (
+        budget_cut_multipliers(arm.budget_units)
+        if arm.mode == MODE_SEQUENTIAL
+        else []
+    )
+    for multiplier in cut_multipliers:
         label = f"{multiplier}x"
         cut = raw_cuts.get(label)
         if not isinstance(cut, dict) or not isinstance(cut.get("audit_score"), int):
@@ -161,9 +168,14 @@ async def state_audit_seed(
     seed: int,
     pool: TokenPool,
     reference_solution: str,
+    *,
+    output_dir_override: Path | None = None,
+    record_extra: dict[str, object] | None = None,
 ) -> None:
-    """Annotate every checkpoint of one already correctness-audited trajectory."""
-    output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+    """Annotate one audited proof and, for sequential arms, its checkpoints."""
+    output_dir = output_dir_override or seed_output_dir(
+        config, arm, problem.problem_id, seed
+    )
     proof_path = output_dir / SEED_AUDIT_FILENAME
     proof_audit: dict[str, Any] = json.loads(proof_path.read_text(encoding="utf-8"))
     outline = _outline(problem)
@@ -179,6 +191,8 @@ async def state_audit_seed(
             "arm": arm.name,
             "problem_id": problem.problem_id,
             "seed": seed,
+            "output_dir": output_dir.relative_to(RESULTS_ROOT).as_posix(),
+            "record_extra": record_extra or {},
         }
     )
     try:
@@ -244,6 +258,8 @@ async def state_audit_seed(
             **final_checkpoint,
             "budget_cuts": records,
         }
+        if record_extra:
+            final_record.update(record_extra)
         checkpoint.prepare_completion(
             state_path.relative_to(RESULTS_ROOT).as_posix()
         )
@@ -254,9 +270,45 @@ async def state_audit_seed(
         checkpoint.close()
 
 
+def _bank_targets(
+    arm: ArmConfig, bank_dir: Path, seed: int
+) -> list[tuple[Path, dict[str, object]]]:
+    """Resolve the executor proofs represented by one completed bank audit."""
+    proof_audit = json.loads(
+        (bank_dir / SEED_AUDIT_FILENAME).read_text(encoding="utf-8")
+    )
+    raw_runs = proof_audit.get("runs", [])
+    if not isinstance(raw_runs, list):
+        raise ValueError("Bank proof audit has malformed runs")
+    targets: list[tuple[Path, dict[str, object]]] = []
+    for raw in raw_runs:
+        if not isinstance(raw, dict) or not isinstance(raw.get("run"), int):
+            raise ValueError("Bank proof audit has malformed run entry")
+        run = int(raw["run"])
+        extra: dict[str, object]
+        if arm.mode == MODE_PARALLEL:
+            extra = {"parallel_bank_seed": seed, "parallel_run": run}
+        elif arm.mode == MODE_UNIFORM_STRATEGY:
+            strategy_index = raw.get("strategy_index")
+            if not isinstance(strategy_index, int):
+                raise ValueError("Uniform bank run is missing strategy_index")
+            extra = {
+                "uniform_strategy_bank_seed": seed,
+                "uniform_strategy_run": run,
+                "uniform_strategy_index": strategy_index,
+            }
+        else:
+            raise ValueError(f"Unsupported bank mode: {arm.mode}")
+        run_dir = bank_run_output_dir(bank_dir, run)
+        if not (run_dir / SEED_AUDIT_FILENAME).exists():
+            raise FileNotFoundError(f"Bank executor lacks proof audit: {run_dir}")
+        targets.append((run_dir, extra))
+    return targets
+
+
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="State-audit one sequential arm.")
-    parser.add_argument("--arm", required=True, help="Sequential arm name")
+    parser = argparse.ArgumentParser(description="State-audit one experiment arm.")
+    parser.add_argument("--arm", required=True, help="Arm name")
     parser.add_argument("--problems", default=None, help="Comma-separated problem ids")
     parser.add_argument("--domain", default=None, help="Only problems in this domain")
     parser.add_argument("--seeds", default=None, help="Comma-separated seed subset")
@@ -269,12 +321,6 @@ async def main() -> None:
     if args.arm not in config.arms:
         raise SystemExit(f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}")
     arm = config.arms[args.arm]
-    if arm.mode != MODE_SEQUENTIAL:
-        raise SystemExit("State audit is defined only for sequential arms")
-    if arm.name not in STATE_AUDIT_ARMS:
-        raise SystemExit(
-            f"State audit is restricted to {sorted(STATE_AUDIT_ARMS)}"
-        )
     all_problems = load_problems()
     problems = select_problems(all_problems, args.problems, args.domain)
     state_references = load_state_audit_references()
@@ -296,7 +342,11 @@ async def main() -> None:
         (problem, seed)
         for problem in problems
         for seed in seeds
-        if seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
+        if (
+            parallel_bank_done(seed_output_dir(config, arm, problem.problem_id, seed))
+            if arm.mode == MODE_PARALLEL
+            else seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
+        )
     ]
     ungenerated = len(problems) * len(seeds) - len(generated)
     if ungenerated:
@@ -318,22 +368,37 @@ async def main() -> None:
             missing_proof_audits,
         )
 
-    pending: list[tuple[Problem, int]] = []
+    targets: list[tuple[Problem, int, Path, dict[str, object] | None]] = []
     for problem, seed in proof_audited:
         output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
-        if not (output_dir / SEED_STATE_AUDIT_FILENAME).exists():
-            pending.append((problem, seed))
+        if arm.mode in {MODE_PARALLEL, MODE_UNIFORM_STRATEGY}:
+            targets.extend(
+                (problem, seed, run_dir, extra)
+                for run_dir, extra in _bank_targets(arm, output_dir, seed)
+            )
+        else:
+            targets.append((problem, seed, output_dir, None))
+    pending = [
+        target
+        for target in targets
+        if not (target[2] / SEED_STATE_AUDIT_FILENAME).exists()
+    ]
 
     log.info(
-        "Arm %s: %d attempts to state-audit, %d already current",
+        "Arm %s: %d proof artifacts to state-audit, %d already current",
         arm.name,
         len(pending),
-        len(proof_audited) - len(pending),
+        len(targets) - len(pending),
     )
     if pending:
         pool = TokenPool.from_env(token_env_name(config.audit_model))
 
-        async def worker(problem: Problem, seed: int) -> None:
+        async def worker(
+            problem: Problem,
+            seed: int,
+            output_dir: Path,
+            extra: dict[str, object] | None,
+        ) -> None:
             await state_audit_seed(
                 config,
                 arm,
@@ -341,22 +406,22 @@ async def main() -> None:
                 seed,
                 pool,
                 state_references[problem.problem_id][1],
+                output_dir_override=output_dir,
+                record_extra=extra,
             )
 
         tasks = [
-            lambda p=problem, s=seed: worker(p, s) for problem, seed in pending
+            lambda p=problem, s=seed, d=output_dir, e=extra: worker(p, s, d, e)
+            for problem, seed, output_dir, extra in pending
         ]
         await run_all(tasks, config.max_concurrency)
 
     state_path, state_count = compile_arm_state_audit(config, arm)
     log.info("Compiled %d state records -> %s", state_count, state_path)
     failed = [
-        (problem.problem_id, seed)
-        for problem, seed in pending
-        if not (
-            seed_output_dir(config, arm, problem.problem_id, seed)
-            / SEED_STATE_AUDIT_FILENAME
-        ).exists()
+        (problem.problem_id, seed, output_dir.name)
+        for problem, seed, output_dir, _ in pending
+        if not (output_dir / SEED_STATE_AUDIT_FILENAME).exists()
     ]
     if failed:
         raise SystemExit(
