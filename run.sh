@@ -5,8 +5,9 @@
 # internal container for route-state annotation. Keeping the stages separate
 # prevents state annotations from influencing correctness verdicts.
 #
-# The container is removed on exit (--rm); results land in ./results/ via the
-# bind mount. Problems and hints are fetched from the dataset URLs by the
+# The container is removed on exit (--rm); math-contests-2026 results land in
+# ./results/ and IMO-ProofBench results in ./results-imobench/ via the bind
+# mount. Problems and hints are fetched from the selected dataset URLs by the
 # entrypoint (never stored in the image); prompts/, config.json, and
 # agent settings profiles are mounted read-only so editing them needs no rebuild.
 #
@@ -19,15 +20,59 @@
 #   cp .env.example .env             # set CLAUDE_CODE_OAUTH_TOKEN in it
 #   ./run.sh run --arm baseline
 #   ./run.sh run --arm baseline --domain combinatorics
+#   ./run.sh run --dataset imobench --arm baseline
 #   ./run.sh audit --arm baseline
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 if [ $# -lt 3 ] || { [ "$1" != "run" ] && [ "$1" != "audit" ]; }; then
-    echo "Usage: ./run.sh <run|audit> --arm <ARM> [--problems id1,id2] [--domain d]" >&2
+    echo "Usage: ./run.sh <run|audit> --arm <ARM> [--dataset math-contests-2026|imobench] [--problems id1,id2] [--domain d]" >&2
     exit 2
 fi
+
+# Dataset selection is a host-controller concern: it determines both the
+# protected URLs fetched inside Docker and the host result tree. Strip the
+# public flag before forwarding the remaining arguments to Python.
+DATASET_NAME=math-contests-2026
+STAGE=$1
+shift
+FORWARD_ARGS=("$STAGE")
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dataset)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "ERROR: --dataset requires a value" >&2
+                exit 2
+            fi
+            DATASET_NAME=$2
+            shift 2
+            ;;
+        --dataset=*)
+            DATASET_NAME=${1#--dataset=}
+            if [ -z "$DATASET_NAME" ]; then
+                echo "ERROR: --dataset requires a value" >&2
+                exit 2
+            fi
+            shift
+            ;;
+        *)
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${FORWARD_ARGS[@]}"
+
+case "$DATASET_NAME" in
+    math-contests-2026) RESULTS_DIR_NAME=results ;;
+    imobench) RESULTS_DIR_NAME=results-imobench ;;
+    *)
+        echo "ERROR: unknown dataset '$DATASET_NAME' (expected math-contests-2026 or imobench)" >&2
+        exit 2
+        ;;
+esac
+RESULTS_HOST_ROOT="$PWD/$RESULTS_DIR_NAME"
 
 if [ -f .env ]; then
     set -a
@@ -37,7 +82,7 @@ if [ -f .env ]; then
 fi
 IMAGE=olympiad-harness
 docker build -q -t "$IMAGE" -f docker/Dockerfile . >/dev/null
-mkdir -p results
+mkdir -p "$RESULTS_HOST_ROOT"
 
 # Mount only this stage/model/arm's opaque checkpoint namespace.  Mounting the
 # whole bank would let a tool-using solver inspect interrupted work from a
@@ -139,9 +184,17 @@ case "$ACTIVE_MODEL" in
         ;;
 esac
 
-CHECKPOINT_NAMESPACE=$(python -c \
-    'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); prompts=sorted(pathlib.Path("prompts").glob("*.md")); prompts=[p for p in prompts if p.name!="state_audit.md"]; files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*prompts]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
-    "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$ACTIVE_AGENT_SETTINGS")
+if [ "$DATASET_NAME" = "math-contests-2026" ]; then
+    # Preserve the exact legacy identity so paid in-flight checkpoints remain
+    # resumable after adding the dataset selector.
+    CHECKPOINT_NAMESPACE=$(python -c \
+        'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); prompts=sorted(pathlib.Path("prompts").glob("*.md")); prompts=[p for p in prompts if p.name!="state_audit.md"]; files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*prompts]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
+        "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$ACTIVE_AGENT_SETTINGS")
+else
+    CHECKPOINT_NAMESPACE=$(python -c \
+        'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:6]).encode()); prompts=sorted(pathlib.Path("prompts").glob("*.md")); prompts=[p for p in prompts if p.name!="state_audit.md"]; files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[6]),*prompts]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
+        "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$DATASET_NAME" "$ACTIVE_AGENT_SETTINGS")
+fi
 CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$CHECKPOINT_NAMESPACE"
 mkdir -p "$CHECKPOINT_MOUNT"
 chmod 700 .session-checkpoints .session-checkpoints/runtime "$CHECKPOINT_MOUNT"
@@ -152,13 +205,13 @@ while IFS= read -r name; do
     token_args+=(-e "$name")
 done < <(compgen -v | grep -E "$TOKEN_PATTERN")
 
-RESULTS_MOUNT="$PWD/results"
+RESULTS_MOUNT="$RESULTS_HOST_ROOT"
 STAGING=""
 cleanup_completed_checkpoints() {
     if [ ! -d "$CHECKPOINT_MOUNT/attempts" ]; then
         return
     fi
-    python src/cleanup_checkpoints.py "$CHECKPOINT_MOUNT" "$PWD/results"
+    python src/cleanup_checkpoints.py "$CHECKPOINT_MOUNT" "$RESULTS_HOST_ROOT"
 }
 merge_staging() {
     if [ -n "$STAGING" ] && [ -d "$STAGING" ]; then
@@ -167,7 +220,7 @@ merge_staging() {
         # restart spends only on its unfinished members.
         python scripts/prune_staging.py "$STAGING"
         find "$STAGING" -mindepth 1 -depth -type d -empty -exec rmdir {} \;
-        rsync -a "$STAGING"/ "$PWD/results"/
+        rsync -a "$STAGING"/ "$RESULTS_HOST_ROOT"/
         rm -rf "$STAGING"
     fi
 }
@@ -178,9 +231,9 @@ finish_stage() {
 trap finish_stage EXIT
 
 if [ "$1" = "run" ]; then
-    STAGING=$(mktemp -d "$PWD/.results-staging.XXXXXX")
+    STAGING=$(mktemp -d "$PWD/.$RESULTS_DIR_NAME-staging.XXXXXX")
     rsync -a --include='*/' --include='meta.json' --exclude='*' \
-        "$PWD/results"/ "$STAGING"/
+        "$RESULTS_HOST_ROOT"/ "$STAGING"/
     RESULTS_MOUNT="$STAGING"
 fi
 
@@ -202,14 +255,19 @@ docker run --rm --cap-add=NET_ADMIN \
     -v "$RESULTS_MOUNT:/app/results" \
     -v "$CHECKPOINT_MOUNT:/c" \
     -e HARNESS_CHECKPOINT_ROOT=/c \
+    -e "HARNESS_DATASET=$DATASET_NAME" \
     -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
     -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
     "$IMAGE" "$@"
 
-# State annotation is part of the public audit pipeline for every arm, but
-# runs in a fresh container whose dataset includes reference solutions.
+# State annotation runs in a fresh reference-bearing container. Keep the
+# existing checkpoint namespace for the primary dataset and isolate IMO-Bench.
 if [ "$1" = "audit" ]; then
-    STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/state-audit"
+    if [ "$DATASET_NAME" = "math-contests-2026" ]; then
+        STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/state-audit"
+    else
+        STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/state-audit-$DATASET_NAME"
+    fi
     mkdir -p "$STATE_CHECKPOINT_MOUNT"
     chmod 700 "$STATE_CHECKPOINT_MOUNT"
     docker run --rm --cap-add=NET_ADMIN \
@@ -219,11 +277,12 @@ if [ "$1" = "audit" ]; then
         -v "$PWD/config.json:/app/config.json:ro" \
         -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
         -v "$PWD/agent_settings_small.json:/app/agent_settings_small.json:ro" \
-        -v "$PWD/results:/app/results" \
+        -v "$RESULTS_HOST_ROOT:/app/results" \
         -v "$STATE_CHECKPOINT_MOUNT:/c" \
         -e HARNESS_CHECKPOINT_ROOT=/c \
+        -e "HARNESS_DATASET=$DATASET_NAME" \
         -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
         -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
         "$IMAGE" state-audit "${@:2}"
-    python src/cleanup_checkpoints.py "$STATE_CHECKPOINT_MOUNT" "$PWD/results"
+    python src/cleanup_checkpoints.py "$STATE_CHECKPOINT_MOUNT" "$RESULTS_HOST_ROOT"
 fi

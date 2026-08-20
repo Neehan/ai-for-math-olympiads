@@ -30,7 +30,7 @@ Compute = the attempt's total output-token budget. Three layers:
 
 ## Problem data (never committed)
 
-Problems and hints are NOT in this repo — committing them would leak contest identity. They are fetched at runtime from the `notadib/math-contests-2026` dataset with stdlib `urllib`, straight into memory (no `hf_hub`, no disk cache):
+Problems and hints are NOT in this repo — committing them would leak contest identity. They are fetched at runtime from the `notadib/math-contests-2026` Hugging Face repository with stdlib `urllib`, straight into memory (no `hf_hub`, no disk cache). The default `--dataset math-contests-2026` uses the four `hard_*` files below; `--dataset imobench` selects the corresponding `imobench_problems.jsonl`, `imobench_hints.jsonl`, `imobench_outlines.jsonl`, and `imobench_solutions.jsonl` files.
 
 - `hard_problems.jsonl` — statements. Only `problem_id`, `statement`, and `domain` (for `--domain` filtering) are kept; contest-identifying metadata is dropped at load and the prompt carries the statement alone.
 - `hard_hints.jsonl` — hint ladder source: `placebo` field → **h1** (not authored yet — placebo arms fail fast before spending a token), scalar `hint` field → **h2** (the frozen ≤25-word oracle strategy hint, inserted verbatim). The retired five-tag development file is archived on HuggingFace as `hard_hints-v1.jsonl` and is never fetched by the harness.
@@ -117,6 +117,7 @@ test -f .env || cp .env.example .env   # configure the active provider
 ./run.sh run --arm baseline --domain combinatorics   # one domain
 ./run.sh run --arm baseline --problems id1,id2       # explicit subset
 ./run.sh run --arm baseline --seeds 1                # pilot: seed subset (run stage only)
+./run.sh run --dataset imobench --arm baseline       # writes results-imobench/
 
 # model overrides (default: config.json; solver and judge must differ)
 ./run.sh run --arm baseline --model claude-fable-5 --audit-model claude-opus-4-8
@@ -130,6 +131,7 @@ test -f .env || cp .env.example .env   # configure the active provider
 ./run.sh audit --arm baseline --seeds 1
 ./run.sh audit --arm baseline --seeds 1             # correctness + final state
 ./run.sh audit --arm baseline-sequential --seeds 1  # correctness + all checkpoint states
+./run.sh audit --dataset imobench --arm baseline     # correctness + state in results-imobench/
 
 # dev only — NO firewall, never for canonical data
 python -m src.run --arm baseline

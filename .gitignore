@@ -238,10 +238,12 @@ local_data/
 
 # Transient run-stage results staging (merged into results/ on exit).
 .results-staging.*/
+.results-imobench-staging.*/
 
 # Run outputs: kept local for now (archival decision deferred — committing
 # them also embeds problem statements and hints in repo history).
 results/
+results-imobench/
 results-archive/
 
 # latex

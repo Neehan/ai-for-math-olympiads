@@ -1,5 +1,6 @@
 """Single source of truth for paths, filenames, tool lists, and env var names."""
 
+import os
 from pathlib import Path
 
 from claude_agent_sdk import PermissionMode
@@ -69,13 +70,39 @@ STATE_AUDIT_PROMPT_FILE: str = "state_audit.md"
 # --- Problem/hint data sources -------------------------------------------
 # Never committed (contest identity); fetched straight into memory, or from
 # the entrypoint's pre-firewall temp copies, which the loader deletes on read.
+DATASET_ENV: str = "HARNESS_DATASET"
+DATASET_MATH_CONTESTS_2026: str = "math-contests-2026"
+DATASET_IMOBENCH: str = "imobench"
+DATASET_NAMES: frozenset[str] = frozenset(
+    {DATASET_MATH_CONTESTS_2026, DATASET_IMOBENCH}
+)
+DATASET_NAME: str = os.environ.get(DATASET_ENV, DATASET_MATH_CONTESTS_2026)
+if DATASET_NAME not in DATASET_NAMES:
+    raise RuntimeError(
+        f"Unknown {DATASET_ENV}={DATASET_NAME!r}; expected one of {sorted(DATASET_NAMES)}"
+    )
 _DATASET_BASE: str = (
     "https://huggingface.co/datasets/notadib/math-contests-2026/resolve/main"
 )
-PROBLEMS_URL: str = f"{_DATASET_BASE}/hard_problems.jsonl"
-HINTS_URL: str = f"{_DATASET_BASE}/hard_hints.jsonl"
-OUTLINES_URL: str = f"{_DATASET_BASE}/hard_outlines.jsonl"
-SOLUTIONS_URL: str = f"{_DATASET_BASE}/hard_solutions.jsonl"
+_DATASET_FILES: dict[str, dict[str, str]] = {
+    DATASET_MATH_CONTESTS_2026: {
+        "problems": "hard_problems.jsonl",
+        "hints": "hard_hints.jsonl",
+        "outlines": "hard_outlines.jsonl",
+        "solutions": "hard_solutions.jsonl",
+    },
+    DATASET_IMOBENCH: {
+        "problems": "imobench_problems.jsonl",
+        "hints": "imobench_hints.jsonl",
+        "outlines": "imobench_outlines.jsonl",
+        "solutions": "imobench_solutions.jsonl",
+    },
+}
+_ACTIVE_DATASET_FILES = _DATASET_FILES[DATASET_NAME]
+PROBLEMS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['problems']}"
+HINTS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['hints']}"
+OUTLINES_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['outlines']}"
+SOLUTIONS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['solutions']}"
 PROBLEMS_FILE_ENV: str = "PROBLEMS_FILE"
 HINTS_FILE_ENV: str = "HINTS_FILE"
 OUTLINES_FILE_ENV: str = "OUTLINES_FILE"
