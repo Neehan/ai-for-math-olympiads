@@ -85,9 +85,13 @@ class AuditDedupTests(unittest.TestCase):
                     problem,
                     1,
                     TokenPool(["unused"], "TEST_TOKEN"),
+                    "A verified reference proof.",
                 )
 
             self.assertEqual(judge.await_count, 1)
+            rendered_prompt = judge.await_args.args[1]
+            self.assertIn("A verified reference proof.", rendered_prompt)
+            self.assertIn(proof.strip(), rendered_prompt)
             record = json.loads((output / "audit.json").read_text(encoding="utf-8"))
             self.assertEqual(record["audit_score"], 7)
             for multiplier in (1, 2, 4):

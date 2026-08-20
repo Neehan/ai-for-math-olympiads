@@ -5,9 +5,10 @@ Usage:
     python -m src.audit --arm hint --problems usamo-2026-3
 
 Per the paper's grading protocol: the judge is a frontier model OTHER than the
-solution's author (enforced in config), is given only the problem statement
-and the standalone solution.md (the hint is not included), grades only the
-'## Final Solution' section, and scores 7 (complete and rigorous), 6/5
+solution's author (enforced in config), is given the problem statement,
+the fixed verified reference solution, and the standalone solution.md (the hint and
+solver scratch are not included), grades only the '## Final Solution' section,
+and scores 7 (complete and rigorous), 6/5
 (complete in essence, small obviously-fixable gap), or 0 (anything else — no
 other partial credit) with a written note (why valid, or what is
 missing/wrong). Each attempt's verdict is audit.json in its seed dir
@@ -75,6 +76,7 @@ from src.storage import (
     budget_cut_multipliers,
     compile_arm_audit,
     cut_solution_path,
+    load_audit_references,
     load_problems,
     parallel_bank_audited,
     parallel_bank_done,
@@ -230,6 +232,7 @@ async def audit_seed(
     problem: Problem,
     seed: int,
     pool: TokenPool,
+    reference_solution: str,
     *,
     output_dir_override: Path | None = None,
     record_extra: dict[str, object] | None = None,
@@ -242,10 +245,14 @@ async def audit_seed(
     budget) is scored invalid with an explanatory note, no judge call spent.
     """
     if arm.mode == MODE_PARALLEL and output_dir_override is None:
-        await audit_parallel_bank(config, arm, problem, seed, pool)
+        await audit_parallel_bank(
+            config, arm, problem, seed, pool, reference_solution
+        )
         return
     if arm.mode == MODE_UNIFORM_STRATEGY and output_dir_override is None:
-        await audit_uniform_strategy_bank(config, arm, problem, seed, pool)
+        await audit_uniform_strategy_bank(
+            config, arm, problem, seed, pool, reference_solution
+        )
         return
     output_dir = output_dir_override or seed_output_dir(
         config, arm, problem.problem_id, seed
@@ -330,7 +337,7 @@ async def audit_seed(
         scratch_paths["full"] = full_scratch
         verdict, full_reconnects = await _judge(
             config,
-            audit_prompt(problem, solution),
+            audit_prompt(problem, reference_solution, solution),
             pool,
             str(full_scratch),
             checkpoint,
@@ -360,7 +367,7 @@ async def audit_seed(
                 scratch_paths[role] = cut_scratch
                 cut_verdict, cut_reconnects = await _judge(
                     config,
-                    audit_prompt(problem, cut_text),
+                    audit_prompt(problem, reference_solution, cut_text),
                     pool,
                     str(cut_scratch),
                     checkpoint,
@@ -474,6 +481,7 @@ async def audit_parallel_bank(
     problem: Problem,
     seed: int,
     pool: TokenPool,
+    reference_solution: str,
 ) -> None:
     """Audit all eight fresh candidates in one Parallel-8 bank."""
     bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
@@ -496,6 +504,7 @@ async def audit_parallel_bank(
                 problem,
                 seed,
                 pool,
+                reference_solution,
                 output_dir_override=d,
                 record_extra={"parallel_bank_seed": seed, "parallel_run": r},
             )
@@ -577,6 +586,7 @@ async def audit_uniform_strategy_bank(
     problem: Problem,
     seed: int,
     pool: TokenPool,
+    reference_solution: str,
 ) -> None:
     """Audit all eight executor candidates and compile one bank verdict."""
     bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
@@ -631,6 +641,7 @@ async def audit_uniform_strategy_bank(
                 problem,
                 seed,
                 pool,
+                reference_solution,
                 output_dir_override=d,
                 record_extra={
                     "uniform_strategy_bank_seed": seed,
@@ -738,7 +749,19 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
-    problems = select_problems(load_problems(), args.problems, args.domain)
+    all_problems = load_problems()
+    problems = select_problems(all_problems, args.problems, args.domain)
+    audit_references = load_audit_references()
+    for problem in all_problems:
+        reference = audit_references.get(problem.problem_id)
+        if reference is None:
+            raise SystemExit(f"No reference solution for {problem.problem_id}")
+        reference_statement, _ = reference
+        if reference_statement != problem.statement.strip():
+            raise SystemExit(
+                f"Problem statement mismatch in hard_solutions for "
+                f"{problem.problem_id}"
+            )
     seeds = select_seeds(arm, args.seeds)
 
     def generation_done(output_dir: Path) -> bool:
@@ -780,7 +803,9 @@ async def main() -> None:
 
     pool = TokenPool.from_env(token_env_name(config.audit_model))
     tasks = [
-        lambda p=problem, s=seed: audit_seed(config, arm, p, s, pool)
+        lambda p=problem, s=seed: audit_seed(
+            config, arm, p, s, pool, audit_references[p.problem_id][1]
+        )
         for problem, seed in pending
     ]
     # Parallel and Uniform Strategy banks audit their candidates internally.
@@ -794,6 +819,15 @@ async def main() -> None:
 
     path, count = compile_arm_audit(config, arm)
     log.info("Compiled %d verdicts -> %s", count, path)
+    failed = [
+        (problem.problem_id, seed)
+        for problem, seed in pending
+        if not audit_done(seed_output_dir(config, arm, problem.problem_id, seed))
+    ]
+    if failed:
+        raise SystemExit(
+            f"{len(failed)} correctness-audit task(s) failed; rerun the same command"
+        )
 
 
 if __name__ == "__main__":

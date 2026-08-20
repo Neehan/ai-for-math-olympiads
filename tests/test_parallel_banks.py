@@ -244,6 +244,7 @@ class ParallelBankTests(unittest.TestCase):
                     problem,
                     1,
                     TokenPool(["unused"], "TEST_TOKEN"),
+                    "A verified reference proof.",
                 )
 
             record = json.loads(

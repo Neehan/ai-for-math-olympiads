@@ -141,11 +141,19 @@ def uniform_strategy_execute_prompt(
     return task_prompt(problem, proposed_strategy.strip(), scratch_dir, budget_tokens)
 
 
-def audit_prompt(problem: Problem, solution_text: str) -> str:
-    """Judge prompt: statement + standalone solution (the hint is not included)."""
+def audit_prompt(
+    problem: Problem, reference_solution: str, solution_text: str
+) -> str:
+    """Reference-assisted correctness prompt for one standalone solution."""
+    if not reference_solution.strip():
+        raise ValueError(f"{problem.problem_id}: no verified reference solution")
     return _render(
         _load(AUDIT_PROMPT_FILE),
-        {"statement": problem.statement.strip(), "solution": solution_text.strip()},
+        {
+            "statement": problem.statement.strip(),
+            "reference_solution": reference_solution.strip(),
+            "solution": solution_text.strip(),
+        },
     )
 
 

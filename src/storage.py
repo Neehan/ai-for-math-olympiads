@@ -200,11 +200,24 @@ def _outline_reference(record: dict[str, Any]) -> str:
     return solution.strip()
 
 
+def load_audit_references() -> dict[str, tuple[str, str]]:
+    """Load problem statements and the fixed index-0 correctness reference."""
+    references: dict[str, tuple[str, str]] = {}
+    for record in _fetch_jsonl(SOLUTIONS_FILE_ENV, SOLUTIONS_URL):
+        problem_id = record.get("problem_id")
+        statement = record.get("statement")
+        if not isinstance(problem_id, str) or not isinstance(statement, str):
+            raise ValueError("Malformed hard-solutions identity")
+        if problem_id in references:
+            raise ValueError(f"Duplicate hard-solutions problem_id: {problem_id}")
+        references[problem_id] = (statement.strip(), _outline_reference(record))
+    return references
+
+
 def load_state_audit_references() -> dict[str, tuple[str, str]]:
     """Load problem statements and explicitly outline-matching full solutions.
 
-    This source is fetched only by the state-audit stage; generation and the
-    correctness judge never receive it.  Returning the stored statement lets
+    Generation never receives this source. Returning the stored statement lets
     the caller verify the problem-id join before constructing any prompt.
     """
     references: dict[str, tuple[str, str]] = {}

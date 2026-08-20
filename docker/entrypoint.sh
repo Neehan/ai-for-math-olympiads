@@ -22,7 +22,7 @@ case "$STAGE" in
     *) echo "unknown stage '$STAGE' (expected run, audit, or state-audit)" >&2; exit 2 ;;
 esac
 
-# Prefetch the problem/hint datasets BEFORE the firewall closes: HuggingFace
+# Prefetch the generation datasets BEFORE the firewall closes: HuggingFace
 # must stay unreachable while agents run (an agent that could fetch the hints
 # file would be contaminated). The harness loader reads these files once and
 # deletes them before any agent spawns, so no trace remains.
@@ -45,7 +45,7 @@ PY
 export PROBLEMS_FILE=/run/contest/problems.jsonl
 export HINTS_FILE=/run/contest/hints.jsonl
 export OUTLINES_FILE=/run/contest/outlines.jsonl
-if [ "$STAGE" = "state-audit" ]; then
+if [ "$STAGE" = "audit" ] || [ "$STAGE" = "state-audit" ]; then
     python - <<'PY'
 import urllib.request
 from src.constants import SOLUTIONS_URL

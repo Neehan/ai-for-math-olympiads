@@ -166,6 +166,7 @@ class UniformStrategyTests(unittest.TestCase):
                     problem,
                     1,
                     TokenPool(["unused"], "TEST_TOKEN"),
+                    "A verified reference proof.",
                 )
             record = json.loads(
                 (bank_dir / SEED_AUDIT_FILENAME).read_text(encoding="utf-8")
