@@ -62,6 +62,7 @@ fi
 PROVIDER_KIND="${HARNESS_PROVIDER_KIND:?HARNESS_PROVIDER_KIND is required}"
 case "$PROVIDER_KIND" in
     anthropic) API_HOSTS="api.anthropic.com claude.ai console.anthropic.com" ;;
+    meta) API_HOSTS="api.meta.ai" ;;
     openrouter) API_HOSTS="openrouter.ai" ;;
     litellm) API_HOSTS="" ;;
     vllm) API_HOSTS="" ;;
@@ -132,6 +133,7 @@ except OSError:
 provider_kind = os.environ["HARNESS_PROVIDER_KIND"]
 external_probe = {
     "anthropic": ("Anthropic", "https://api.anthropic.com/"),
+    "meta": ("Meta", "https://api.meta.ai/"),
     "openrouter": ("OpenRouter", "https://openrouter.ai/"),
 }.get(provider_kind)
 if external_probe is not None:

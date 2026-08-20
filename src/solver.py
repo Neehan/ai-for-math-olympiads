@@ -53,6 +53,9 @@ from src.constants import (
     LITELLM_API_KEY_ENV,
     LITELLM_BASE_URL_ENV,
     LITELLM_MODEL_PREFIX,
+    META_API_KEY_ENV,
+    META_BASE_URL,
+    META_MUSE_SPARK_CONTRIBUTOR_MODEL,
     OAUTH_TOKEN_ENV,
     OPENROUTER_BASE_URL,
     OPENROUTER_KEY_ENV,
@@ -772,6 +775,11 @@ def uses_openrouter(model: str) -> bool:
     return "/" in model and not uses_litellm(model) and not uses_vllm(model)
 
 
+def uses_meta(model: str) -> bool:
+    """True for Meta's native Anthropic-compatible Muse endpoint."""
+    return model == META_MUSE_SPARK_CONTRIBUTOR_MODEL
+
+
 def uses_litellm(model: str) -> bool:
     """True for models routed to the local Codex-subscription sidecar pool."""
     return model.startswith(LITELLM_MODEL_PREFIX)
@@ -852,6 +860,8 @@ def token_env_name(model: str) -> str:
         # Pool entries are native Anthropic endpoint URLs. One vLLM server may
         # internally data-parallelize across several GPUs.
         return VLLM_BASE_URL_ENV
+    if uses_meta(model):
+        return META_API_KEY_ENV
     return OPENROUTER_KEY_ENV if uses_openrouter(model) else OAUTH_TOKEN_ENV
 
 
@@ -871,6 +881,11 @@ def provider_transport_policy(model: str) -> dict[str, object]:
             "stream_idle_timeout_ms": CLAUDE_STREAM_IDLE_TIMEOUT_MS,
             "nonstreaming_fallback_enabled": False,
             "automatic_api_retries": CLAUDE_MAX_API_RETRIES,
+        }
+    if uses_meta(model):
+        return {
+            "policy": "meta_native_anthropic_v1",
+            "base_url": META_BASE_URL,
         }
     if not uses_litellm(model):
         return {"policy": "provider_default_v1"}
@@ -930,6 +945,13 @@ def provider_env(
             ANTHROPIC_BASE_URL_ENV: os.environ.get(
                 OPENROUTER_PROXY_URL_ENV, OPENROUTER_BASE_URL
             ).rstrip("/"),
+            ANTHROPIC_AUTH_TOKEN_ENV: api_key,
+            ANTHROPIC_API_KEY_ENV: "",
+            **cap,
+        }
+    if uses_meta(model):
+        return {
+            ANTHROPIC_BASE_URL_ENV: META_BASE_URL,
             ANTHROPIC_AUTH_TOKEN_ENV: api_key,
             ANTHROPIC_API_KEY_ENV: "",
             **cap,

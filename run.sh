@@ -85,6 +85,14 @@ fi
 network_args=()
 ACTIVE_AGENT_SETTINGS=agent_settings.json
 case "$ACTIVE_MODEL" in
+    muse-spark-1.2-contributor)
+        if [ -z "${META_API_KEY:-}" ]; then
+            echo "ERROR: $ACTIVE_MODEL requires META_API_KEY in .env." >&2
+            exit 1
+        fi
+        TOKEN_PATTERN='^META_API_KEY(_[0-9]+)?$'
+        PROVIDER_KIND=meta
+        ;;
     vllm/*)
         ACTIVE_AGENT_SETTINGS=agent_settings_small.json
         if [ -z "${VLLM_API_KEY:-}" ] || [ -z "${VLLM_BASE_URL:-}" ]; then

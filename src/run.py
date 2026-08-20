@@ -75,6 +75,7 @@ from src.solver import (
     run_phase,
     token_env_name,
     uses_litellm,
+    uses_meta,
     uses_vllm,
 )
 from src.storage import (
@@ -851,11 +852,12 @@ def run_checkpoint_identity(
             agent_settings_path(config.model)
         ),
     }
-    # Local proxy/server routes and frozen OpenRouter aliases have explicit
-    # transport controls. Ordinary Anthropic/OpenRouter ids retain their
-    # original checkpoint identities.
+    # Local proxy/server routes, Meta, and frozen OpenRouter aliases have
+    # explicit transport controls. Ordinary Anthropic/OpenRouter ids retain
+    # their original checkpoint identities.
     if (
         uses_litellm(config.model)
+        or uses_meta(config.model)
         or uses_vllm(config.model)
         or route_for(config.model) is not None
     ):

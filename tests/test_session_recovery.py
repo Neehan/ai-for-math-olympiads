@@ -40,6 +40,9 @@ from src.constants import (
     LITELLM_API_KEY_ENV,
     LITELLM_BASE_URL_ENV,
     MAX_OUTPUT_TOKENS_ENV,
+    META_API_KEY_ENV,
+    META_BASE_URL,
+    META_MUSE_SPARK_CONTRIBUTOR_MODEL,
     OAUTH_TOKEN_ENV,
     SESSION_RECOVERY_PROMPT,
     VLLM_API_KEY_ENV,
@@ -1324,6 +1327,39 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 CLAUDE_MAX_API_RETRIES_ENV: "0",
                 MAX_OUTPUT_TOKENS_ENV: "64000",
             },
+        )
+
+    def test_meta_contributor_model_uses_native_anthropic_endpoint(self) -> None:
+        model = META_MUSE_SPARK_CONTRIBUTOR_MODEL
+        env = provider_env(model, "meta-contributor-key")
+        self.assertEqual(provider_model_name(model), model)
+        self.assertEqual(token_env_name(model), META_API_KEY_ENV)
+        self.assertEqual(
+            provider_transport_policy(model),
+            {
+                "policy": "meta_native_anthropic_v1",
+                "base_url": META_BASE_URL,
+            },
+        )
+        self.assertEqual(
+            env,
+            {
+                ANTHROPIC_BASE_URL_ENV: META_BASE_URL,
+                ANTHROPIC_AUTH_TOKEN_ENV: "meta-contributor-key",
+                ANTHROPIC_API_KEY_ENV: "",
+                MAX_OUTPUT_TOKENS_ENV: "64000",
+            },
+        )
+        config = replace(load_config(CONFIG_PATH), model=model)
+        identity = run_checkpoint_identity(
+            config,
+            config.arms["baseline"],
+            Problem("test", "statement", "combinatorics", None, None, None),
+            1,
+        )
+        self.assertEqual(
+            identity["provider_transport_policy"],
+            provider_transport_policy(model),
         )
 
     def test_transport_policy_versions_only_local_checkpoint_identity(
