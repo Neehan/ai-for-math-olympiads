@@ -7,6 +7,8 @@ The outline contains exactly three steps. For each step return `present` and `re
 
 The boundary is recognition, not successful implementation. If the submission develops the outline's objects and explicitly isolates the corresponding lemma, invariant, construction, or bound as something that must hold—even saying “I cannot prove this claim” or connecting it incorrectly—mark the step present. For a compound step, explicit identification of every named ingredient and the role their combination must play is enough; do not require the submission to use the outline's organizational label or prove that the ingredients combine. Do not require the reference proof's wording, order, or correct derivation. Mark it absent only when a proof writer reading the submission would still have to introduce that outline ingredient as a new idea.
 
+Treat each outline step as a conjunction of all mechanisms it explicitly names. If the outline specifies how an object is constructed or how bounds are used, merely stating that the object exists under those bounds does not recognize the specified mechanism.
+
 Calibration examples:
 
 - The outline step requires Claim A for a stated purpose. The submission states Claim A, explains that purpose, and admits it cannot prove the claim. → `present: true`.

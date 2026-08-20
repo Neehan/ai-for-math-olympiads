@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, patch
 import anyio
 
 from src.models import ArmConfig, ExperimentConfig, Problem
-from src.state_audit import _bank_targets, derive_state, state_audit_seed
+from src.state_audit import (
+    _bank_targets,
+    derive_state,
+    recognized_step_count,
+    state_audit_seed,
+)
 from src.storage import (
     _outline_reference,
     bank_run_output_dir,
@@ -56,7 +61,7 @@ def _config(arm: ArmConfig) -> ExperimentConfig:
 
 
 class StateDerivationTests(unittest.TestCase):
-    def test_only_three_present_steps_are_productive(self) -> None:
+    def test_increased_step_count_is_productive(self) -> None:
         self.assertEqual(
             derive_state(
                 {
@@ -65,9 +70,10 @@ class StateDerivationTests(unittest.TestCase):
                         {"present": True, "reason": "Explicit."},
                         {"present": True, "reason": "Explicit."},
                     ],
-                }
+                },
+                2,
             ),
-            "P",
+            ("P", 3),
         )
         self.assertEqual(
             derive_state(
@@ -77,10 +83,43 @@ class StateDerivationTests(unittest.TestCase):
                         {"present": False, "reason": "Missing."},
                         {"present": True, "reason": "Explicit."},
                     ],
-                }
+                },
+                2,
             ),
-            "U",
+            ("U", 2),
         )
+
+    def test_flat_and_decreasing_step_counts_are_unproductive(self) -> None:
+        verdict = {
+            "steps": [
+                {"present": True, "reason": "Explicit."},
+                {"present": False, "reason": "Missing."},
+                {"present": False, "reason": "Missing."},
+            ]
+        }
+        self.assertEqual(recognized_step_count(verdict), 1)
+        self.assertEqual(derive_state(verdict, 1), ("U", 1))
+        self.assertEqual(derive_state(verdict, 2), ("U", 1))
+
+    def test_complete_route_remains_productive_during_execution(self) -> None:
+        verdict = {
+            "steps": [
+                {"present": True, "reason": "Explicit."},
+                {"present": True, "reason": "Explicit."},
+                {"present": True, "reason": "Explicit."},
+            ]
+        }
+        self.assertEqual(derive_state(verdict, 3), ("P", 3))
+
+    def test_first_artifact_is_compared_with_zero(self) -> None:
+        verdict = {
+            "steps": [
+                {"present": True, "reason": "Explicit."},
+                {"present": False, "reason": "Missing."},
+                {"present": False, "reason": "Missing."},
+            ]
+        }
+        self.assertEqual(derive_state(verdict, 0), ("P", 1))
 
     def test_outline_reference_requires_one_explicit_marker(self) -> None:
         record = {
@@ -159,7 +198,11 @@ class StateAuditSeedTests(unittest.TestCase):
             record = json.loads(
                 (output / "state_audit.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(record["state"], "U")
+            self.assertEqual(record["state"], "P")
+            self.assertEqual(
+                record["note"],
+                "Recognized outline-step count increased from 0/3 to 2/3.",
+            )
             self.assertEqual(record["budget_cuts"], {})
             self.assertEqual(judge.await_count, 1)
 
@@ -282,6 +325,10 @@ class StateAuditSeedTests(unittest.TestCase):
             self.assertEqual(record["budget_cuts"]["2x"]["state"], "P")
             self.assertEqual(record["budget_cuts"]["4x"]["state"], "P")
             self.assertEqual(
+                record["budget_cuts"]["4x"]["note"],
+                "All three outline steps remain recognized; the trajectory is in proof execution.",
+            )
+            self.assertEqual(
                 record["budget_cuts"]["2x"]["solution_sha256"],
                 hashlib.sha256(unsolved.encode("utf-8")).hexdigest(),
             )
@@ -290,6 +337,75 @@ class StateAuditSeedTests(unittest.TestCase):
             self.assertEqual(
                 record["solution_sha256"],
                 hashlib.sha256(solved.encode("utf-8")).hexdigest(),
+            )
+
+    def test_solved_state_is_carried_forward_after_proof_regression(self) -> None:
+        arm = ArmConfig("baseline-sequential", "none", "sequential", 8, [1])
+        config = _config(arm)
+        problem = Problem(
+            "p",
+            "Prove it.",
+            "algebra",
+            None,
+            None,
+            "1. First route step.\n2. Second route step.\n3. Third route step.",
+        )
+        solved = "## Final Solution\nA complete proof.\n"
+        regressed = "## Final Solution\nA later invalid revision.\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "results" / "solver" / arm.name / "p" / "seed_1"
+            output.mkdir(parents=True)
+            (output / "solution_1x.md").write_text(solved, encoding="utf-8")
+            (output / "solution_2x.md").write_text(regressed, encoding="utf-8")
+            (output / "solution.md").write_text(regressed, encoding="utf-8")
+            (output / "audit.json").write_text(
+                json.dumps(
+                    {
+                        "audit_score": 0,
+                        "budget_cuts": {
+                            "1x": {"audit_score": 7},
+                            "2x": {"audit_score": 0},
+                            "4x": {"audit_score": 0},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            judge = AsyncMock()
+
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                return _FakeCheckpoint(identity, root / "checkpoint")
+
+            with (
+                patch("src.state_audit.RESULTS_ROOT", root / "results"),
+                patch("src.state_audit.seed_output_dir", return_value=output),
+                patch(
+                    "src.state_audit.AttemptCheckpoint",
+                    side_effect=checkpoint_factory,
+                ),
+                patch("src.state_audit._judge", judge),
+            ):
+                anyio.run(
+                    state_audit_seed,
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                    "A reference proof.",
+                )
+
+            record = json.loads(
+                (output / "state_audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(judge.await_count, 0)
+            self.assertEqual(record["budget_cuts"]["1x"]["state"], "S")
+            self.assertEqual(record["budget_cuts"]["2x"]["state"], "S")
+            self.assertEqual(record["budget_cuts"]["4x"]["state"], "S")
+            self.assertEqual(record["state"], "S")
+            self.assertNotIn(
+                "solution_sha256", record["budget_cuts"]["4x"]
             )
 
     def test_parallel_bank_resolves_each_executor_proof(self) -> None:
