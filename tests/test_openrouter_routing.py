@@ -123,6 +123,20 @@ class OpenRouterRoutingTests(unittest.TestCase):
                 '"%s" %s %s', "POST /api/v1/messages", "200", "-"
             )
 
+    def test_proxy_suppresses_normal_client_connection_reset(self) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        from src.openrouter_proxy import RoutingProxyHandler
+
+        handler = object.__new__(RoutingProxyHandler)
+        with patch.object(
+            BaseHTTPRequestHandler,
+            "handle",
+            side_effect=ConnectionResetError("client closed keep-alive socket"),
+        ):
+            handler.handle()
+        self.assertTrue(handler.close_connection)
+
     def test_proxy_preserves_failed_access_logs(self) -> None:
         from src.openrouter_proxy import RoutingProxyHandler
 

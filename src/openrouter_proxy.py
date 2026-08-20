@@ -86,6 +86,13 @@ class RoutingProxyHandler(BaseHTTPRequestHandler):
     server_version = "OlympiadOpenRouterShim/1"
     allowed_model: ClassVar[str]
 
+    def handle(self) -> None:
+        """Ignore normal client disconnects between keep-alive requests."""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def log_message(self, format: str, *args: object) -> None:
         # BaseHTTPRequestHandler emits one access line for every successful
         # streamed request. Agent sessions make many such calls, so logging
@@ -125,7 +132,9 @@ class RoutingProxyHandler(BaseHTTPRequestHandler):
         # Claude CLI probes its configured base URL before its first request.
         self.send_response(200)
         self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
         self.end_headers()
+        self.close_connection = True
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         downstream_started = False
