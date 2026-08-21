@@ -3,7 +3,7 @@
 ## Freeze before more full runs
 
 - [ ] Freeze one primary endpoint: paired reliable coverage at the final 8× cap for fresh unaided versus oracle-sketch Self-Refine on each model's baseline-failure cohort.
-- [ ] Use each Self-Refine arm's own 1×/2×/4×/8× artifacts; show the baseline screen separately and call intermediate cuts anytime prefixes.
+- [ ] Use each Self-Refine arm's own 1×/2×/4×/8× artifacts for the five-family curves; additionally materialize and audit every integer 1× increment for both Self-Refine conditions of Opus 4.8 and GPT-5.4.
 - [ ] Freeze hashes for the 35 problems, sketches, prompts, stopping rules, model endpoints, run order, audit threshold, and analysis code; log realized tokens and rounds.
 - [ ] Validate anytime 2×/4× cuts against independent hard-stopped runs on a locked subset; otherwise keep only the final 8× comparison primary.
 
@@ -25,5 +25,7 @@
 - [ ] Report raw 0/3–3/3 cells, current-checkpoint and cumulative coverage, exact paired uncertainty over problems, and sensitivity at scores ≥6, 7, and 3/3 reliability.
 - [ ] Bound every null claim to the tested controller and maximum allocation; never equate early self-convergence with consuming the full 8× budget.
 - [ ] Complete the 35-problem, five-family panel and a locked external replication, including at least one open-weight model.
-- [ ] Keep the state model in the main paper only if frozen out-of-sample U/P predictions beat simpler time-only and two-state baselines; otherwise move it and the proofs to the appendix.
+- [ ] Freeze the progress rule before dense annotation: `S` is first audited success; otherwise `P` means route-step count increased from the previous observed artifact or remains 3/3 during execution, and `U` means an incomplete count stayed flat or decreased; missing artifacts remain unobserved.
+- [ ] Fit the discrete U/P/S model on the two strong models, with four free probabilities per transition matrix; train through 4× and predict 5×–8× on held-out problems, compare condition-specific against shared dynamics, and test parameter recovery, time homogeneity, and Markov sufficiency against time-only, two-state, route-count, and history-aware baselines.
+- [ ] Keep the state model in the main paper only if its parameters are identifiable and frozen out-of-sample predictions beat the simpler baselines; otherwise move it and the proposition to the appendix.
 - [ ] Rebuild every table and TeX figure from an immutable artifact manifest in a clean container.

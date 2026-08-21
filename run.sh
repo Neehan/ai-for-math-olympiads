@@ -2,8 +2,9 @@
 # Build the image and run the generation or audit pipeline in throwaway
 # containers behind the same egress firewall. One public `audit` command first
 # grades correctness, then launches a separate
-# internal container for route-state annotation. Keeping the stages separate
-# prevents state annotations from influencing correctness verdicts.
+# internal container for route-state annotation on the four eligible arms.
+# Keeping the stages separate prevents state annotations from influencing
+# correctness verdicts.
 #
 # The container is removed on exit (--rm); math-contests-2026 results land in
 # ./results/ and IMO-ProofBench results in ./results-imobench/ via the bind
@@ -260,9 +261,19 @@ docker run --rm --cap-add=NET_ADMIN \
     -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
     "$IMAGE" "$@"
 
+# State/route annotation is needed only for the two temporal trajectories and
+# the two search controls. Standalone fixed-compute arms stop after correctness
+# grading, which avoids annotation calls unused by either analysis.
+RUN_STATE_AUDIT=0
+case "$ARM_NAME" in
+    baseline-sequential|hint-sequential|baseline-parallel|baseline-uniform-strategy)
+        RUN_STATE_AUDIT=1
+        ;;
+esac
+
 # State annotation runs in a fresh reference-bearing container. Keep the
 # existing checkpoint namespace for the primary dataset and isolate IMO-Bench.
-if [ "$1" = "audit" ]; then
+if [ "$1" = "audit" ] && [ "$RUN_STATE_AUDIT" -eq 1 ]; then
     if [ "$DATASET_NAME" = "math-contests-2026" ]; then
         STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/state-audit"
     else
@@ -285,4 +296,6 @@ if [ "$1" = "audit" ]; then
         -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
         "$IMAGE" state-audit "${@:2}"
     python src/cleanup_checkpoints.py "$STATE_CHECKPOINT_MOUNT" "$RESULTS_HOST_ROOT"
+elif [ "$1" = "audit" ]; then
+    echo "state audit skipped for arm '$ARM_NAME' (correctness audit only)"
 fi
