@@ -1,9 +1,20 @@
 """Selection of gradeable full and budget-cut solution artifacts."""
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from src.models import PhaseResult, ReconnectEvent
-from src.storage import _phase_at_cut, _token_accounting_status, final_solution_text
+import zstandard
+
+from src.models import ArmConfig, ExperimentConfig, PhaseResult, ReconnectEvent
+from src.storage import (
+    _phase_at_cut,
+    _token_accounting_status,
+    all_budget_cut_multipliers,
+    final_solution_text,
+    materialize_budget_cut_snapshots,
+)
 
 
 def _phase(
@@ -31,6 +42,83 @@ def _phase(
 
 
 class StorageSelectionTests(unittest.TestCase):
+    def test_dense_snapshots_are_recovered_from_phase_log(self) -> None:
+        arm = ArmConfig("baseline-sequential", "none", "sequential", 8, [1])
+        config = ExperimentConfig(
+            model="solver",
+            audit_model="judge",
+            effort="high",
+            unit_output_tokens=200_000,
+            wrap_up_reserve_tokens=20_000,
+            uniform_strategy_plan_tokens=80_000,
+            uniform_strategy_plan_wrap_up_reserve_tokens=40_000,
+            uniform_strategy_branches=8,
+            max_turns_per_phase=128,
+            audit_max_turns=64,
+            max_concurrency=8,
+            arms={arm.name: arm},
+        )
+        records = [
+            {
+                "label": "solve",
+                "text": "proof A",
+                "cumulative_output_tokens": 150_000,
+                "budget_exhausted": False,
+            },
+            {
+                "label": "critique",
+                "text": "not a proof",
+                "cumulative_output_tokens": 220_000,
+                "budget_exhausted": False,
+            },
+            {
+                "label": "revise",
+                "text": "proof B",
+                "cumulative_output_tokens": 350_000,
+                "budget_exhausted": False,
+            },
+            {
+                "label": "revise",
+                "text": "interrupted proof",
+                "cumulative_output_tokens": 550_000,
+                "budget_exhausted": True,
+            },
+            {
+                "label": "revise",
+                "text": "proof C",
+                "cumulative_output_tokens": 610_000,
+                "budget_exhausted": False,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            log_text = "\n".join(json.dumps(record) for record in records) + "\n"
+            (output / "logs.jsonl.zst").write_bytes(
+                zstandard.ZstdCompressor().compress(log_text.encode("utf-8"))
+            )
+            (output / "solution_1x.md").write_text("proof A\n", encoding="utf-8")
+
+            materialize_budget_cut_snapshots(
+                config, arm, output, all_budget_cut_multipliers(8)
+            )
+
+            expected = {
+                1: "proof A\n",
+                2: "proof B\n",
+                3: "proof B\n",
+                4: "proof C\n",
+                5: "proof C\n",
+                6: "proof C\n",
+                7: "proof C\n",
+            }
+            for multiplier, text in expected.items():
+                self.assertEqual(
+                    (output / f"solution_{multiplier}x.md").read_text(
+                        encoding="utf-8"
+                    ),
+                    text,
+                )
+
     def test_recovery_is_valid_accounted_output_with_separate_provenance(self) -> None:
         phase = _phase("solve", "proof", 100)
         phase.reconnects.append(

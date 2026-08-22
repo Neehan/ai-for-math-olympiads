@@ -377,9 +377,74 @@ def budget_cut_multipliers(budget_units: int) -> list[int]:
     return cuts
 
 
+def all_budget_cut_multipliers(budget_units: int) -> list[int]:
+    """Every integer multiplier strictly below the full sequential budget."""
+    return list(range(1, budget_units))
+
+
 def cut_solution_path(output_dir: Path, multiplier: int) -> Path:
     """Path of the snapshot graded as 'the solution at <multiplier>x budget'."""
     return output_dir / SOLUTION_CUT_FILENAME_FORMAT.format(multiplier=multiplier)
+
+
+def materialize_budget_cut_snapshots(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    output_dir: Path,
+    multipliers: list[int],
+) -> None:
+    """Recover requested sequential snapshots from the immutable phase log.
+
+    Generation historically materialized only the 1x/2x/4x headline cuts.
+    The compressed log nevertheless retains every complete phase and its
+    cumulative token count, so dense mechanism audits can recover the exact
+    same hard-cut artifact at each integer multiplier without rerunning the
+    solver. Existing snapshots are verified rather than silently replaced.
+    """
+    if arm.mode != MODE_SEQUENTIAL:
+        raise ValueError("Budget-cut snapshots exist only for sequential arms")
+    invalid = [m for m in multipliers if not 1 <= m < arm.budget_units]
+    if invalid:
+        raise ValueError(f"Invalid budget-cut multipliers: {invalid}")
+
+    log_path = output_dir / LOGS_FILENAME
+    with log_path.open("rb") as compressed:
+        with zstandard.ZstdDecompressor().stream_reader(compressed) as reader:
+            log_text = reader.read().decode("utf-8")
+    records = [json.loads(line) for line in log_text.splitlines() if line.strip()]
+
+    for multiplier in multipliers:
+        threshold = multiplier * config.unit_output_tokens
+        selected: dict[str, Any] | None = None
+        for record in records:
+            label = record.get("label")
+            text = record.get("text")
+            cumulative = record.get("cumulative_output_tokens")
+            exhausted = record.get("budget_exhausted")
+            if (
+                label == PHASE_CRITIQUE
+                or not isinstance(text, str)
+                or not text.strip()
+                or isinstance(cumulative, bool)
+                or not isinstance(cumulative, int)
+                or exhausted is not False
+            ):
+                continue
+            if cumulative <= threshold:
+                selected = record
+
+        path = cut_solution_path(output_dir, multiplier)
+        if selected is None:
+            path.unlink(missing_ok=True)
+            continue
+        expected = (str(selected["text"]).strip() + "\n").encode("utf-8")
+        if path.exists():
+            if path.read_bytes() != expected:
+                raise ValueError(
+                    f"{path} disagrees with the immutable phase log"
+                )
+            continue
+        _atomic_write_bytes(path, expected)
 
 
 def _phase_at_cut(
@@ -940,7 +1005,12 @@ def write_seed_state_audit(state_dir: Path, record: dict[str, object]) -> None:
     )
 
 
-def archive_audit_scratches(output_dir: Path, scratch_paths: dict[str, Path]) -> None:
+def archive_audit_scratches(
+    output_dir: Path,
+    scratch_paths: dict[str, Path],
+    *,
+    preserve_existing: bool = False,
+) -> None:
     """Archive each isolated judge call's visible scratch beside the attempt.
 
     Keeps the audit auditable: any computation the judge ran while grading is
@@ -949,7 +1019,7 @@ def archive_audit_scratches(output_dir: Path, scratch_paths: dict[str, Path]) ->
     destroying either the transcript or an earlier complete archive.
     """
     destination_root = output_dir / AUDIT_SCRATCH_SUBDIR
-    if destination_root.exists():
+    if destination_root.exists() and not preserve_existing:
         shutil.rmtree(destination_root)
     visible = {
         role: scratch
@@ -958,11 +1028,14 @@ def archive_audit_scratches(output_dir: Path, scratch_paths: dict[str, Path]) ->
     }
     if not visible:
         return
-    destination_root.mkdir()
+    destination_root.mkdir(exist_ok=True)
     for role, scratch in sorted(visible.items()):
+        destination = destination_root / role
+        if destination.exists():
+            shutil.rmtree(destination)
         shutil.copytree(
             scratch,
-            destination_root / role,
+            destination,
             ignore=shutil.ignore_patterns(SESSION_STATE_SUBDIR),
         )
 

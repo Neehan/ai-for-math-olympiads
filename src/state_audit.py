@@ -43,12 +43,14 @@ from src.prompts import state_audit_prompt
 from src.run import select_problems, select_seeds
 from src.solver import token_env_name
 from src.storage import (
+    all_budget_cut_multipliers,
     bank_run_output_dir,
     budget_cut_multipliers,
     compile_arm_state_audit,
     cut_solution_path,
     load_problems,
     load_state_audit_references,
+    materialize_budget_cut_snapshots,
     parallel_bank_done,
     seed_done,
     seed_output_dir,
@@ -164,6 +166,8 @@ def _proof_artifacts(
     arm: ArmConfig,
     output_dir: Path,
     proof_audit: dict[str, Any],
+    *,
+    all_checkpoints: bool = False,
 ) -> list[tuple[str, str | None, int]]:
     """Read checkpoint texts and their already-completed correctness scores."""
     artifacts: list[tuple[str, str | None, int]] = []
@@ -171,7 +175,11 @@ def _proof_artifacts(
     if not isinstance(raw_cuts, dict):
         raise ValueError("Proof audit has malformed budget_cuts")
     cut_multipliers = (
-        budget_cut_multipliers(arm.budget_units)
+        (
+            all_budget_cut_multipliers(arm.budget_units)
+            if all_checkpoints
+            else budget_cut_multipliers(arm.budget_units)
+        )
         if arm.mode == MODE_SEQUENTIAL
         else []
     )
@@ -203,6 +211,7 @@ async def state_audit_seed(
     *,
     output_dir_override: Path | None = None,
     record_extra: dict[str, object] | None = None,
+    all_checkpoints: bool = False,
 ) -> None:
     """Annotate one audited proof and, for sequential arms, its checkpoints."""
     output_dir = output_dir_override or seed_output_dir(
@@ -212,8 +221,34 @@ async def state_audit_seed(
     proof_audit: dict[str, Any] = json.loads(proof_path.read_text(encoding="utf-8"))
     outline = _outline(problem)
     state_path = output_dir / SEED_STATE_AUDIT_FILENAME
-    artifacts = _proof_artifacts(arm, output_dir, proof_audit)
+    if all_checkpoints:
+        if arm.mode != MODE_SEQUENTIAL:
+            raise ValueError("--all-checkpoints is valid only for sequential arms")
+        materialize_budget_cut_snapshots(
+            config,
+            arm,
+            output_dir,
+            all_budget_cut_multipliers(arm.budget_units),
+        )
+    artifacts = _proof_artifacts(
+        arm, output_dir, proof_audit, all_checkpoints=all_checkpoints
+    )
+    expected_cut_labels = {
+        label for label, _, _ in artifacts if label != f"{arm.budget_units}x"
+    }
+    existing_state: dict[str, Any] | None = None
     if state_path.exists():
+        loaded_state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded_state, dict):
+            raise ValueError("Existing state audit is malformed")
+        existing_state = loaded_state
+        existing_cuts = loaded_state.get("budget_cuts", {})
+        complete = isinstance(existing_cuts, dict) and expected_cut_labels.issubset(
+            existing_cuts
+        )
+        if complete:
+            return
+    if state_path.exists() and not all_checkpoints:
         return
     checkpoint = AttemptCheckpoint(
         {
@@ -225,11 +260,26 @@ async def state_audit_seed(
             "seed": seed,
             "output_dir": output_dir.relative_to(RESULTS_ROOT).as_posix(),
             "record_extra": record_extra or {},
+            "all_checkpoints": all_checkpoints,
         }
     )
     try:
         records: dict[str, dict[str, object]] = {}
         verdict_cache: dict[str, dict[str, object]] = {}
+        if existing_state is not None:
+            old_records = dict(existing_state.get("budget_cuts", {}))
+            old_records[f"{arm.budget_units}x"] = existing_state
+            for old_record in old_records.values():
+                if not isinstance(old_record, dict):
+                    continue
+                digest = old_record.get("solution_sha256")
+                steps = old_record.get("steps")
+                if (
+                    isinstance(digest, str)
+                    and isinstance(steps, list)
+                    and len(steps) == 3
+                ):
+                    verdict_cache[digest] = {"steps": steps}
         previous_recognized_steps = 0
         solved_seen = False
         for label, text, proof_score in artifacts:
@@ -249,7 +299,8 @@ async def state_audit_seed(
                 solved_seen = True
                 continue
 
-            cached = verdict_cache.get(text)
+            digest = _solution_sha256(text)
+            cached = verdict_cache.get(digest)
             if cached is None:
                 role = f"state_{label}"
                 scratch = checkpoint.scratch_dir(role)
@@ -265,7 +316,7 @@ async def state_audit_seed(
                     output_schema=STATE_AUDIT_OUTPUT_SCHEMA,
                     allow_tools=False,
                 )
-                verdict_cache[text] = verdict
+                verdict_cache[digest] = verdict
             else:
                 verdict = cached
 
@@ -362,6 +413,11 @@ async def main() -> None:
     parser.add_argument("--seeds", default=None, help="Comma-separated seed subset")
     parser.add_argument("--model", default=None, help="Solver model override")
     parser.add_argument("--audit-model", default=None, help="State annotator override")
+    parser.add_argument(
+        "--all-checkpoints",
+        action="store_true",
+        help="For sequential arms, annotate every integer 1x,...,8x checkpoint",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
@@ -369,6 +425,8 @@ async def main() -> None:
     if args.arm not in config.arms:
         raise SystemExit(f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}")
     arm = config.arms[args.arm]
+    if args.all_checkpoints and arm.mode != MODE_SEQUENTIAL:
+        raise SystemExit("--all-checkpoints is valid only for sequential arms")
     all_problems = load_problems()
     problems = select_problems(all_problems, args.problems, args.domain)
     state_references = load_state_audit_references()
@@ -426,11 +484,23 @@ async def main() -> None:
             )
         else:
             targets.append((problem, seed, output_dir, None))
-    pending = [
-        target
-        for target in targets
-        if not (target[2] / SEED_STATE_AUDIT_FILENAME).exists()
-    ]
+    def state_done(output_dir: Path) -> bool:
+        path = output_dir / SEED_STATE_AUDIT_FILENAME
+        if not path.exists():
+            return False
+        if not args.all_checkpoints:
+            return True
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        cuts = record.get("budget_cuts")
+        return isinstance(cuts, dict) and all(
+            f"{multiplier}x" in cuts
+            for multiplier in all_budget_cut_multipliers(arm.budget_units)
+        )
+
+    pending = [target for target in targets if not state_done(target[2])]
 
     log.info(
         "Arm %s: %d proof artifacts to state-audit, %d already current",
@@ -456,6 +526,7 @@ async def main() -> None:
                 state_references[problem.problem_id][1],
                 output_dir_override=output_dir,
                 record_extra=extra,
+                all_checkpoints=args.all_checkpoints,
             )
 
         tasks = [
@@ -469,7 +540,7 @@ async def main() -> None:
     failed = [
         (problem.problem_id, seed, output_dir.name)
         for problem, seed, output_dir, _ in pending
-        if not (output_dir / SEED_STATE_AUDIT_FILENAME).exists()
+        if not state_done(output_dir)
     ]
     if failed:
         raise SystemExit(

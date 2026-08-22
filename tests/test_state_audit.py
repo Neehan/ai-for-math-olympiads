@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import anyio
+import zstandard
 
 from src.models import ArmConfig, ExperimentConfig, Problem
 from src.state_audit import (
@@ -139,6 +140,119 @@ class StateDerivationTests(unittest.TestCase):
 
 
 class StateAuditSeedTests(unittest.TestCase):
+    def test_dense_state_extension_reuses_sparse_step_annotations(self) -> None:
+        arm = ArmConfig("baseline-sequential", "none", "sequential", 8, [1])
+        config = _config(arm)
+        problem = Problem(
+            "p",
+            "Prove it.",
+            "algebra",
+            None,
+            None,
+            "1. First route step.\n2. Second route step.\n3. Third route step.",
+        )
+        solution = "## Final Solution\nAn incomplete proof.\n"
+        digest = hashlib.sha256(solution.encode("utf-8")).hexdigest()
+        steps = [
+            {"present": True, "reason": "Step 1 is explicit."},
+            {"present": True, "reason": "Step 2 is explicit."},
+            {"present": True, "reason": "Step 3 is explicit."},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "results" / "solver" / arm.name / "p" / "seed_1"
+            output.mkdir(parents=True)
+            (output / "solution.md").write_text(solution, encoding="utf-8")
+            phase = {
+                "label": "solve",
+                "text": solution,
+                "cumulative_output_tokens": 100_000,
+                "budget_exhausted": False,
+            }
+            (output / "logs.jsonl.zst").write_bytes(
+                zstandard.ZstdCompressor().compress(
+                    (json.dumps(phase) + "\n").encode("utf-8")
+                )
+            )
+            for multiplier in (1, 2, 4):
+                (output / f"solution_{multiplier}x.md").write_text(
+                    solution, encoding="utf-8"
+                )
+            cut_audit = {
+                "audit_score": 0,
+                "note": "Incomplete.",
+                "solution_sha256": digest,
+            }
+            (output / "audit.json").write_text(
+                json.dumps(
+                    {
+                        "audit_score": 0,
+                        "budget_cuts": {
+                            f"{multiplier}x": dict(cut_audit)
+                            for multiplier in range(1, 8)
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state_piece = {
+                "state": "P",
+                "steps": steps,
+                "note": "Frozen sparse annotation.",
+                "solution_sha256": digest,
+            }
+            (output / "state_audit.json").write_text(
+                json.dumps(
+                    {
+                        "problem_id": "p",
+                        "arm": arm.name,
+                        "seed": 1,
+                        "solver_model": "solver",
+                        "audit_model": "judge",
+                        **state_piece,
+                        "budget_cuts": {
+                            f"{multiplier}x": dict(state_piece)
+                            for multiplier in (1, 2, 4)
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            judge = AsyncMock()
+
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                return _FakeCheckpoint(identity, root / "checkpoint")
+
+            with (
+                patch("src.state_audit.RESULTS_ROOT", root / "results"),
+                patch("src.state_audit.seed_output_dir", return_value=output),
+                patch(
+                    "src.state_audit.AttemptCheckpoint",
+                    side_effect=checkpoint_factory,
+                ),
+                patch("src.state_audit._judge", judge),
+            ):
+                anyio.run(
+                    lambda: state_audit_seed(
+                        config,
+                        arm,
+                        problem,
+                        1,
+                        TokenPool(["unused"], "TEST_TOKEN"),
+                        "A reference proof.",
+                        all_checkpoints=True,
+                    )
+                )
+
+            self.assertEqual(judge.await_count, 0)
+            record = json.loads(
+                (output / "state_audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(set(record["budget_cuts"]), {f"{n}x" for n in range(1, 8)})
+            self.assertTrue(
+                all(cut["state"] == "P" for cut in record["budget_cuts"].values())
+            )
+
     def test_single_arm_has_one_final_state_and_no_budget_cuts(self) -> None:
         arm = ArmConfig("baseline", "none", "single", 1, [1])
         config = _config(arm)

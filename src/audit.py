@@ -71,6 +71,7 @@ from src.solver import (
     uses_vllm,
 )
 from src.storage import (
+    all_budget_cut_multipliers,
     archive_audit_scratches,
     bank_run_output_dir,
     budget_cut_multipliers,
@@ -78,6 +79,7 @@ from src.storage import (
     cut_solution_path,
     load_audit_references,
     load_problems,
+    materialize_budget_cut_snapshots,
     parallel_bank_audited,
     parallel_bank_done,
     seed_audited,
@@ -226,6 +228,101 @@ async def _judge(
     return verdict, reconnects
 
 
+def _selected_cut_multipliers(
+    arm: ArmConfig, all_checkpoints: bool
+) -> list[int]:
+    if arm.mode != MODE_SEQUENTIAL:
+        return []
+    return (
+        all_budget_cut_multipliers(arm.budget_units)
+        if all_checkpoints
+        else budget_cut_multipliers(arm.budget_units)
+    )
+
+
+def _audit_has_cut_schedule(
+    output_dir: Path, arm: ArmConfig, all_checkpoints: bool
+) -> bool:
+    path = output_dir / SEED_AUDIT_FILENAME
+    if not path.exists():
+        return False
+    if not all_checkpoints:
+        return True
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    cuts = record.get("budget_cuts")
+    if not isinstance(cuts, dict):
+        return False
+    return all(
+        isinstance(cuts.get(f"{multiplier}x"), dict)
+        for multiplier in all_budget_cut_multipliers(arm.budget_units)
+    )
+
+
+def _saved_reconnects(record: dict[str, object]) -> list[ReconnectEvent]:
+    raw = record.get("session_reconnects", [])
+    if not isinstance(raw, list):
+        raise ValueError("Existing audit has malformed reconnect provenance")
+    return [ReconnectEvent(**item) for item in raw if isinstance(item, dict)]
+
+
+def _seed_existing_verdicts(
+    output_dir: Path,
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    solution: str,
+    cut_artifacts: dict[str, str | None],
+) -> tuple[
+    dict[str, tuple[dict[str, object], list[ReconnectEvent], str]],
+    dict[str, object] | None,
+]:
+    """Reuse frozen sparse verdicts when extending to dense checkpoints."""
+    path = output_dir / SEED_AUDIT_FILENAME
+    if not path.exists():
+        return {}, None
+    existing: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "problem_id": problem.problem_id,
+        "arm": arm.name,
+        "seed": seed,
+        "solver_model": config.model,
+        "audit_model": config.audit_model,
+    }
+    if any(existing.get(key) != value for key, value in expected.items()):
+        raise ValueError("Existing audit identity does not match this attempt")
+
+    cache: dict[str, tuple[dict[str, object], list[ReconnectEvent], str]] = {}
+
+    def add(text: str, record: dict[str, object], source: str) -> None:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if record.get("solution_sha256") != digest:
+            return
+        score = record.get("audit_score")
+        note = record.get("note")
+        if not isinstance(score, int) or not isinstance(note, str):
+            raise ValueError("Existing audit verdict is malformed")
+        value = ({"score": score, "note": note}, _saved_reconnects(record), source)
+        previous = cache.get(digest)
+        if previous is not None and previous[0] != value[0]:
+            raise ValueError("Identical proof has inconsistent existing verdicts")
+        if previous is None:
+            cache[digest] = value
+
+    add(solution, existing, "full")
+    raw_cuts = existing.get("budget_cuts", {})
+    if not isinstance(raw_cuts, dict):
+        raise ValueError("Existing audit has malformed budget cuts")
+    for label, text in cut_artifacts.items():
+        raw_record = raw_cuts.get(label)
+        if text is not None and isinstance(raw_record, dict):
+            add(text, raw_record, f"cut_{label}")
+    return cache, existing
+
+
 async def audit_seed(
     config: ExperimentConfig,
     arm: ArmConfig,
@@ -236,6 +333,7 @@ async def audit_seed(
     *,
     output_dir_override: Path | None = None,
     record_extra: dict[str, object] | None = None,
+    all_checkpoints: bool = False,
 ) -> None:
     """Grade one completed attempt (full solution + any budget-cut snapshots).
 
@@ -257,10 +355,17 @@ async def audit_seed(
     output_dir = output_dir_override or seed_output_dir(
         config, arm, problem.problem_id, seed
     )
+    if all_checkpoints:
+        if arm.mode != MODE_SEQUENTIAL:
+            raise ValueError("--all-checkpoints is valid only for sequential arms")
+        materialize_budget_cut_snapshots(
+            config,
+            arm,
+            output_dir,
+            all_budget_cut_multipliers(arm.budget_units),
+        )
     solution = seed_solution_text(output_dir)
-    cut_multipliers = (
-        budget_cut_multipliers(arm.budget_units) if arm.mode == MODE_SEQUENTIAL else []
-    )
+    cut_multipliers = _selected_cut_multipliers(arm, all_checkpoints)
     cut_artifacts = {
         f"{multiplier}x": (
             cut_solution_path(output_dir, multiplier).read_text(encoding="utf-8")
@@ -318,6 +423,7 @@ async def audit_seed(
             "seed": seed,
             "solution": solution,
             "budget_cut_artifacts": cut_artifacts,
+            "all_checkpoints": all_checkpoints,
             "output_dir": output_dir.relative_to(RESULTS_ROOT).as_posix(),
             "record_extra": record_extra or {},
             "audit_max_turns": config.audit_max_turns,
@@ -333,20 +439,40 @@ async def audit_seed(
     )
     try:
         scratch_paths: dict[str, Path] = {}
-        full_scratch = checkpoint.scratch_dir("full")
-        scratch_paths["full"] = full_scratch
-        verdict, full_reconnects = await _judge(
-            config,
-            audit_prompt(problem, reference_solution, solution),
-            pool,
-            str(full_scratch),
-            checkpoint,
-            "full",
-        )
         full_digest = hashlib.sha256(solution.encode("utf-8")).hexdigest()
-        verdict_cache: dict[
-            str, tuple[dict[str, object], list[ReconnectEvent], str]
-        ] = {full_digest: (verdict, full_reconnects, "full")}
+        if all_checkpoints:
+            verdict_cache, existing_audit = _seed_existing_verdicts(
+                output_dir,
+                config,
+                arm,
+                problem,
+                seed,
+                solution,
+                cut_artifacts,
+            )
+        else:
+            verdict_cache, existing_audit = {}, None
+        full_cached = verdict_cache.get(full_digest)
+        if full_cached is None:
+            full_scratch = checkpoint.scratch_dir("full")
+            scratch_paths["full"] = full_scratch
+            verdict, full_reconnects = await _judge(
+                config,
+                audit_prompt(problem, reference_solution, solution),
+                pool,
+                str(full_scratch),
+                checkpoint,
+                "full",
+            )
+            verdict_cache[full_digest] = (verdict, full_reconnects, "full")
+        else:
+            verdict, full_reconnects, _ = full_cached
+            log.info(
+                "%s/%s seed %d: reusing frozen full-proof audit",
+                arm.name,
+                problem.problem_id,
+                seed,
+            )
 
         cuts: dict[str, dict[str, object]] = {}
         for multiplier in cut_multipliers:
@@ -403,7 +529,36 @@ async def audit_seed(
         checkpoint.prepare_completion(
             (output_dir / SEED_AUDIT_FILENAME).relative_to(RESULTS_ROOT).as_posix()
         )
-        archive_audit_scratches(output_dir, scratch_paths)
+        archive_audit_scratches(
+            output_dir,
+            scratch_paths,
+            preserve_existing=all_checkpoints and existing_audit is not None,
+        )
+        provider_session_ids: dict[str, str] = {}
+        raw_session_ids = (
+            existing_audit.get("provider_session_ids")
+            if existing_audit is not None
+            else None
+        )
+        if isinstance(raw_session_ids, dict):
+            provider_session_ids.update(
+                {
+                    key: value
+                    for key, value in raw_session_ids.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+            )
+        provider_session_ids.update(checkpoint.session_ids())
+        raw_resume_count = (
+            existing_audit.get("process_resume_count")
+            if existing_audit is not None
+            else None
+        )
+        existing_resume_count = (
+            raw_resume_count
+            if isinstance(raw_resume_count, int) and not isinstance(raw_resume_count, bool)
+            else 0
+        )
         audit_record: dict[str, object] = {
             "problem_id": problem.problem_id,
             "arm": arm.name,
@@ -417,8 +572,8 @@ async def audit_seed(
             "session_reconnects": [
                 dataclasses.asdict(event) for event in full_reconnects
             ],
-            "provider_session_ids": checkpoint.session_ids(),
-            "process_resume_count": sum(
+            "provider_session_ids": provider_session_ids,
+            "process_resume_count": existing_resume_count + sum(
                 int(record.get("process_resume_count", 0))
                 for record in checkpoint.data().get("calls", {}).values()
             ),
@@ -739,6 +894,11 @@ async def main() -> None:
         default=None,
         help="Judge model override (default: config.json); must differ from the solver",
     )
+    parser.add_argument(
+        "--all-checkpoints",
+        action="store_true",
+        help="For sequential arms, audit every integer 1x,...,8x checkpoint",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
@@ -749,6 +909,8 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
+    if args.all_checkpoints and arm.mode != MODE_SEQUENTIAL:
+        raise SystemExit("--all-checkpoints is valid only for sequential arms")
     all_problems = load_problems()
     problems = select_problems(all_problems, args.problems, args.domain)
     audit_references = load_audit_references()
@@ -775,7 +937,7 @@ async def main() -> None:
         return (
             parallel_bank_audited(output_dir)
             if arm.mode == MODE_PARALLEL
-            else seed_audited(output_dir)
+            else _audit_has_cut_schedule(output_dir, arm, args.all_checkpoints)
         )
 
     generated = [
@@ -804,7 +966,13 @@ async def main() -> None:
     pool = TokenPool.from_env(token_env_name(config.audit_model))
     tasks = [
         lambda p=problem, s=seed: audit_seed(
-            config, arm, p, s, pool, audit_references[p.problem_id][1]
+            config,
+            arm,
+            p,
+            s,
+            pool,
+            audit_references[p.problem_id][1],
+            all_checkpoints=args.all_checkpoints,
         )
         for problem, seed in pending
     ]
