@@ -123,7 +123,7 @@ test -f .env || cp .env.example .env   # configure the active provider
 ./run.sh run --arm baseline --model claude-fable-5 --audit-model claude-opus-4-8
 ./run.sh run --arm baseline --model litellm/gpt-5.4 --audit-model claude-opus-4-8
 ./run.sh run --arm baseline --model vllm/qed-nano --domain combinatorics --seeds 1
-./run.sh audit --arm baseline --model claude-fable-5 --audit-model openai/gpt-5.6-sol
+./run.sh audit --arm baseline --model claude-fable-5 --audit-model litellm/gpt-5.6-sol
 
 # audit (same container, same filters); compiles audit.jsonl
 ./run.sh audit --arm baseline

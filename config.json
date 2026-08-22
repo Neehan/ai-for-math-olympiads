@@ -1,6 +1,6 @@
 {
   "model": "claude-opus-4-8",
-  "audit_model": "claude-fable-5",
+  "audit_model": "litellm/gpt-5.6-sol",
   "effort": "high",
   "unit_output_tokens": 200000,
   "wrap_up_reserve_tokens": 20000,
