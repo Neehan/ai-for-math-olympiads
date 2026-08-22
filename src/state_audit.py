@@ -142,20 +142,24 @@ def _solution_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _solved_checkpoint(text: str) -> dict[str, object]:
+def _solved_checkpoint(text: str, audit_model: str) -> dict[str, object]:
     return {
         "state": "S",
         "steps": [],
         "note": "Correctness audit passed; state assigned mechanically as solved.",
         "solution_sha256": _solution_sha256(text),
+        "audit_model": audit_model,
     }
 
 
-def _carried_solved_checkpoint(text: str | None) -> dict[str, object]:
+def _carried_solved_checkpoint(
+    text: str | None, audit_model: str
+) -> dict[str, object]:
     record: dict[str, object] = {
         "state": "S",
         "steps": [],
         "note": "A valid proof was observed earlier; solved state is carried forward.",
+        "audit_model": audit_model,
     }
     if text is not None and text.strip():
         record["solution_sha256"] = _solution_sha256(text)
@@ -168,9 +172,12 @@ def _proof_artifacts(
     proof_audit: dict[str, Any],
     *,
     all_checkpoints: bool = False,
-) -> list[tuple[str, str | None, int]]:
+) -> list[tuple[str, str | None, int, str]]:
     """Read checkpoint texts and their already-completed correctness scores."""
-    artifacts: list[tuple[str, str | None, int]] = []
+    artifacts: list[tuple[str, str | None, int, str]] = []
+    full_audit_model = proof_audit.get("audit_model")
+    if not isinstance(full_audit_model, str):
+        raise ValueError("Proof audit has no judge-model provenance")
     raw_cuts = proof_audit.get("budget_cuts", {})
     if not isinstance(raw_cuts, dict):
         raise ValueError("Proof audit has malformed budget_cuts")
@@ -191,13 +198,16 @@ def _proof_artifacts(
         path = cut_solution_path(output_dir, multiplier)
         text = path.read_text(encoding="utf-8") if path.exists() else None
         score = int(cut["audit_score"])
-        artifacts.append((label, text, score))
+        cut_audit_model = cut.get("audit_model", full_audit_model)
+        if not isinstance(cut_audit_model, str):
+            raise ValueError(f"Proof audit {label} has malformed judge provenance")
+        artifacts.append((label, text, score, cut_audit_model))
     full_text = seed_solution_text(output_dir)
     full_score = proof_audit.get("audit_score")
     if not isinstance(full_score, int):
         raise ValueError("Proof audit is missing its full score")
     full_label = f"{arm.budget_units}x"
-    artifacts.append((full_label, full_text, full_score))
+    artifacts.append((full_label, full_text, full_score, full_audit_model))
     return artifacts
 
 
@@ -234,7 +244,7 @@ async def state_audit_seed(
         arm, output_dir, proof_audit, all_checkpoints=all_checkpoints
     )
     expected_cut_labels = {
-        label for label, _, _ in artifacts if label != f"{arm.budget_units}x"
+        label for label, _, _, _ in artifacts if label != f"{arm.budget_units}x"
     }
     existing_state: dict[str, Any] | None = None
     if state_path.exists():
@@ -265,8 +275,11 @@ async def state_audit_seed(
     )
     try:
         records: dict[str, dict[str, object]] = {}
-        verdict_cache: dict[str, dict[str, object]] = {}
+        verdict_cache: dict[str, tuple[dict[str, object], str]] = {}
         if existing_state is not None:
+            existing_model = existing_state.get("audit_model")
+            if not isinstance(existing_model, str):
+                raise ValueError("Existing state audit has no annotator provenance")
             old_records = dict(existing_state.get("budget_cuts", {}))
             old_records[f"{arm.budget_units}x"] = existing_state
             for old_record in old_records.values():
@@ -279,24 +292,34 @@ async def state_audit_seed(
                     and isinstance(steps, list)
                     and len(steps) == 3
                 ):
-                    verdict_cache[digest] = {"steps": steps}
+                    record_model = old_record.get("audit_model", existing_model)
+                    if not isinstance(record_model, str):
+                        raise ValueError(
+                            "Existing state checkpoint has malformed annotator provenance"
+                        )
+                    verdict_cache[digest] = ({"steps": steps}, record_model)
         previous_recognized_steps = 0
         solved_seen = False
-        for label, text, proof_score in artifacts:
+        solved_audit_model: str | None = None
+        for label, text, proof_score, proof_audit_model in artifacts:
             if (text is None or not text.strip()) and proof_score >= 5:
                 raise ValueError(
                     f"{problem.problem_id} {label}: passing proof audit has "
                     "no solution text"
                 )
             if solved_seen:
-                records[label] = _carried_solved_checkpoint(text)
+                assert solved_audit_model is not None
+                records[label] = _carried_solved_checkpoint(
+                    text, solved_audit_model
+                )
                 continue
             if text is None or not text.strip():
                 records[label] = _missing_checkpoint()
                 continue
             if proof_score >= 5:
-                records[label] = _solved_checkpoint(text)
+                records[label] = _solved_checkpoint(text, proof_audit_model)
                 solved_seen = True
+                solved_audit_model = proof_audit_model
                 continue
 
             digest = _solution_sha256(text)
@@ -316,9 +339,10 @@ async def state_audit_seed(
                     output_schema=STATE_AUDIT_OUTPUT_SCHEMA,
                     allow_tools=False,
                 )
-                verdict_cache[digest] = verdict
+                audit_model = config.audit_model
+                verdict_cache[digest] = (verdict, audit_model)
             else:
-                verdict = cached
+                verdict, audit_model = cached
 
             state, current_recognized_steps = derive_state(
                 verdict, previous_recognized_steps
@@ -342,6 +366,7 @@ async def state_audit_seed(
                     f"{current_recognized_steps}/3)."
                 ),
                 "solution_sha256": _solution_sha256(text),
+                "audit_model": audit_model,
             }
             records[label] = record
             previous_recognized_steps = current_recognized_steps
@@ -353,7 +378,7 @@ async def state_audit_seed(
             "arm": arm.name,
             "seed": seed,
             "solver_model": config.model,
-            "audit_model": config.audit_model,
+            "audit_model": final_checkpoint.get("audit_model", config.audit_model),
             **final_checkpoint,
             "budget_cuts": records,
         }

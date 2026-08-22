@@ -45,7 +45,7 @@ class AuditDedupTests(unittest.TestCase):
         arm = ArmConfig("baseline-sequential", "none", "sequential", 8, [1])
         config = ExperimentConfig(
             model="solver",
-            audit_model="judge",
+            audit_model="judge-new",
             effort="high",
             unit_output_tokens=200_000,
             wrap_up_reserve_tokens=20_000,
@@ -60,20 +60,38 @@ class AuditDedupTests(unittest.TestCase):
         problem = Problem("p", "Prove it.", "algebra", None, None, None)
         proof = "## Final Solution\nA valid proof.\n"
         digest = hashlib.sha256(proof.encode("utf-8")).hexdigest()
+        new_proof = "## Final Solution\nA new incomplete proof.\n"
+        new_digest = hashlib.sha256(new_proof.encode("utf-8")).hexdigest()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = root / "results" / "solver" / arm.name / "p" / "seed_1"
             output.mkdir(parents=True)
             (output / "solution.md").write_text(proof, encoding="utf-8")
-            phase = {
-                "label": "solve",
-                "text": proof,
-                "cumulative_output_tokens": 100_000,
-                "budget_exhausted": False,
-            }
+            phases = [
+                {
+                    "label": "solve",
+                    "text": proof,
+                    "cumulative_output_tokens": 100_000,
+                    "budget_exhausted": False,
+                },
+                {
+                    "label": "revise",
+                    "text": new_proof,
+                    "cumulative_output_tokens": 500_000,
+                    "budget_exhausted": False,
+                },
+                {
+                    "label": "revise",
+                    "text": proof,
+                    "cumulative_output_tokens": 700_000,
+                    "budget_exhausted": False,
+                },
+            ]
             (output / "logs.jsonl.zst").write_bytes(
                 zstandard.ZstdCompressor().compress(
-                    (json.dumps(phase) + "\n").encode("utf-8")
+                    ("\n".join(json.dumps(phase) for phase in phases) + "\n").encode(
+                        "utf-8"
+                    )
                 )
             )
             for multiplier in (1, 2, 4):
@@ -94,7 +112,7 @@ class AuditDedupTests(unittest.TestCase):
                         "arm": arm.name,
                         "seed": 1,
                         "solver_model": "solver",
-                        "audit_model": "judge",
+                        "audit_model": "judge-old",
                         "audit_score": 7,
                         "note": "Valid.",
                         "solution_sha256": digest,
@@ -110,7 +128,9 @@ class AuditDedupTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            judge = AsyncMock()
+            judge = AsyncMock(
+                return_value=({"score": 0, "note": "Incomplete."}, [])
+            )
 
             def checkpoint_factory(identity: object) -> _FakeCheckpoint:
                 return _FakeCheckpoint(identity, root / "checkpoint")
@@ -134,11 +154,19 @@ class AuditDedupTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual(judge.await_count, 0)
+            self.assertEqual(judge.await_count, 1)
             record = json.loads((output / "audit.json").read_text(encoding="utf-8"))
             self.assertEqual(set(record["budget_cuts"]), {f"{n}x" for n in range(1, 8)})
-            self.assertTrue(
-                all(cut["audit_score"] == 7 for cut in record["budget_cuts"].values())
+            self.assertEqual(record["audit_model"], "judge-old")
+            for multiplier in (1, 2, 4, 5, 6, 7):
+                self.assertEqual(
+                    record["budget_cuts"][f"{multiplier}x"]["audit_model"],
+                    "judge-old",
+                )
+            self.assertEqual(record["budget_cuts"]["3x"]["audit_score"], 0)
+            self.assertEqual(record["budget_cuts"]["3x"]["solution_sha256"], new_digest)
+            self.assertEqual(
+                record["budget_cuts"]["3x"]["audit_model"], "judge-new"
             )
 
     def test_full_and_identical_cuts_are_judged_once(self) -> None:

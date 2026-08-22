@@ -277,7 +277,7 @@ def _seed_existing_verdicts(
     solution: str,
     cut_artifacts: dict[str, str | None],
 ) -> tuple[
-    dict[str, tuple[dict[str, object], list[ReconnectEvent], str]],
+    dict[str, tuple[dict[str, object], list[ReconnectEvent], str, str]],
     dict[str, object] | None,
 ]:
     """Reuse frozen sparse verdicts when extending to dense checkpoints."""
@@ -290,12 +290,16 @@ def _seed_existing_verdicts(
         "arm": arm.name,
         "seed": seed,
         "solver_model": config.model,
-        "audit_model": config.audit_model,
     }
     if any(existing.get(key) != value for key, value in expected.items()):
         raise ValueError("Existing audit identity does not match this attempt")
 
-    cache: dict[str, tuple[dict[str, object], list[ReconnectEvent], str]] = {}
+    existing_model = existing.get("audit_model")
+    if not isinstance(existing_model, str):
+        raise ValueError("Existing audit has no judge-model provenance")
+    cache: dict[
+        str, tuple[dict[str, object], list[ReconnectEvent], str, str]
+    ] = {}
 
     def add(text: str, record: dict[str, object], source: str) -> None:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -305,7 +309,15 @@ def _seed_existing_verdicts(
         note = record.get("note")
         if not isinstance(score, int) or not isinstance(note, str):
             raise ValueError("Existing audit verdict is malformed")
-        value = ({"score": score, "note": note}, _saved_reconnects(record), source)
+        record_model = record.get("audit_model", existing_model)
+        if not isinstance(record_model, str):
+            raise ValueError("Existing cut audit has malformed judge provenance")
+        value = (
+            {"score": score, "note": note},
+            _saved_reconnects(record),
+            source,
+            record_model,
+        )
         previous = cache.get(digest)
         if previous is not None and previous[0] != value[0]:
             raise ValueError("Identical proof has inconsistent existing verdicts")
@@ -464,9 +476,15 @@ async def audit_seed(
                 checkpoint,
                 "full",
             )
-            verdict_cache[full_digest] = (verdict, full_reconnects, "full")
+            full_audit_model = config.audit_model
+            verdict_cache[full_digest] = (
+                verdict,
+                full_reconnects,
+                "full",
+                full_audit_model,
+            )
         else:
-            verdict, full_reconnects, _ = full_cached
+            verdict, full_reconnects, _, full_audit_model = full_cached
             log.info(
                 "%s/%s seed %d: reusing frozen full-proof audit",
                 arm.name,
@@ -499,10 +517,21 @@ async def audit_seed(
                     checkpoint,
                     role,
                 )
-                verdict_cache[cut_digest] = (cut_verdict, cut_reconnects, role)
+                cut_audit_model = config.audit_model
+                verdict_cache[cut_digest] = (
+                    cut_verdict,
+                    cut_reconnects,
+                    role,
+                    cut_audit_model,
+                )
                 reused_from: str | None = None
             else:
-                cut_verdict, cut_reconnects, reused_from = cached
+                (
+                    cut_verdict,
+                    cut_reconnects,
+                    reused_from,
+                    cut_audit_model,
+                ) = cached
                 log.info(
                     "%s/%s seed %d: reusing %s audit for identical %s proof",
                     arm.name,
@@ -519,6 +548,7 @@ async def audit_seed(
                     dataclasses.asdict(event) for event in cut_reconnects
                 ],
                 "solution_sha256": cut_digest,
+                "audit_model": cut_audit_model,
                 **(
                     {"audit_reused_from": reused_from}
                     if reused_from is not None
@@ -564,7 +594,7 @@ async def audit_seed(
             "arm": arm.name,
             "seed": seed,
             "solver_model": config.model,
-            "audit_model": config.audit_model,
+            "audit_model": full_audit_model,
             "audit_score": verdict["score"],
             "note": verdict["note"],
             "solution_sha256": full_digest,

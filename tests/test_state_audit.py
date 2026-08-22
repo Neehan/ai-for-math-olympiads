@@ -153,6 +153,8 @@ class StateAuditSeedTests(unittest.TestCase):
         )
         solution = "## Final Solution\nAn incomplete proof.\n"
         digest = hashlib.sha256(solution.encode("utf-8")).hexdigest()
+        new_solution = "## Final Solution\nA different incomplete proof.\n"
+        new_digest = hashlib.sha256(new_solution.encode("utf-8")).hexdigest()
         steps = [
             {"present": True, "reason": "Step 1 is explicit."},
             {"present": True, "reason": "Step 2 is explicit."},
@@ -163,33 +165,60 @@ class StateAuditSeedTests(unittest.TestCase):
             output = root / "results" / "solver" / arm.name / "p" / "seed_1"
             output.mkdir(parents=True)
             (output / "solution.md").write_text(solution, encoding="utf-8")
-            phase = {
-                "label": "solve",
-                "text": solution,
-                "cumulative_output_tokens": 100_000,
-                "budget_exhausted": False,
-            }
+            phases = [
+                {
+                    "label": "solve",
+                    "text": solution,
+                    "cumulative_output_tokens": 100_000,
+                    "budget_exhausted": False,
+                },
+                {
+                    "label": "revise",
+                    "text": new_solution,
+                    "cumulative_output_tokens": 500_000,
+                    "budget_exhausted": False,
+                },
+                {
+                    "label": "revise",
+                    "text": solution,
+                    "cumulative_output_tokens": 700_000,
+                    "budget_exhausted": False,
+                },
+            ]
             (output / "logs.jsonl.zst").write_bytes(
                 zstandard.ZstdCompressor().compress(
-                    (json.dumps(phase) + "\n").encode("utf-8")
+                    ("\n".join(json.dumps(phase) for phase in phases) + "\n").encode(
+                        "utf-8"
+                    )
                 )
             )
             for multiplier in (1, 2, 4):
                 (output / f"solution_{multiplier}x.md").write_text(
                     solution, encoding="utf-8"
                 )
-            cut_audit = {
+            old_cut_audit = {
                 "audit_score": 0,
                 "note": "Incomplete.",
                 "solution_sha256": digest,
+                "audit_model": "judge-old",
+            }
+            new_cut_audit = {
+                "audit_score": 0,
+                "note": "Incomplete.",
+                "solution_sha256": new_digest,
+                "audit_model": "judge",
             }
             (output / "audit.json").write_text(
                 json.dumps(
                     {
                         "audit_score": 0,
+                        "audit_model": "judge-old",
                         "budget_cuts": {
-                            f"{multiplier}x": dict(cut_audit)
-                            for multiplier in range(1, 8)
+                            **{
+                                f"{multiplier}x": dict(old_cut_audit)
+                                for multiplier in (1, 2, 4, 5, 6, 7)
+                            },
+                            "3x": new_cut_audit,
                         },
                     }
                 ),
@@ -208,7 +237,7 @@ class StateAuditSeedTests(unittest.TestCase):
                         "arm": arm.name,
                         "seed": 1,
                         "solver_model": "solver",
-                        "audit_model": "judge",
+                        "audit_model": "judge-old",
                         **state_piece,
                         "budget_cuts": {
                             f"{multiplier}x": dict(state_piece)
@@ -218,7 +247,18 @@ class StateAuditSeedTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            judge = AsyncMock()
+            judge = AsyncMock(
+                return_value=(
+                    {
+                        "steps": [
+                            {"present": True, "reason": "Step 1 is explicit."},
+                            {"present": False, "reason": "Step 2 is missing."},
+                            {"present": False, "reason": "Step 3 is missing."},
+                        ]
+                    },
+                    [],
+                )
+            )
 
             def checkpoint_factory(identity: object) -> _FakeCheckpoint:
                 return _FakeCheckpoint(identity, root / "checkpoint")
@@ -244,14 +284,26 @@ class StateAuditSeedTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual(judge.await_count, 0)
+            self.assertEqual(judge.await_count, 1)
             record = json.loads(
                 (output / "state_audit.json").read_text(encoding="utf-8")
             )
             self.assertEqual(set(record["budget_cuts"]), {f"{n}x" for n in range(1, 8)})
             self.assertTrue(
-                all(cut["state"] == "P" for cut in record["budget_cuts"].values())
+                all(
+                    cut["state"] == "P"
+                    for label, cut in record["budget_cuts"].items()
+                    if label != "3x"
+                )
             )
+            self.assertEqual(record["audit_model"], "judge-old")
+            self.assertEqual(record["budget_cuts"]["3x"]["state"], "U")
+            self.assertEqual(record["budget_cuts"]["3x"]["audit_model"], "judge")
+            for multiplier in (1, 2, 4, 5, 6, 7):
+                self.assertEqual(
+                    record["budget_cuts"][f"{multiplier}x"]["audit_model"],
+                    "judge-old",
+                )
 
     def test_single_arm_has_one_final_state_and_no_budget_cuts(self) -> None:
         arm = ArmConfig("baseline", "none", "single", 1, [1])
@@ -271,7 +323,13 @@ class StateAuditSeedTests(unittest.TestCase):
             output.mkdir(parents=True)
             (output / "solution.md").write_text(solution, encoding="utf-8")
             (output / "audit.json").write_text(
-                json.dumps({"audit_score": 0, "budget_cuts": {}}),
+                json.dumps(
+                    {
+                        "audit_model": "proof-judge",
+                        "audit_score": 0,
+                        "budget_cuts": {},
+                    }
+                ),
                 encoding="utf-8",
             )
             judge = AsyncMock(
@@ -476,11 +534,21 @@ class StateAuditSeedTests(unittest.TestCase):
             (output / "audit.json").write_text(
                 json.dumps(
                     {
+                        "audit_model": "proof-judge",
                         "audit_score": 0,
                         "budget_cuts": {
-                            "1x": {"audit_score": 7},
-                            "2x": {"audit_score": 0},
-                            "4x": {"audit_score": 0},
+                            "1x": {
+                                "audit_model": "proof-judge",
+                                "audit_score": 7,
+                            },
+                            "2x": {
+                                "audit_model": "proof-judge",
+                                "audit_score": 0,
+                            },
+                            "4x": {
+                                "audit_model": "proof-judge",
+                                "audit_score": 0,
+                            },
                         },
                     }
                 ),
