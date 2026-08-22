@@ -1233,7 +1233,12 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     def test_other_gpt_models_use_the_same_litellm_transport(self) -> None:
         sidecar = "http://olympiad-codex-litellm-1:4000/"
-        for provider_name in ("gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna"):
+        for provider_name in (
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+        ):
             with self.subTest(provider_name=provider_name):
                 model = f"litellm/{provider_name}"
                 with patch.dict(os.environ, {LITELLM_API_KEY_ENV: "sk-local"}):
