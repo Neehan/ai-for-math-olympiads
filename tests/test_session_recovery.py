@@ -1163,6 +1163,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arm.seeds, [1])
         self.assertEqual(config.uniform_strategy_branches, 8)
         self.assertEqual(config.uniform_strategy_plan_tokens, 80_000)
+        self.assertEqual(config.uniform_strategy_plan_wrap_up_reserve_tokens, 40_000)
         self.assertEqual(executor, 190_000)
         self.assertEqual(
             config.uniform_strategy_plan_tokens

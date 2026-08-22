@@ -5,7 +5,7 @@
   "unit_output_tokens": 200000,
   "wrap_up_reserve_tokens": 20000,
   "uniform_strategy_plan_tokens": 80000,
-  "uniform_strategy_plan_wrap_up_reserve_tokens": 20000,
+  "uniform_strategy_plan_wrap_up_reserve_tokens": 40000,
   "uniform_strategy_branches": 8,
   "max_turns_per_phase": 128,
   "audit_max_turns": 64,

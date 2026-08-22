@@ -24,6 +24,8 @@ class UniformStrategyPromptTests(unittest.TestCase):
         self.assertIn("standalone plan for the entire problem", prompt)
         self.assertIn("load-bearing proof mechanisms differ", prompt)
         self.assertIn("Return fewer than 8", prompt)
+        self.assertIn("split is strict", prompt)
+        self.assertIn("at most 500 words", prompt)
         self.assertNotIn("20,000", prompt)
         self.assertNotIn("18,000", prompt)
         self.assertNotIn("2,000", prompt)
@@ -52,6 +54,8 @@ class UniformStrategyPromptTests(unittest.TestCase):
         self.assertIn("semantically distinct whole-proof strategies", prompt)
         self.assertIn("combine complementary components", prompt)
         self.assertIn("return fewer entries rather than fragments", prompt)
+        self.assertIn("entire response must fit", prompt)
+        self.assertIn("at most 500 words", prompt)
 
 
 if __name__ == "__main__":
