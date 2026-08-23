@@ -49,3 +49,13 @@ Strategies are written and audited for every held-out problem before any confirm
 3. **Held-out mechanism test:** for Opus 4.8 and GPT-5.4, fit the discrete `U/P/S` dynamics on training problems and early `1×` increments, then predict held-out problems and their `5×`–`8×` state occupancy and success curves. Keep this contribution only if it beats simpler time-only, two-state, route-count, and history-aware predictors.
 
 The paper succeeds if held-out data show that models execute short oracle-supplied strategies that substantial unaided depth, breadth, and strategy-diversified search fail to discover, and if the fitted state model predicts where scaling saturates and where strategy reopens it. “Hints help” alone is not the claim.
+
+## Results backup
+
+Set `HF_TOKEN` in `.env`, then incrementally upload both ignored result trees to the private Hugging Face dataset:
+
+```bash
+./scripts/upload_results_to_hf.sh
+```
+
+The default destination is `notadib/strategy-ceiling`. Override it with `HF_RESULTS_REPO` and adjust upload concurrency with `HF_UPLOAD_WORKERS`; neither setting is required.
