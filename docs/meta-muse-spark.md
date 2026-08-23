@@ -17,6 +17,11 @@ The harness passes that value as `ANTHROPIC_AUTH_TOKEN`, sets
 `https://api.meta.ai/v1` API. The run container permits egress only to
 `api.meta.ai` for this provider.
 
+Meta's adapter accepts standard Anthropic Messages fields but rejects Claude's
+`output_config.task_budget` extension. The harness therefore omits that optional
+field for Muse; the task prompt still states the allocation and the local token
+tracker enforces the same cutoff as every other provider.
+
 For example:
 
 ```bash

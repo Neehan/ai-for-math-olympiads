@@ -1,9 +1,9 @@
 """One agent phase: build SDK options, stream the response, enforce the budget.
 
 Compute is operationalized as the attempt's total output-token budget (see
-README). Enforcement is two-layered: the API-side task_budget tells the model
-its remaining budget so it paces itself, and the harness hard-cuts by
-interrupting the session the moment cumulative output tokens exceed the budget.
+README). Where supported, the API-side task_budget tells the model its remaining
+budget so it paces itself. The harness always hard-cuts by interrupting the
+session the moment cumulative output tokens exceed the budget.
 """
 
 import hashlib
@@ -1020,10 +1020,15 @@ def build_options(
         },
         permission_mode=PERMISSION_MODE,
         max_turns=max_turns if max_turns is not None else config.max_turns_per_phase,
-        # The provider rejects task budgets below 20k.  This is only its
-        # pacing envelope: run_phase still interrupts at the exact local
-        # stop_at_tokens cutoff, and wrap-up prompts state the true remainder.
-        task_budget={"total": max(PROVIDER_MIN_TASK_BUDGET_TOKENS, budget_tokens)},
+        # Meta's Messages adapter accepts standard Anthropic request fields but
+        # rejects Claude's output_config.task_budget extension. This is only a
+        # pacing envelope: prompts state the allocation and run_phase still
+        # enforces the exact local stop_at_tokens cutoff for every provider.
+        task_budget=(
+            None
+            if uses_meta(config.model)
+            else {"total": max(PROVIDER_MIN_TASK_BUDGET_TOKENS, budget_tokens)}
+        ),
         include_partial_messages=True,
         cwd=scratch_dir,
         session_id=session_id,

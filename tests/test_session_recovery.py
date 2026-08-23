@@ -1367,6 +1367,15 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             identity["provider_transport_policy"],
             provider_transport_policy(model),
         )
+        with tempfile.TemporaryDirectory() as scratch:
+            options = build_options(
+                config,
+                scratch,
+                200_000,
+                "meta-contributor-key",
+                StderrTail(),
+            )
+        self.assertIsNone(options.task_budget)
 
     def test_transport_policy_versions_only_local_checkpoint_identity(
         self,
