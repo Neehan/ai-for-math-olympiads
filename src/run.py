@@ -819,10 +819,9 @@ def hint_for(problem: Problem, arm: ArmConfig) -> str | None:
     }
     hint = by_tier[arm.hint]
     if hint is None:
-        detail = " (h1/placebo is not authored yet)" if arm.hint == HINT_H1 else ""
         raise ValueError(
             f"Arm '{arm.name}' needs hint tier '{arm.hint}' but problem "
-            f"'{problem.problem_id}' has no such hint in the dataset{detail}"
+            f"'{problem.problem_id}' has no such hint in the dataset"
         )
     return hint
 

@@ -110,8 +110,8 @@ SOLUTIONS_FILE_ENV: str = "SOLUTIONS_FILE"
 FETCH_TIMEOUT_SECONDS: int = 60
 
 # --- Arm vocabulary -------------------------------------------------------
-# Hint ladder: h1 placebo (unauthored — fail fast), h2 frozen one-sentence
-# strategy hint (the hint arm), h3 numbered strategy outline (the outline arm).
+# Hint ladder: h1 within-domain cyclic shift of h2 (the placebo arm), h2 frozen
+# one-sentence strategy hint (the hint arm), h3 numbered strategy outline.
 HINT_NONE: str = "none"
 HINT_H1: str = "h1"
 HINT_H2: str = "h2"

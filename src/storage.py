@@ -134,26 +134,62 @@ def _outline_text(steps: list[dict[str, Any]]) -> str:
     return "\n".join(f"{i}. {step['step']}" for i, step in enumerate(steps, start=1))
 
 
+def _domain_shifted_placebos(
+    problem_records: list[dict[str, Any]], hints_by_id: dict[str, dict[str, Any]]
+) -> dict[str, str]:
+    """Assign the next problem's frozen hint within each sorted domain.
+
+    This is a deterministic cyclic derangement: every hint is used exactly
+    once as a placebo in its own domain, and no problem receives its own hint.
+    """
+    ids_by_domain: dict[str, list[str]] = {}
+    for record in problem_records:
+        problem_id = record.get("problem_id")
+        domain = record.get("domain")
+        if not isinstance(problem_id, str) or not isinstance(domain, str):
+            raise TypeError("Every problem needs string problem_id and domain fields")
+        ids_by_domain.setdefault(domain, []).append(problem_id)
+
+    placebos: dict[str, str] = {}
+    for domain, unsorted_ids in ids_by_domain.items():
+        problem_ids = sorted(unsorted_ids)
+        if len(problem_ids) != len(set(problem_ids)):
+            raise ValueError(f"Duplicate problem_id in domain {domain!r}")
+        if len(problem_ids) < 2:
+            raise ValueError(
+                f"Domain {domain!r} needs at least two problems for a placebo shift"
+            )
+        for index, problem_id in enumerate(problem_ids):
+            source_id = problem_ids[(index + 1) % len(problem_ids)]
+            source_hint = hints_by_id.get(source_id, {}).get("hint")
+            if not isinstance(source_hint, str) or not source_hint.strip():
+                raise ValueError(
+                    f"Placebo source {source_id!r} has no frozen strategy hint"
+                )
+            placebos[problem_id] = source_hint
+    return placebos
+
+
 def load_problems() -> list[Problem]:
     """Fetch problems + hints + outlines and join them by problem_id.
 
     Only problem_id, statement, and domain are kept from the problems file —
     contest-identifying metadata is dropped at the door. Hint ladder:
-    h1 = placebo (the hints file's 'placebo' field; None until authored, so
-    placebo arms fail fast), h2 = the frozen one-sentence strategy hint from
-    the hints file's scalar 'hint' field, h3 = strategy outline (numbered
-    steps; used by the outline arms).
+    h1 = deterministic within-domain cyclic shift of the frozen h2 hints,
+    h2 = the frozen one-sentence strategy hint from the hints file's scalar
+    'hint' field, h3 = strategy outline (numbered steps; used by outline arms).
     """
     hints_by_id = {r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)}
     steps_by_id = {
         r["problem_id"]: r["steps"]
         for r in _fetch_jsonl(OUTLINES_FILE_ENV, OUTLINES_URL)
     }
+    problem_records = _fetch_jsonl(PROBLEMS_FILE_ENV, PROBLEMS_URL)
+    placebos_by_id = _domain_shifted_placebos(problem_records, hints_by_id)
     problems: list[Problem] = []
-    for record in _fetch_jsonl(PROBLEMS_FILE_ENV, PROBLEMS_URL):
+    for record in problem_records:
         problem_id = record["problem_id"]
         hints = hints_by_id.get(problem_id, {})
-        placebo = hints.get("placebo")
         hint = hints.get("hint")
         if hint is not None and not isinstance(hint, str):
             raise TypeError(
@@ -165,7 +201,7 @@ def load_problems() -> list[Problem]:
                 problem_id=problem_id,
                 statement=record["statement"],
                 domain=record["domain"],
-                hint_h1=str(placebo) if placebo else None,
+                hint_h1=placebos_by_id[problem_id],
                 hint_h2=hint if hint else None,
                 hint_h3=_outline_text(steps) if steps else None,
             )

@@ -30,7 +30,7 @@ One unit of compute is at most 200k eligible output tokens, including hidden rea
 
 1. **Baseline:** three independent 1× attempts on every problem.
 2. **Hint:** fresh 1× attempts with the frozen ≤25-word oracle sketch. This establishes the immediate strategy effect; it is not spliced into sequential curves.
-3. **Placebo:** the same intervention wrapper with matched nonstrategic text, controlling for extra text and instruction effects.
+3. **Placebo:** the same wrapper containing the next problem's frozen oracle hint after a lexicographic cyclic shift within domain, controlling for mathematical density and strategy-prompt effects without correct problem--strategy alignment.
 4. **Unaided Self-Refine:** three trajectories with checkpoints at every integer budget through 8×.
 5. **Hinted Self-Refine:** three fresh trajectories under the same protocol and budgets, with the oracle sketch retained in context.
 6. **Parallel-8:** eight independent 1× attempts. Report per-problem `c/8` and pass@\(k\) for \(k\in\{1,2,4,8\}\).

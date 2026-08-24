@@ -9,6 +9,37 @@ from src import storage
 
 
 class DatasetSelectionTests(unittest.TestCase):
+    def test_placebo_is_next_hint_in_sorted_domain_cycle(self) -> None:
+        problems = [
+            {"problem_id": "c", "domain": "algebra"},
+            {"problem_id": "a", "domain": "algebra"},
+            {"problem_id": "b", "domain": "algebra"},
+            {"problem_id": "y", "domain": "combinatorics"},
+            {"problem_id": "x", "domain": "combinatorics"},
+        ]
+        hints = {
+            problem_id: {"hint": f"hint-{problem_id}"}
+            for problem_id in ("a", "b", "c", "x", "y")
+        }
+
+        self.assertEqual(
+            storage._domain_shifted_placebos(problems, hints),
+            {
+                "a": "hint-b",
+                "b": "hint-c",
+                "c": "hint-a",
+                "x": "hint-y",
+                "y": "hint-x",
+            },
+        )
+
+    def test_placebo_shift_rejects_single_problem_domain(self) -> None:
+        with self.assertRaises(ValueError):
+            storage._domain_shifted_placebos(
+                [{"problem_id": "only", "domain": "algebra"}],
+                {"only": {"hint": "own hint"}},
+            )
+
     def test_imobench_selects_its_four_frozen_files(self) -> None:
         script = (
             "from src.constants import HINTS_URL, OUTLINES_URL, PROBLEMS_URL, "
