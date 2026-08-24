@@ -18,11 +18,11 @@ Compare matched unaided and strategy-conditioned inference. The central cases ar
 
 ### 2. Explain the scaling dynamics
 
-Each problem has a human-verified three-step outline of one complete oracle route. Retrospective annotations record which of those three mechanisms appear at every Self-Refine checkpoint. A valid proof is `S`; before success, `P` means the recognized-step count increased from the preceding observed checkpoint, or all three remain recognized during execution, and `U` means an incomplete count stayed flat or decreased. Complete-route acquisition means reaching `S`, recognizing all three oracle steps, or receiving human adjudication for a complete alternative route. These oracle-dependent states explain the dynamics; they are not deployment-time signals.
+Each problem has a human-verified three-step outline of one complete oracle route. Retrospective annotations derive `U/P/S` states from changes in recognized mechanisms at every Self-Refine checkpoint. The proposed mechanism is that persistent `U→U` transitions generate compute-flat failures, while entry into `P` raises subsequent success; the oracle sketch may change both access to `P` and the dynamics after access. Keep this contribution only if the fitted state model predicts held-out state occupancy and proof coverage better than simpler alternatives. These oracle-dependent states explain the dynamics; they are not deployment-time signals.
 
 ### 3. Predict whether more inference is worthwhile
 
-Among unaided trajectories unsolved at 2×, predict whether they reach `S` by 8× using only information available without an oracle outline: the problem, generated artifacts, critique history, budget, model, and whether an artifact is missing. Fit and freeze the predictor on the 35-problem benchmark, then test it without refitting on the locked 22-problem non-geometry IMO-Bench hard set. Compare against model-only and Bayesian base-rate predictors; report precision, recall, calibration, compute saved, and recovered solves at a predeclared operating point.
+Among unaided trajectories unsolved at 2×, predict whether they reach `S` by 8× using only information available without an oracle outline: the problem, generated artifacts, critique history, budget, model, and whether an artifact is missing. Fit and freeze the predictor on the 35-problem benchmark, then test it without refitting on the 22 locked non-geometry problems from the Advanced split of IMO-ProofBench. Compare against model-only and Bayesian base-rate predictors; report precision, recall, calibration, compute saved, and recovered solves at a predeclared operating point.
 
 ## Experiment arms
 
@@ -36,7 +36,7 @@ One unit of compute is at most 200k eligible output tokens, including hidden rea
 6. **Parallel-8:** eight independent 1× attempts. Report per-problem `c/8` and pass@\(k\) for \(k\in\{1,2,4,8\}\).
 7. **Uniform-C-8:** one shared 80k strategy extractor proposes up to eight deduplicated whole-proof plans; eight fresh 190k executors are assigned cyclically. Report plan coverage and executor outcomes separately; dependent branches are not pass@\(k\).
 
-The main comparison is unaided versus hinted Self-Refine. Run Baseline, Hint, Placebo, and both Self-Refine conditions on all 35 algebra/combinatorics/number-theory problems. Run Parallel-8 and Uniform-C-8 as search-coverage stress tests on the frozen baseline-failure cohort. Then replicate the core comparison on locked non-geometry IMO-Bench hard problems for selected models.
+The main comparison is unaided versus hinted Self-Refine. Run Baseline, Hint, Placebo, and both Self-Refine conditions on all 35 non-geometry algebra/combinatorics/number-theory problems. Run Parallel-8 and Uniform-C-8 as search-coverage stress tests on the frozen baseline-failure cohort. Then replicate the core comparison on the 22 locked non-geometry problems from the Advanced split of IMO-ProofBench for selected models.
 
 ## Auditing and measurement
 
