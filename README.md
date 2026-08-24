@@ -1,54 +1,71 @@
-# Strategy-Conditioned Test-Time Scaling
+# Strategy Access and Test-Time Scaling
 
-## Question
+## Research question
 
-When a model fails a fresh olympiad proof, can more depth, breadth, or self-generated strategy diversity recover it—or is external strategic information the missing resource?
+When a reasoning model fails a fresh olympiad proof, is the missing resource more inference or access to the right strategy?
 
-> **After unaided depth, breadth, and strategy diversification saturate, a short correct strategy can reopen productive inference.**
+Our primary hypothesis is a discovery--execution dissociation:
 
-The claim is about the tested models, problems, protocols, and budgets. The strategy is an oracle diagnostic, not a deployable source of free information.
+> A model can execute a concise strategy that substantial inference devoted to finding strategies does not discover.
 
-## Development signal
+The claim is finite and operational: it concerns the tested models, problems, inference procedures, and budgets. A frozen oracle sketch is a diagnostic intervention, not a deployable source of free information.
 
-On the 13-problem Opus 4.8 combinatorics pilot, where solved means at least 2/3 blinded audits score ≥5:
+## Contributions
 
-- unaided cumulative coverage is `4/13 → 6/13 → 6/13 → 6/13` at `1×/2×/4×/8×`;
-- Parallel-8 and Uniform-C-8 each rescue `0/7` unaided survivors;
-- existing standalone-hint and partially completed hinted Self-Refine artifacts indicate that all seven survivors can execute the supplied strategy, but these development arms were adaptively spliced.
+### 1. Strategy access versus inference compute
 
-This is development evidence, not the confirmatory result. The primary hinted curve will use hinted Self-Refine's own `1×/2×/4×/8×` checkpoints on all seven survivors; standalone hint is retired from primary plots.
+Compare matched unaided and strategy-conditioned inference. The central cases are problems where depth, independent sampling, and diversified plan search do not produce a viable route, while the same model turns a frozen audited sketch of at most 25 words into a valid proof. This is the paper's required contribution.
 
-## Frozen experiment
+### 2. Empirical search-versus-execution decomposition
 
-The study is an adaptive screen-and-intervene design:
+For viable-route access event \(A\), test \(\Pr(S)=\Pr(A)\Pr(S\mid A)\). Estimate access from blinded annotations of generated plans and proofs, and conditional execution from executors assigned viable plans. The oracle intervention sets access by construction. Allow alternative valid routes: matching one frozen reference route is not equivalent to \(A\).
 
-1. **Baseline.** Run three independent 1× attempts on every problem. Solved = ≥2/3.
-2. **Unaided scaling.** Run three 8× Self-Refine trajectories only on baseline failures and audit their own `1×/2×/4×/8×` prefix cuts. For first-passage coverage, a problem remains solved from the first cut reaching ≥2/3.
-3. **Stress controls.** On the same frozen baseline-failure cohort, run one fresh Parallel-8 bank and one Uniform-C-8 bank. Parallel uses eight fresh IID 1× attempts. Uniform-C-8 is a proof-domain adaptation of coarse-grained [TTS-Uniform](https://arxiv.org/abs/2509.17905) without entropy filtering: an 80k shared extractor produces up to eight semantically distinct whole-proof strategies, followed by exactly eight fresh 190k executors (`1.6M` total) allocated cyclically across the deduplicated set. It omits answer-entropy filtering and majority voting, which do not define a proof-level selector here. Report the two controls separately and never sum them into one compute curve.
-4. **Strategy intervention.** On the same frozen survivor cohort, run three fresh hinted Self-Refine trajectories from the supplied pre-authored ≤25-word strategy. Audit each trajectory's own exact `1×/2×/4×/8×` prefix cuts. Do not splice standalone-hint attempts into this curve.
-5. **Dense mechanism audit.** For Claude Opus 4.8 and GPT-5.4 only, recover the last eligible proof at every integer budget from `1×` through `8×` for both Self-Refine conditions, then apply the frozen correctness and route-progress audits. The other models remain in the main empirical comparison but do not enter the fitted state dynamics.
+### 3. Predict whether more inference is worthwhile
 
-Strategies are written and audited for every held-out problem before any confirmatory outcomes are inspected, even though they are executed only after the unaided screen. The 13 combinatorics problems are development data. Claude, GPT, and DeepSeek V4 Flash are evaluated under the same empirical protocol, with additional open-weight proof models as replications. Each model defines its own survivor cohort; only the two pre-specified strong models enter problem-level cross-validation of the state dynamics.
+Among trajectories unsolved at 2×, use only their observed history and model to predict whether they reach `S` by 8×. Train separate unaided and hinted predictors with problem-grouped cross-validation; compare against model-only and Bayesian base-rate predictors. Keep this contribution only if it improves held-out PR-AUC, calibration, and a predeclared compute-aware operating point.
 
-## Measurements
+## Experiment arms
 
-- **Correctness:** success = blinded audit score ≥5; any substantive gap scores 0. Repeat at ≥6 and human-check every headline proof.
-- **Reliability arms:** report raw `0/3`–`3/3`; primary solved = ≥2/3, unstable = 1/3, failed = 0/3. Report 3/3 as sensitivity.
-- **Parallel-8:** one bank of eight fresh IID attempts; report `c/8` and the standard unbiased pass@k estimate for `k∈{1,2,4,8}`. It is a search stress test, not a three-replicate reliability estimate.
-- **Uniform-C-8:** one shared strategy extractor, `m∈[1,8]` distinct plans, and exactly eight cyclically assigned executors. Report valid proofs `c/8`, `m`, the assignment map, and how many plans yield at least one valid proof; do not report pass@`k` for its dependent branches. Analyze it separately from Parallel-8.
-- **Strategy:** one frozen audited hint of at most 25 words. It may state the key idea, but not the answer, a substantial derivation, or a proof sketch.
-- **States:** state-audit the matched unaided and oracle-sketch Self-Refine trajectories, plus the Parallel-8 and Uniform-C-8 executor outputs used for route-discovery diagnostics. Audit score ≥5 gives `S`, which is carried forward to later sequential checkpoints; missing text before success is unobserved. For other artifacts, annotate recognition of each step in the frozen outline using its matching reference. Within a trajectory, `P` means the recognized-step count increased from the preceding observed checkpoint (the first artifact is compared with zero), or that all three steps remain recognized while proof execution continues; `U` means an incomplete count stayed flat or decreased. For a search-bank executor, all three steps present means that the frozen route is present. Fit discrete `U/P/S` transition matrices, each with four free probabilities, only from the matched Self-Refine trajectories of Opus 4.8 and GPT-5.4 at every integer `1×` increment. Standalone baseline, hint, placebo, and outline arms receive correctness audits only. Compare shared against condition-specific transition matrices rather than assuming the sketch acts only through initialization.
-- **Budget:** 1× is at most 200k eligible output tokens, including hidden reasoning, visible text, and tool calls. Over-budget artifacts cannot count.
-- **Reporting:** include every late success, exact allocated and realized tokens, first-passing budget, and uncertainty over problems. Problems—not attempts or search branches—are the inferential units.
-- **Strategy-search audit:** classify each unique Uniform plan as `U/P`, blinded to executor outcome, and grade its assigned proof separately. This directly distinguishes failure to generate a viable strategy from failure to execute one and makes no claim about hidden internal thought.
+One unit of compute is at most 200k eligible output tokens, including hidden reasoning, visible output, and tool use.
 
-## Main presentation
+1. **Baseline:** three independent 1× attempts on every problem.
+2. **Hint:** fresh 1× attempts with the frozen ≤25-word oracle sketch. This establishes the immediate strategy effect; it is not spliced into sequential curves.
+3. **Placebo:** the same intervention wrapper with matched nonstrategic text, controlling for extra text and instruction effects.
+4. **Unaided Self-Refine:** three trajectories with checkpoints at every integer budget through 8×.
+5. **Hinted Self-Refine:** three fresh trajectories under the same protocol and budgets, with the oracle sketch retained in context.
+6. **Parallel-8:** eight independent 1× attempts. Report per-problem `c/8` and pass@\(k\) for \(k\in\{1,2,4,8\}\).
+7. **Uniform-C-8:** one shared 80k strategy extractor proposes up to eight deduplicated whole-proof plans; eight fresh 190k executors are assigned cyclically. Report plan coverage and executor outcomes separately; dependent branches are not pass@\(k\).
 
-1. **Matched scaling curves:** cumulative unaided coverage on all problems and hinted Self-Refine coverage on the frozen unaided survivor cohort, using each arm's own `1×/2×/4×/8×` checkpoints.
-2. **Search stress test:** on the frozen baseline-failure cohort, show per-problem Self-Refine, Parallel-8, Uniform-C-8, and hinted Self-Refine outcomes, together with whether each generated plan contains a viable route.
-3. **Held-out mechanism test:** for Opus 4.8 and GPT-5.4, fit the discrete `U/P/S` dynamics on training problems and early `1×` increments, then predict held-out problems and their `5×`–`8×` state occupancy and success curves. Keep this contribution only if it beats simpler time-only, two-state, route-count, and history-aware predictors.
+The main comparison is unaided versus hinted Self-Refine. Run Baseline, Hint, Placebo, and both Self-Refine conditions on all 35 algebra/combinatorics/number-theory problems. Run Parallel-8 and Uniform-C-8 as search-coverage stress tests on the frozen baseline-failure cohort. Then replicate the core comparison on locked non-geometry IMO-Bench hard problems for selected models.
 
-The paper succeeds if held-out data show that models execute short oracle-supplied strategies that substantial unaided depth, breadth, and strategy-diversified search fail to discover, and if the fitted state model predicts where scaling saturates and where strategy reopens it. “Hints help” alone is not the claim.
+## Auditing and measurement
+
+- Proof success is blinded audit score ≥5/7; report ≥6 and human verification as sensitivities. Problems are inferential units.
+- Reliability arms report every `0/3`--`3/3` cell; primary reliable success is ≥2/3.
+- Route audits record the three frozen outline ingredients and separately adjudicate alternative viable routes.
+- `S` begins at the first valid proof. Before success, `P` means route evidence increased or all three ingredients remain available; otherwise `U`. For analysis, missing output maps to `U` unless all three were already recognized.
+- Retain tokens, first-passing budget, late successes, plan assignments, audit agreement, prompts, endpoints, and configuration.
+
+## Current evidence
+
+Current audited curves show the intended separation, but the full balanced experiment and search controls are still being completed:
+
+- Muse Spark 1.2: unaided `8→8/35`, hinted `20→21/35` from 1× to 8×.
+- Claude Opus 4.8: unaided `17→23/35`, hinted `24→34/35`.
+- GPT-5.4: unaided `17→22/35`, hinted `28→34/35`.
+- GPT-5.5: unaided `28→31/35`, hinted `35→35/35`.
+
+The access decomposition is not identified by checkpoint states: complete reference-route recognition is too rarely observed before success. Estimate it from plan-level coverage and execution conditioned on viable generated plans.
+
+The 2× landmark is promising but inconclusive. Among unaided survivors, 27/180 solve by 8×; prediction reaches PR-AUC 0.36 and ROC-AUC 0.75, with about 29% precision and 52% recall. Among hinted survivors, 16/75 solve; ranking reaches PR-AUC 0.53 and ROC-AUC 0.83. By 4× only 10/163 unaided and 5/64 hinted survivors later solve, leaving too few positives.
+
+Bayesian late-success estimates fall from about 15% after an unaided 2× failure to 6% after 4×, and from about 22% to 9% when hinted. These are population stopping priors, not personalized predictions.
+
+## Go/no-go
+
+- **Contribution 1 stays** if the dissociation replicates across the completed benchmark, model families, search controls, placebo, and human proof checks.
+- **Contribution 2 stays** if plan-level route access and conditional execution explain observed search success without treating one reference route as exhaustive.
+- **Contribution 3 stays** only if the frozen 2× predictor generalizes by problem and beats model-only and Bayesian baselines. Otherwise report saturation descriptively and drop the classifier.
 
 ## Results backup
 
@@ -58,4 +75,4 @@ Set `HF_TOKEN` in `.env`, then incrementally upload both ignored result trees to
 ./scripts/upload_results_to_hf.sh
 ```
 
-The default destination is `notadib/strategy-ceiling`. Override it with `HF_RESULTS_REPO` and adjust upload concurrency with `HF_UPLOAD_WORKERS`; neither setting is required.
+The default destination is `notadib/strategy-ceiling`; override it with `HF_RESULTS_REPO` if needed.
