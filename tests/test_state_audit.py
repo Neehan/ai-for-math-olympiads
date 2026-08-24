@@ -62,7 +62,7 @@ def _config(arm: ArmConfig) -> ExperimentConfig:
 
 
 class StateDerivationTests(unittest.TestCase):
-    def test_increased_step_count_is_productive(self) -> None:
+    def test_complete_step_count_is_acquired(self) -> None:
         self.assertEqual(
             derive_state(
                 {
@@ -74,7 +74,7 @@ class StateDerivationTests(unittest.TestCase):
                 },
                 2,
             ),
-            ("P", 3),
+            ("S", 3),
         )
         self.assertEqual(
             derive_state(
@@ -102,7 +102,7 @@ class StateDerivationTests(unittest.TestCase):
         self.assertEqual(derive_state(verdict, 1), ("U", 1))
         self.assertEqual(derive_state(verdict, 2), ("U", 1))
 
-    def test_complete_route_remains_productive_during_execution(self) -> None:
+    def test_complete_route_is_acquired_even_when_count_is_flat(self) -> None:
         verdict = {
             "steps": [
                 {"present": True, "reason": "Explicit."},
@@ -110,7 +110,7 @@ class StateDerivationTests(unittest.TestCase):
                 {"present": True, "reason": "Explicit."},
             ]
         }
-        self.assertEqual(derive_state(verdict, 3), ("P", 3))
+        self.assertEqual(derive_state(verdict, 3), ("S", 3))
 
     def test_first_artifact_is_compared_with_zero(self) -> None:
         verdict = {
@@ -158,7 +158,7 @@ class StateAuditSeedTests(unittest.TestCase):
         steps = [
             {"present": True, "reason": "Step 1 is explicit."},
             {"present": True, "reason": "Step 2 is explicit."},
-            {"present": True, "reason": "Step 3 is explicit."},
+            {"present": False, "reason": "Step 3 is missing."},
         ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -289,13 +289,22 @@ class StateAuditSeedTests(unittest.TestCase):
                 (output / "state_audit.json").read_text(encoding="utf-8")
             )
             self.assertEqual(set(record["budget_cuts"]), {f"{n}x" for n in range(1, 8)})
-            self.assertTrue(
-                all(
-                    cut["state"] == "P"
+            self.assertEqual(
+                {
+                    label: cut["state"]
                     for label, cut in record["budget_cuts"].items()
-                    if label != "3x"
-                )
+                },
+                {
+                    "1x": "P",
+                    "2x": "U",
+                    "3x": "U",
+                    "4x": "P",
+                    "5x": "U",
+                    "6x": "U",
+                    "7x": "U",
+                },
             )
+            self.assertEqual(record["state"], "U")
             self.assertEqual(record["audit_model"], "judge-old")
             self.assertEqual(record["budget_cuts"]["3x"]["state"], "U")
             self.assertEqual(record["budget_cuts"]["3x"]["audit_model"], "judge")
@@ -494,11 +503,11 @@ class StateAuditSeedTests(unittest.TestCase):
             self.assertIsNone(record["budget_cuts"]["1x"]["state"])
             self.assertEqual(record["budget_cuts"]["1x"]["steps"], [])
             self.assertNotIn("solution_sha256", record["budget_cuts"]["1x"])
-            self.assertEqual(record["budget_cuts"]["2x"]["state"], "P")
-            self.assertEqual(record["budget_cuts"]["4x"]["state"], "P")
+            self.assertEqual(record["budget_cuts"]["2x"]["state"], "S")
+            self.assertEqual(record["budget_cuts"]["4x"]["state"], "S")
             self.assertEqual(
                 record["budget_cuts"]["4x"]["note"],
-                "All three outline steps remain recognized; the trajectory is in proof execution.",
+                "A complete strategy was observed earlier; acquired state is carried forward.",
             )
             self.assertEqual(
                 record["budget_cuts"]["2x"]["solution_sha256"],

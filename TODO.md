@@ -25,7 +25,7 @@
 - [ ] Report raw 0/3–3/3 cells, current-checkpoint and cumulative coverage, exact paired uncertainty over problems, and sensitivity at scores ≥6, 7, and 3/3 reliability.
 - [ ] Bound every null claim to the tested controller and maximum allocation; never equate early self-convergence with consuming the full 8× budget.
 - [ ] Complete the 35-problem, five-family panel and a locked external replication, including at least one open-weight model.
-- [ ] Freeze the progress rule before dense annotation: `S` is first audited success; otherwise `P` means route-step count increased from the previous observed artifact or remains 3/3 during execution, and `U` means an incomplete count stayed flat or decreased; missing artifacts remain unobserved.
+- [x] Freeze the acquisition-state rule: `S` begins at complete 3/3 mechanism recognition or the first audited success and is absorbing; before acquisition, `P` means an incomplete recognized-step count increased and `U` means it stayed flat or decreased; missing artifacts remain unobserved.
 - [ ] Fit the discrete U/P/S model on the two strong models, with four free probabilities per transition matrix; train through 4× and predict 5×–8× on held-out problems, compare condition-specific against shared dynamics, and test parameter recovery, time homogeneity, and Markov sufficiency against time-only, two-state, route-count, and history-aware baselines.
 - [ ] Keep the state model in the main paper only if its parameters are identifiable and frozen out-of-sample predictions beat the simpler baselines; otherwise move it and the proposition to the appendix.
 - [ ] Rebuild every table and TeX figure from an immutable artifact manifest in a clean container.

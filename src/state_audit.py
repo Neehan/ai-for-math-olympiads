@@ -1,15 +1,13 @@
 """Annotate observable route-progress states for every audited proof artifact.
 
 Correctness remains owned by ``audit.json``.  This stage reuses those immutable
-scores: passing checkpoints become S without another model call; missing
-solution text remains unobserved; only nonempty score-below-5 artifacts receive
-a reference-guided three-step outline annotation.  For each trajectory, the
-harness compares the number of recognized steps with the preceding observed
-checkpoint: an increase is P and a flat or decreasing incomplete count is U.
-Complete 3/3 recognition remains P while proof execution continues, and S is
-carried forward after the first passing proof.  The first artifact is compared
-with zero recognized steps.  The final state is derived by code, not selected
-by the annotator.
+scores: a passing checkpoint or complete 3/3 strategy recognition enters S;
+missing solution text remains unobserved; only nonempty score-below-5 artifacts
+receive a reference-guided three-step outline annotation.  Before acquisition,
+an increased but incomplete recognized-step count is P and a flat or decreasing
+incomplete count is U.  S is carried forward after first complete strategy
+acquisition.  The first artifact is compared with zero recognized steps.  The
+final state is derived by code, not selected by the annotator.
 """
 
 from __future__ import annotations
@@ -117,14 +115,15 @@ def recognized_step_count(verdict: dict[str, object]) -> int:
 def derive_state(
     verdict: dict[str, object], previous_recognized_steps: int
 ) -> tuple[str, int]:
-    """Map change in recognized-step count mechanically to P or U."""
+    """Map recognized-step count mechanically to U, P, or acquired S."""
     if not 0 <= previous_recognized_steps <= 3:
         raise ValueError("Previous recognized-step count must be between 0 and 3")
     current_recognized_steps = recognized_step_count(verdict)
     state = (
-        "P"
+        "S"
         if current_recognized_steps == 3
-        or current_recognized_steps > previous_recognized_steps
+        else "P"
+        if current_recognized_steps > previous_recognized_steps
         else "U"
     )
     return state, current_recognized_steps
@@ -142,23 +141,29 @@ def _solution_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _solved_checkpoint(text: str, audit_model: str) -> dict[str, object]:
+def _proof_acquired_checkpoint(text: str, audit_model: str) -> dict[str, object]:
     return {
         "state": "S",
         "steps": [],
-        "note": "Correctness audit passed; state assigned mechanically as solved.",
+        "note": (
+            "Correctness audit passed; complete strategy acquisition assigned "
+            "mechanically."
+        ),
         "solution_sha256": _solution_sha256(text),
         "audit_model": audit_model,
     }
 
 
-def _carried_solved_checkpoint(
+def _carried_acquired_checkpoint(
     text: str | None, audit_model: str
 ) -> dict[str, object]:
     record: dict[str, object] = {
         "state": "S",
         "steps": [],
-        "note": "A valid proof was observed earlier; solved state is carried forward.",
+        "note": (
+            "A complete strategy was observed earlier; acquired state is carried "
+            "forward."
+        ),
         "audit_model": audit_model,
     }
     if text is not None and text.strip():
@@ -299,27 +304,27 @@ async def state_audit_seed(
                         )
                     verdict_cache[digest] = ({"steps": steps}, record_model)
         previous_recognized_steps = 0
-        solved_seen = False
-        solved_audit_model: str | None = None
+        acquired_seen = False
+        acquired_audit_model: str | None = None
         for label, text, proof_score, proof_audit_model in artifacts:
             if (text is None or not text.strip()) and proof_score >= 5:
                 raise ValueError(
                     f"{problem.problem_id} {label}: passing proof audit has "
                     "no solution text"
                 )
-            if solved_seen:
-                assert solved_audit_model is not None
-                records[label] = _carried_solved_checkpoint(
-                    text, solved_audit_model
+            if acquired_seen:
+                assert acquired_audit_model is not None
+                records[label] = _carried_acquired_checkpoint(
+                    text, acquired_audit_model
                 )
                 continue
             if text is None or not text.strip():
                 records[label] = _missing_checkpoint()
                 continue
             if proof_score >= 5:
-                records[label] = _solved_checkpoint(text, proof_audit_model)
-                solved_seen = True
-                solved_audit_model = proof_audit_model
+                records[label] = _proof_acquired_checkpoint(text, proof_audit_model)
+                acquired_seen = True
+                acquired_audit_model = proof_audit_model
                 continue
 
             digest = _solution_sha256(text)
@@ -354,13 +359,13 @@ async def state_audit_seed(
                 "state": state,
                 "steps": list(raw_steps),
                 "note": (
-                    "Recognized outline-step count increased from "
+                    "All three outline steps are recognized; complete strategy "
+                    "acquired."
+                    if state == "S"
+                    else "Recognized outline-step count increased from "
                     f"{previous_recognized_steps}/3 to "
                     f"{current_recognized_steps}/3."
                     if current_recognized_steps > previous_recognized_steps
-                    else "All three outline steps remain recognized; "
-                    "the trajectory is in proof execution."
-                    if current_recognized_steps == 3
                     else "Recognized outline-step count did not increase "
                     f"({previous_recognized_steps}/3 to "
                     f"{current_recognized_steps}/3)."
@@ -370,6 +375,9 @@ async def state_audit_seed(
             }
             records[label] = record
             previous_recognized_steps = current_recognized_steps
+            if state == "S":
+                acquired_seen = True
+                acquired_audit_model = audit_model
 
         final_label = f"{arm.budget_units}x"
         final_checkpoint = records.pop(final_label)
