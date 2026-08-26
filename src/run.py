@@ -84,6 +84,7 @@ from src.storage import (
     parallel_bank_done,
     seed_done,
     seed_output_dir,
+    uniform_strategy_bank_done,
     write_parallel_bank_meta,
     write_uniform_strategy_bank_meta,
     write_uniform_strategy_plan_artifacts,
@@ -637,6 +638,18 @@ async def solve_uniform_strategy_bank(
     bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
     plan_scratch_path = checkpoint.scratch_dir("plan")
     plan_phases = checkpoint.phases("plan")
+    existing_runs = [
+        run
+        for run in range(1, config.uniform_strategy_branches + 1)
+        if seed_done(bank_run_output_dir(bank_dir, run))
+    ]
+    if existing_runs and not plan_phases:
+        raise RuntimeError(
+            "Uniform-C bank has completed executors but no resumable planner "
+            "checkpoint; refusing to mix them with a newly generated strategy "
+            "set. Recoverably archive this seed directory and rerun the bank "
+            "from zero."
+        )
     plan_tracker = checkpoint.tracker(
         "plan", plan_budget, config.uniform_strategy_plan_wrap_up_reserve_tokens
     )
@@ -778,6 +791,20 @@ async def solve_uniform_strategy_bank(
         assignments,
         plan_scratch_path,
     )
+    missing_runs = [
+        run
+        for run in range(1, config.uniform_strategy_branches + 1)
+        if not seed_done(bank_run_output_dir(bank_dir, run))
+    ]
+    if missing_runs:
+        log.warning(
+            "%s/%s seed %d bank remains incomplete; missing executor run(s): %s",
+            arm.name,
+            problem.problem_id,
+            seed,
+            ", ".join(f"{run:02d}" for run in missing_runs),
+        )
+        return
     checkpoint.prepare_completion(
         (bank_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
     )
@@ -1177,11 +1204,11 @@ async def main() -> None:
         hint_for(problem, arm)
 
     def generation_done(selected_arm: ArmConfig, output_dir: Path) -> bool:
-        return (
-            parallel_bank_done(output_dir)
-            if selected_arm.mode == MODE_PARALLEL
-            else seed_done(output_dir)
-        )
+        if selected_arm.mode == MODE_PARALLEL:
+            return parallel_bank_done(output_dir)
+        if selected_arm.mode == MODE_UNIFORM_STRATEGY:
+            return uniform_strategy_bank_done(output_dir)
+        return seed_done(output_dir)
 
     pending = [
         (problem, seed)

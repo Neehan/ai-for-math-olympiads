@@ -52,6 +52,7 @@ from src.storage import (
     parallel_bank_done,
     seed_done,
     seed_output_dir,
+    uniform_strategy_bank_done,
     seed_solution_text,
     write_seed_state_audit,
 )
@@ -484,6 +485,10 @@ async def main() -> None:
         if (
             parallel_bank_done(seed_output_dir(config, arm, problem.problem_id, seed))
             if arm.mode == MODE_PARALLEL
+            else uniform_strategy_bank_done(
+                seed_output_dir(config, arm, problem.problem_id, seed)
+            )
+            if arm.mode == MODE_UNIFORM_STRATEGY
             else seed_done(seed_output_dir(config, arm, problem.problem_id, seed))
         )
     ]

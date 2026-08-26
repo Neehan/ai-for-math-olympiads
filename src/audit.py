@@ -85,6 +85,7 @@ from src.storage import (
     seed_audited,
     seed_done,
     seed_output_dir,
+    uniform_strategy_bank_done,
     seed_solution_text,
     write_seed_audit,
 )
@@ -957,11 +958,11 @@ async def main() -> None:
     seeds = select_seeds(arm, args.seeds)
 
     def generation_done(output_dir: Path) -> bool:
-        return (
-            parallel_bank_done(output_dir)
-            if arm.mode == MODE_PARALLEL
-            else seed_done(output_dir)
-        )
+        if arm.mode == MODE_PARALLEL:
+            return parallel_bank_done(output_dir)
+        if arm.mode == MODE_UNIFORM_STRATEGY:
+            return uniform_strategy_bank_done(output_dir)
+        return seed_done(output_dir)
 
     def audit_done(output_dir: Path) -> bool:
         return (

@@ -325,6 +325,44 @@ def parallel_bank_done(output_dir: Path) -> bool:
     )
 
 
+def uniform_strategy_bank_done(output_dir: Path) -> bool:
+    """True only for a complete Uniform-C bank or a recorded planner failure."""
+    meta_path = output_dir / META_FILENAME
+    if not meta_path.exists():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if meta.get("mode") != MODE_UNIFORM_STRATEGY:
+        return False
+    executor_count = meta.get("uniform_strategy_executor_count")
+    strategy_count = meta.get("strategy_count")
+    assignments = meta.get("run_strategy_indices")
+    if executor_count == 0:
+        return (
+            strategy_count == 0
+            and assignments == []
+            and isinstance(meta.get("planner_failure"), str)
+        )
+    if (
+        executor_count != 8
+        or not isinstance(strategy_count, int)
+        or strategy_count < 1
+        or not isinstance(assignments, list)
+        or len(assignments) != 8
+        or any(
+            not isinstance(index, int) or index < 1 or index > strategy_count
+            for index in assignments
+        )
+    ):
+        return False
+    return all(
+        (bank_run_output_dir(output_dir, run) / META_FILENAME).exists()
+        for run in range(1, 9)
+    )
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write bytes atomically: temp file in the same dir, then os.replace."""
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")

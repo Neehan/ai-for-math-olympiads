@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import anyio
 
@@ -18,8 +18,12 @@ from src.constants import (
     UNIFORM_STRATEGIES_FILENAME,
 )
 from src.models import PhaseResult, Problem
-from src.run import _proposed_strategies
-from src.storage import bank_run_output_dir, write_uniform_strategy_bank_meta
+from src.run import _proposed_strategies, solve_uniform_strategy_bank
+from src.storage import (
+    bank_run_output_dir,
+    uniform_strategy_bank_done,
+    write_uniform_strategy_bank_meta,
+)
 from src.token_pool import TokenPool
 
 
@@ -121,6 +125,55 @@ class UniformStrategyTests(unittest.TestCase):
             )
             self.assertEqual(meta["output_tokens_spent"], 20 + sum(range(1, 9)))
             self.assertTrue((bank_dir / SOLUTION_FILENAME).is_file())
+            self.assertTrue(uniform_strategy_bank_done(bank_dir))
+            (bank_run_output_dir(bank_dir, 4) / META_FILENAME).unlink()
+            self.assertFalse(uniform_strategy_bank_done(bank_dir))
+
+    def test_stale_uniform_marker_cannot_certify_partial_bank(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bank_dir = Path(temp)
+            for run in range(1, 8):
+                run_dir = bank_run_output_dir(bank_dir, run)
+                run_dir.mkdir()
+                (run_dir / META_FILENAME).write_text("{}", encoding="utf-8")
+            (bank_dir / META_FILENAME).write_text(
+                json.dumps(
+                    {
+                        "mode": "uniform_strategy",
+                        "uniform_strategy_executor_count": 8,
+                        "strategy_count": 2,
+                        "run_strategy_indices": [1, 2, 1, 2, 1, 2, 1, 2],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertFalse(uniform_strategy_bank_done(bank_dir))
+
+    def test_partial_bank_without_plan_checkpoint_refuses_to_replan(self) -> None:
+        config = load_config(CONFIG_PATH)
+        arm = config.arms["baseline-uniform-strategy"]
+        problem = Problem("p", "Prove it.", "algebra", None, None, None)
+        checkpoint = Mock()
+        checkpoint.scratch_dir.return_value = Path("scratch")
+        checkpoint.phases.return_value = []
+        with tempfile.TemporaryDirectory() as temp:
+            bank_dir = Path(temp)
+            run_dir = bank_run_output_dir(bank_dir, 1)
+            run_dir.mkdir()
+            (run_dir / META_FILENAME).write_text("{}", encoding="utf-8")
+            with (
+                patch("src.run.seed_output_dir", return_value=bank_dir),
+                self.assertRaisesRegex(RuntimeError, "refusing to mix"),
+            ):
+                anyio.run(
+                    solve_uniform_strategy_bank,
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                    checkpoint,
+                )
 
     def test_bank_audit_aggregates_independent_run_verdicts(self) -> None:
         config = load_config(CONFIG_PATH)
