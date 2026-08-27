@@ -27,7 +27,11 @@ from src.constants import (
     CHECKPOINT_ROOT_ENV,
     DEFER_CHECKPOINT_CLEANUP_ENV,
     PROMPTS_DIR,
+    SELECTION_NO_PROBLEM_PROMPT_FILE,
+    SELECTION_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
+    STRATEGY_STATE_AUDIT_PROMPT_FILE,
+    UNIFORM_COMPRESS_PROMPT_FILE,
 )
 from src.models import PhaseResult, ReconnectEvent, ToolCall
 from src.solver import BudgetTracker
@@ -35,6 +39,15 @@ from src.solver import BudgetTracker
 SCHEMA_VERSION = 3
 _ROLE_RE = re.compile(r"^[a-z0-9_-]+$")
 _SCRATCH_RE = re.compile(r"^[0-9a-f]{8}$")
+_POSTHOC_PROMPT_FILES = frozenset(
+    {
+        STATE_AUDIT_PROMPT_FILE,
+        STRATEGY_STATE_AUDIT_PROMPT_FILE,
+        UNIFORM_COMPRESS_PROMPT_FILE,
+        SELECTION_PROMPT_FILE,
+        SELECTION_NO_PROBLEM_PROMPT_FILE,
+    }
+)
 
 
 @cache
@@ -44,15 +57,17 @@ def protocol_fingerprint(
 ) -> str:
     """Hash prompts affecting normal runs, plus explicitly requested extras.
 
-    State annotation is a separate post-hoc stage.  Its prompt is excluded by
-    default so introducing or revising it cannot strand paid solver/auditor
-    checkpoints; the state-audit stage explicitly opts it into its own hash.
+    State annotation and auxiliary selection diagnostics are separate post-hoc
+    stages. Their prompts are excluded by default so adding or revising them
+    cannot strand paid solver/auditor checkpoints. A caller can explicitly opt
+    a post-hoc prompt into a stage-specific fingerprint.
     """
     digest = hashlib.sha256()
     prompts = [
         path
         for path in sorted(PROMPTS_DIR.glob("*.md"))
-        if path.name != STATE_AUDIT_PROMPT_FILE or path.name in extra_prompt_files
+        if path.name not in _POSTHOC_PROMPT_FILES
+        or path.name in extra_prompt_files
     ]
     for path in [settings_path, *prompts]:
         digest.update(path.name.encode("utf-8"))

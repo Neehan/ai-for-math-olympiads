@@ -35,6 +35,8 @@ META_FILENAME: str = "meta.json"
 SCRATCH_SUBDIR: str = "scratch"
 PLAN_SCRATCH_SUBDIR: str = "plan_scratch"
 UNIFORM_STRATEGIES_FILENAME: str = "strategies.json"
+COMPRESSED_STRATEGIES_FILENAME: str = "compressed_strategies.json"
+SELECTION_FILENAME: str = "selection.json"
 BANK_RUN_DIR_FORMAT: str = "run_{run:02d}"
 RUN_REFERENCE_FILENAME: str = "reference.json"
 # Versioned bank marker: old baseline-plus-seven layouts must never silently
@@ -66,6 +68,10 @@ UNIFORM_STRATEGY_PLAN_PROMPT_FILE: str = "uniform_strategy_plan.md"
 UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE: str = "uniform_strategy_plan_wrap_up.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
 STATE_AUDIT_PROMPT_FILE: str = "state_audit.md"
+STRATEGY_STATE_AUDIT_PROMPT_FILE: str = "strategy_state_audit.md"
+UNIFORM_COMPRESS_PROMPT_FILE: str = "uniform_compress.md"
+SELECTION_PROMPT_FILE: str = "selection.md"
+SELECTION_NO_PROBLEM_PROMPT_FILE: str = "selection_no_problem.md"
 
 # --- Problem/hint data sources -------------------------------------------
 # Never committed (contest identity); fetched straight into memory, or from
@@ -90,12 +96,14 @@ _DATASET_FILES: dict[str, dict[str, str]] = {
         "hints": "hard_hints.jsonl",
         "outlines": "hard_outlines.jsonl",
         "solutions": "hard_solutions.jsonl",
+        "selection": "hard_hint_selection.jsonl",
     },
     DATASET_IMOBENCH: {
         "problems": "imobench_problems.jsonl",
         "hints": "imobench_hints.jsonl",
         "outlines": "imobench_outlines.jsonl",
         "solutions": "imobench_solutions.jsonl",
+        "selection": "imobench_hint_selection.jsonl",
     },
 }
 _ACTIVE_DATASET_FILES = _DATASET_FILES[DATASET_NAME]
@@ -103,10 +111,12 @@ PROBLEMS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['problems']}"
 HINTS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['hints']}"
 OUTLINES_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['outlines']}"
 SOLUTIONS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['solutions']}"
+SELECTION_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['selection']}"
 PROBLEMS_FILE_ENV: str = "PROBLEMS_FILE"
 HINTS_FILE_ENV: str = "HINTS_FILE"
 OUTLINES_FILE_ENV: str = "OUTLINES_FILE"
 SOLUTIONS_FILE_ENV: str = "SOLUTIONS_FILE"
+SELECTION_FILE_ENV: str = "SELECTION_FILE"
 FETCH_TIMEOUT_SECONDS: int = 60
 
 # --- Arm vocabulary -------------------------------------------------------
@@ -121,9 +131,45 @@ MODE_SINGLE: str = "single"
 MODE_SEQUENTIAL: str = "sequential"
 MODE_PARALLEL: str = "parallel"
 MODE_UNIFORM_STRATEGY: str = "uniform_strategy"
+MODE_UNIFORM_STRATEGY_ONLY: str = "uniform_strategy_only"
+MODE_UNIFORM_COMPRESS: str = "uniform_compress"
+MODE_SELECTION: str = "selection"
+MODE_SELECTION_NO_PROBLEM: str = "selection_no_problem"
 MODES: frozenset[str] = frozenset(
-    {MODE_SINGLE, MODE_SEQUENTIAL, MODE_PARALLEL, MODE_UNIFORM_STRATEGY}
+    {
+        MODE_SINGLE,
+        MODE_SEQUENTIAL,
+        MODE_PARALLEL,
+        MODE_UNIFORM_STRATEGY,
+        MODE_UNIFORM_STRATEGY_ONLY,
+        MODE_UNIFORM_COMPRESS,
+        MODE_SELECTION,
+        MODE_SELECTION_NO_PROBLEM,
+    }
 )
+
+# Auxiliary workers do not define the source-model result tree. The compressor
+# is frozen; selection uses the source model unless --worker-model overrides it.
+DEFAULT_UNIFORM_COMPRESS_MODEL: str = "litellm/gpt-5.6-sol"
+UNIFORM_COMPRESS_SAMPLE_SEED: int = 20260827
+UNIFORM_COMPRESS_EXAMPLE_IDS: tuple[str, ...] = {
+    DATASET_MATH_CONTESTS_2026: (
+        "china-tst-2026-3",
+        "rmm-2026-03",
+        "apmo-2026-05",
+        "china-tst-2026-12",
+        "china-tst-2026-6",
+        "imo-2026-06",
+    ),
+    DATASET_IMOBENCH: (
+        "PB-Advanced-001",
+        "PB-Advanced-006",
+        "PB-Advanced-002",
+        "PB-Advanced-014",
+        "PB-Advanced-008",
+        "PB-Advanced-012",
+    ),
+}[DATASET_NAME]
 
 # --- Phase labels ---------------------------------------------------------
 PHASE_SOLVE: str = "solve"

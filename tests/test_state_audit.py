@@ -16,6 +16,7 @@ from src.state_audit import (
     derive_state,
     recognized_step_count,
     state_audit_seed,
+    state_audit_strategy_artifact,
 )
 from src.storage import (
     _outline_reference,
@@ -140,6 +141,234 @@ class StateDerivationTests(unittest.TestCase):
 
 
 class StateAuditSeedTests(unittest.TestCase):
+    def test_empty_planner_bank_is_observed_as_unacquired_without_judge_call(self) -> None:
+        arm = ArmConfig(
+            "baseline-uniform-strategy-only",
+            "none",
+            "uniform_strategy_only",
+            1,
+            [1],
+        )
+        config = _config(arm)
+        problem = Problem(
+            "p",
+            "Prove it.",
+            "algebra",
+            None,
+            None,
+            "1. First route step.\n2. Second route step.\n3. Third route step.",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "results" / "solver" / arm.name / "p" / "seed_1"
+            output.mkdir(parents=True)
+            (output / "strategies.json").write_text(
+                json.dumps({"strategies": [], "run_strategy_indices": []}),
+                encoding="utf-8",
+            )
+            judge = AsyncMock()
+
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                return _FakeCheckpoint(identity, root / "checkpoint")
+
+            with (
+                patch("src.state_audit.RESULTS_ROOT", root / "results"),
+                patch("src.state_audit.seed_output_dir", return_value=output),
+                patch("src.state_audit.AttemptCheckpoint", side_effect=checkpoint_factory),
+                patch("src.state_audit._judge", judge),
+            ):
+                anyio.run(
+                    state_audit_strategy_artifact,
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                    "A reference proof.",
+                )
+
+            record = json.loads(
+                (output / "state_audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["state"], "U")
+            self.assertEqual(record["strategy_count"], 0)
+            self.assertFalse(record["strategy_acquired"])
+            self.assertEqual(judge.await_count, 0)
+
+    def test_planner_bank_audits_each_strategy_without_proof_audit(self) -> None:
+        arm = ArmConfig(
+            "baseline-uniform-strategy-only",
+            "none",
+            "uniform_strategy_only",
+            1,
+            [1],
+        )
+        config = _config(arm)
+        problem = Problem(
+            "p",
+            "Prove it.",
+            "algebra",
+            None,
+            None,
+            "1. First route step.\n2. Second route step.\n3. Third route step.",
+        )
+        verdicts = [
+            {
+                "steps": [
+                    {"present": True, "reason": "Present."},
+                    {"present": True, "reason": "Present."},
+                    {"present": True, "reason": "Present."},
+                ]
+            },
+            {
+                "steps": [
+                    {"present": True, "reason": "Present."},
+                    {"present": False, "reason": "Absent."},
+                    {"present": False, "reason": "Absent."},
+                ]
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "results" / "solver" / arm.name / "p" / "seed_1"
+            output.mkdir(parents=True)
+            (output / "strategies.json").write_text(
+                json.dumps(
+                    {
+                        "strategies": ["Complete route.", "Partial route."],
+                        "run_strategy_indices": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            judge = AsyncMock(side_effect=[(verdict, []) for verdict in verdicts])
+
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                return _FakeCheckpoint(identity, root / "checkpoint")
+
+            with (
+                patch("src.state_audit.RESULTS_ROOT", root / "results"),
+                patch("src.state_audit.seed_output_dir", return_value=output),
+                patch("src.state_audit.AttemptCheckpoint", side_effect=checkpoint_factory),
+                patch("src.state_audit._judge", judge),
+            ):
+                anyio.run(
+                    state_audit_strategy_artifact,
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                    "A reference proof.",
+                )
+
+            record = json.loads(
+                (output / "state_audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["strategy_acquired_count"], 1)
+            self.assertEqual(record["state"], "S")
+            self.assertEqual(
+                [item["state"] for item in record["strategies"]], ["S", "U"]
+            )
+            self.assertEqual(
+                [item["acquisition_basis"] for item in record["strategies"]],
+                ["reference_steps", "none"],
+            )
+            self.assertFalse((output / "audit.json").exists())
+
+    def test_compressed_candidates_use_same_strategy_acquired_field(self) -> None:
+        arm = ArmConfig(
+            "baseline-uniform-compress", "none", "uniform_compress", 1, [1]
+        )
+        config = _config(arm)
+        problem = Problem(
+            "p",
+            "Prove it.",
+            "algebra",
+            None,
+            None,
+            "1. First route step.\n2. Second route step.\n3. Third route step.",
+        )
+        verdicts = [
+            {
+                "steps": [
+                    {"present": True, "reason": "Present."},
+                    {"present": True, "reason": "Present."},
+                    {"present": True, "reason": "Present."},
+                ]
+            },
+            {
+                "steps": [
+                    {"present": True, "reason": "Present."},
+                    {"present": False, "reason": "Absent."},
+                    {"present": False, "reason": "Absent."},
+                ]
+            },
+            {
+                "steps": [
+                    {"present": False, "reason": "Absent."},
+                    {"present": False, "reason": "Absent."},
+                    {"present": False, "reason": "Absent."},
+                ]
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "results" / "solver" / arm.name / "p" / "seed_1"
+            output.mkdir(parents=True)
+            (output / "compressed_strategies.json").write_text(
+                json.dumps(
+                    {
+                        "generated_strategies": [
+                            {
+                                "candidate_id": f"generated_{index}",
+                                "raw_strategy_index": index,
+                                "strategy": f"Compressed route {index}.",
+                            }
+                            for index in range(1, 4)
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            judge = AsyncMock(side_effect=[(verdict, []) for verdict in verdicts])
+
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                return _FakeCheckpoint(identity, root / "checkpoint")
+
+            with (
+                patch("src.state_audit.RESULTS_ROOT", root / "results"),
+                patch("src.state_audit.seed_output_dir", return_value=output),
+                patch("src.state_audit.AttemptCheckpoint", side_effect=checkpoint_factory),
+                patch("src.state_audit._judge", judge),
+            ):
+                anyio.run(
+                    state_audit_strategy_artifact,
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                    "A reference proof.",
+                )
+
+            record = json.loads(
+                (output / "state_audit.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["strategy_acquired_count"], 1)
+            self.assertEqual(
+                [item["strategy_acquired"] for item in record["strategies"]],
+                [True, False, False],
+            )
+            self.assertEqual(
+                [item["acquisition_basis"] for item in record["strategies"]],
+                ["reference_steps", "none", "none"],
+            )
+            self.assertEqual(
+                [item["candidate_id"] for item in record["strategies"]],
+                ["generated_1", "generated_2", "generated_3"],
+            )
+
     def test_dense_state_extension_reuses_sparse_step_annotations(self) -> None:
         arm = ArmConfig("baseline-sequential", "none", "sequential", 8, [1])
         config = _config(arm)

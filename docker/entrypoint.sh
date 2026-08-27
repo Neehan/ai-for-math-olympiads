@@ -45,6 +45,21 @@ PY
 export PROBLEMS_FILE=/run/contest/problems.jsonl
 export HINTS_FILE=/run/contest/hints.jsonl
 export OUTLINES_FILE=/run/contest/outlines.jsonl
+case "${HARNESS_ARM:-}" in
+    selection-10k|selection|selection-40k|selection-no-problem)
+        python - <<'PY'
+import urllib.request
+from src.constants import SELECTION_URL
+
+with urllib.request.urlopen(SELECTION_URL, timeout=60) as response:
+    data = response.read()
+with open("/run/contest/selection.jsonl", "wb") as handle:
+    handle.write(data)
+print("selection candidates prefetched")
+PY
+        export SELECTION_FILE=/run/contest/selection.jsonl
+        ;;
+esac
 if [ "$STAGE" = "audit" ] || [ "$STAGE" = "state-audit" ]; then
     python - <<'PY'
 import urllib.request

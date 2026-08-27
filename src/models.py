@@ -51,10 +51,20 @@ class ExperimentConfig:
     audit_max_turns: int
     max_concurrency: int
     arms: dict[str, ArmConfig]
+    selection_output_tokens: dict[str, int] = field(default_factory=dict)
 
     def budget_tokens(self, arm: ArmConfig) -> int:
         """Total output-token budget for one attempt of this arm."""
         return self.unit_output_tokens * arm.budget_units
+
+    def selection_budget_tokens(self, arm: ArmConfig) -> int:
+        """Configured output-token cap for one selection decision."""
+        try:
+            return self.selection_output_tokens[arm.name]
+        except KeyError as error:
+            raise ValueError(
+                f"Selection arm {arm.name!r} has no configured token cap"
+            ) from error
 
     @property
     def model_dirname(self) -> str:

@@ -8,7 +8,7 @@ An attempt = one (problem, seed) pair. Mode 'single' runs one solve phase;
 mode 'sequential' runs solve -> (critique -> revise)*; mode 'parallel' forms
 one bank of eight fresh independent 1x attempts;
 mode 'uniform_strategy' runs one shared planner followed by eight fresh proof
-executors. Completed attempts (meta.json present) are skipped, so an
+executors; auxiliary modes freeze/compress/rank strategy proposals. Completed attempts (meta.json present) are skipped, so an
 interrupted run resumes cleanly.
 """
 
@@ -30,6 +30,7 @@ from src.concurrency import run_all
 from src.config import load_config, override_models
 from src.constants import (
     CONFIG_PATH,
+    DEFAULT_UNIFORM_COMPRESS_MODEL,
     HINT_H1,
     HINT_H2,
     HINT_H3,
@@ -40,6 +41,10 @@ from src.constants import (
     MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
+    MODE_UNIFORM_STRATEGY_ONLY,
+    MODE_UNIFORM_COMPRESS,
+    MODE_SELECTION,
+    MODE_SELECTION_NO_PROBLEM,
     NO_GENUINE_GAP_MARKER,
     PHASE_CRITIQUE,
     PHASE_REVISE,
@@ -80,17 +85,22 @@ from src.solver import (
 )
 from src.storage import (
     bank_run_output_dir,
+    compile_arm_audit,
     load_problems,
+    load_selection_candidates,
     parallel_bank_done,
     seed_done,
     seed_output_dir,
     uniform_strategy_bank_done,
+    uniform_strategy_only_done,
     write_parallel_bank_meta,
     write_uniform_strategy_bank_meta,
     write_uniform_strategy_plan_artifacts,
     write_uniform_strategy_planner_failure,
+    write_uniform_strategy_only_meta,
     write_seed_outputs,
 )
+from src.strategy_experiments import compress_uniform_strategies, run_selection
 from src.token_pool import TokenPool
 
 log = logging.getLogger("run")
@@ -634,7 +644,11 @@ async def solve_uniform_strategy_bank(
     """Run one shared strategy planner and eight fresh proof executors."""
     plan_budget = config.uniform_strategy_plan_tokens
     total_budget = config.budget_tokens(arm)
-    executor_budget = (total_budget - plan_budget) // config.uniform_strategy_branches
+    executor_budget = (
+        0
+        if arm.mode == MODE_UNIFORM_STRATEGY_ONLY
+        else (total_budget - plan_budget) // config.uniform_strategy_branches
+    )
     bank_dir = seed_output_dir(config, arm, problem.problem_id, seed)
     plan_scratch_path = checkpoint.scratch_dir("plan")
     plan_phases = checkpoint.phases("plan")
@@ -725,6 +739,31 @@ async def solve_uniform_strategy_bank(
             [],
             plan_scratch_path,
         )
+        if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
+            checkpoint.prepare_completion(
+                (bank_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+            )
+            write_uniform_strategy_only_meta(
+                config,
+                arm,
+                problem,
+                seed,
+                bank_dir,
+                plan_phases,
+                0,
+                checkpoint.session_ids(),
+                planner_failure=str(error),
+            )
+            checkpoint.complete()
+            log.warning(
+                "%s/%s seed %d planner-only bank completed with no eligible "
+                "strategy: %s",
+                arm.name,
+                problem.problem_id,
+                seed,
+                error,
+            )
+            return
         checkpoint.prepare_completion(
             (bank_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
         )
@@ -760,6 +799,37 @@ async def solve_uniform_strategy_bank(
         plan_tracker.spent,
         plan_budget,
     )
+    if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
+        write_uniform_strategy_plan_artifacts(
+            bank_dir,
+            plan_phases,
+            strategies,
+            [],
+            plan_scratch_path,
+        )
+        checkpoint.prepare_completion(
+            (bank_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+        )
+        write_uniform_strategy_only_meta(
+            config,
+            arm,
+            problem,
+            seed,
+            bank_dir,
+            plan_phases,
+            len(strategies),
+            checkpoint.session_ids(),
+        )
+        checkpoint.complete()
+        log.info(
+            "%s/%s seed %d planner-only bank done (%d strategies) -> %s",
+            arm.name,
+            problem.problem_id,
+            seed,
+            len(strategies),
+            bank_dir,
+        )
+        return
     tasks = []
     for run, strategy_index in enumerate(assignments, start=1):
         output_dir = bank_run_output_dir(bank_dir, run)
@@ -907,6 +977,10 @@ async def solve_seed(
     problem: Problem,
     seed: int,
     pool: TokenPool,
+    *,
+    worker_model: str | None = None,
+    all_problems: list[Problem] | None = None,
+    selection_record: dict[str, object] | None = None,
 ) -> None:
     """Run one attempt (one seed) of one problem under one arm; write outputs.
 
@@ -919,9 +993,32 @@ async def solve_seed(
         await solve_parallel_bank(config, arm, problem, seed, pool)
         return
 
+    if arm.mode == MODE_UNIFORM_COMPRESS:
+        if all_problems is None or worker_model is None:
+            raise ValueError("Compression requires the frozen examples and worker model")
+        await compress_uniform_strategies(
+            config, arm, problem, seed, pool, all_problems, worker_model
+        )
+        return
+
+    if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
+        if selection_record is None or worker_model is None:
+            raise ValueError("Selection requires a frozen candidate record and worker model")
+        await run_selection(
+            config,
+            arm,
+            problem,
+            seed,
+            pool,
+            selection_record,
+            worker_model,
+            include_problem=arm.mode == MODE_SELECTION,
+        )
+        return
+
     checkpoint = AttemptCheckpoint(run_checkpoint_identity(config, arm, problem, seed))
     try:
-        if arm.mode == MODE_UNIFORM_STRATEGY:
+        if arm.mode in {MODE_UNIFORM_STRATEGY, MODE_UNIFORM_STRATEGY_ONLY}:
             await solve_uniform_strategy_bank(
                 config, arm, problem, seed, pool, checkpoint
             )
@@ -1187,6 +1284,14 @@ async def main() -> None:
         default=None,
         help="Judge model override (default: config.json); must differ from the solver",
     )
+    parser.add_argument(
+        "--worker-model",
+        default=None,
+        help=(
+            "Auxiliary worker override: compressor/selector model. Compression "
+            "defaults to litellm/gpt-5.6-sol; selection defaults to the source model."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
@@ -1198,16 +1303,47 @@ async def main() -> None:
         )
     arm = config.arms[args.arm]
     seeds = select_seeds(arm, args.seeds)
-    problems = select_problems(load_problems(), args.problems, args.domain)
+    all_problems = load_problems()
+    problems = select_problems(all_problems, args.problems, args.domain)
     # Fail fast BEFORE spending tokens if any selected problem lacks the hint.
     for problem in problems:
         hint_for(problem, arm)
+
+    worker_model: str | None = args.worker_model
+    if arm.mode == MODE_UNIFORM_COMPRESS and worker_model is None:
+        worker_model = DEFAULT_UNIFORM_COMPRESS_MODEL
+    elif arm.mode == MODE_SELECTION and worker_model is None:
+        worker_model = config.model
+    elif arm.mode == MODE_SELECTION_NO_PROBLEM and worker_model is None:
+        raise SystemExit("selection-no-problem requires --worker-model")
+    elif arm.mode not in {
+        MODE_UNIFORM_COMPRESS,
+        MODE_SELECTION,
+        MODE_SELECTION_NO_PROBLEM,
+    } and worker_model is not None:
+        raise SystemExit("--worker-model is valid only for compression/selection arms")
+
+    selection_records: dict[str, dict[str, object]] = {}
+    if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
+        selection_records = load_selection_candidates(config.model)
+        missing = [
+            problem.problem_id
+            for problem in problems
+            if problem.problem_id not in selection_records
+        ]
+        if missing:
+            raise ValueError(
+                "Frozen hard_hint_selection.jsonl has no candidate set for "
+                f"{config.model}: {missing}"
+            )
 
     def generation_done(selected_arm: ArmConfig, output_dir: Path) -> bool:
         if selected_arm.mode == MODE_PARALLEL:
             return parallel_bank_done(output_dir)
         if selected_arm.mode == MODE_UNIFORM_STRATEGY:
             return uniform_strategy_bank_done(output_dir)
+        if selected_arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
+            return uniform_strategy_only_done(output_dir)
         return seed_done(output_dir)
 
     pending = [
@@ -1225,19 +1361,36 @@ async def main() -> None:
         len(pending),
         total - len(pending),
     )
-    pool = TokenPool.from_env(token_env_name(config.model))
+    active_model = worker_model or config.model
+    pool = TokenPool.from_env(token_env_name(active_model))
     tasks = [
-        lambda p=problem, s=seed: solve_seed(config, arm, p, s, pool)
+        lambda p=problem, s=seed: solve_seed(
+            config,
+            arm,
+            p,
+            s,
+            pool,
+            worker_model=worker_model,
+            all_problems=all_problems,
+            selection_record=selection_records.get(p.problem_id),
+        )
         for problem, seed in pending
     ]
     # Parallel and Uniform Strategy banks launch their own executor calls.
     # Running one bank controller at a time preserves the global cap of eight.
     outer_limit = (
         1
-        if arm.mode in {MODE_PARALLEL, MODE_UNIFORM_STRATEGY}
+        if arm.mode in {
+            MODE_PARALLEL,
+            MODE_UNIFORM_STRATEGY,
+            MODE_UNIFORM_STRATEGY_ONLY,
+        }
         else config.max_concurrency
     )
     await run_all(tasks, outer_limit)
+    if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
+        path, count = compile_arm_audit(config, arm)
+        log.info("Compiled %d deterministic selection verdicts -> %s", count, path)
 
 
 if __name__ == "__main__":

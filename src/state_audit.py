@@ -26,18 +26,22 @@ from src.checkpoint import AttemptCheckpoint
 from src.concurrency import run_all
 from src.config import load_config, override_models
 from src.constants import (
+    COMPRESSED_STRATEGIES_FILENAME,
     CONFIG_PATH,
     LOG_FORMAT,
     LOG_LEVEL,
     MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
+    MODE_UNIFORM_COMPRESS,
+    MODE_UNIFORM_STRATEGY_ONLY,
     RESULTS_ROOT,
     SEED_AUDIT_FILENAME,
     SEED_STATE_AUDIT_FILENAME,
+    UNIFORM_STRATEGIES_FILENAME,
 )
 from src.models import ArmConfig, ExperimentConfig, Problem
-from src.prompts import state_audit_prompt
+from src.prompts import state_audit_prompt, strategy_state_audit_prompt
 from src.run import select_problems, select_seeds
 from src.solver import token_env_name
 from src.storage import (
@@ -53,6 +57,7 @@ from src.storage import (
     seed_done,
     seed_output_dir,
     uniform_strategy_bank_done,
+    uniform_strategy_only_done,
     seed_solution_text,
     write_seed_state_audit,
 )
@@ -273,6 +278,9 @@ async def state_audit_seed(
             "state_audit_model": config.audit_model,
             "arm": arm.name,
             "problem_id": problem.problem_id,
+            "problem_statement": problem.statement,
+            "outline": outline,
+            "reference_solution": reference_solution,
             "seed": seed,
             "output_dir": output_dir.relative_to(RESULTS_ROOT).as_posix(),
             "record_extra": record_extra or {},
@@ -403,6 +411,159 @@ async def state_audit_seed(
         checkpoint.close()
 
 
+async def state_audit_strategy_artifact(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    pool: TokenPool,
+    reference_solution: str,
+) -> None:
+    """Annotate each planner/compressed proposal for strategy acquisition."""
+    output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+    state_path = output_dir / SEED_STATE_AUDIT_FILENAME
+    if state_path.exists():
+        return
+    if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
+        strategy_artifact = json.loads(
+            (output_dir / UNIFORM_STRATEGIES_FILENAME).read_text(encoding="utf-8")
+        )
+        raw_strategies = strategy_artifact.get("strategies")
+        if not isinstance(raw_strategies, list) or not all(
+            isinstance(strategy, str) and strategy.strip()
+            for strategy in raw_strategies
+        ):
+            raise ValueError(f"Malformed planner-only strategy bank: {output_dir}")
+        entries = [
+            {
+                "candidate_id": f"strategy_{index}",
+                "strategy": str(strategy).strip(),
+            }
+            for index, strategy in enumerate(raw_strategies, start=1)
+        ]
+    elif arm.mode == MODE_UNIFORM_COMPRESS:
+        strategy_artifact = json.loads(
+            (output_dir / COMPRESSED_STRATEGIES_FILENAME).read_text(encoding="utf-8")
+        )
+        raw_entries = strategy_artifact.get("generated_strategies")
+        if not isinstance(raw_entries, list):
+            raise ValueError(f"Malformed compressed strategy artifact: {output_dir}")
+        entries = []
+        for index, item in enumerate(raw_entries, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"Malformed compressed strategy {index}: {output_dir}")
+            candidate_id = item.get("candidate_id")
+            strategy = item.get("strategy")
+            raw_strategy_index = item.get("raw_strategy_index")
+            if (
+                not isinstance(candidate_id, str)
+                or not candidate_id.strip()
+                or not isinstance(strategy, str)
+                or not strategy.strip()
+                or type(raw_strategy_index) is not int
+                or raw_strategy_index < 1
+            ):
+                raise ValueError(
+                    f"Malformed compressed strategy {index}: {output_dir}"
+                )
+            entries.append(
+                {
+                    "candidate_id": candidate_id.strip(),
+                    "strategy": strategy.strip(),
+                    "raw_strategy_index": raw_strategy_index,
+                }
+            )
+    else:
+        raise ValueError(f"Unsupported strategy-artifact mode: {arm.mode}")
+    strategies = [str(entry["strategy"]) for entry in entries]
+    outline = _outline(problem)
+    checkpoint = AttemptCheckpoint(
+        {
+            "stage": "strategy_state_audit",
+            "solver_model": config.model,
+            "state_audit_model": config.audit_model,
+            "arm": arm.name,
+            "problem_id": problem.problem_id,
+            "problem_statement": problem.statement,
+            "outline": outline,
+            "reference_solution": reference_solution,
+            "seed": seed,
+            "strategies": strategies,
+        }
+    )
+    try:
+        records: list[dict[str, object]] = []
+        verdict_cache: dict[str, dict[str, object]] = {}
+        for index, entry in enumerate(entries, start=1):
+            strategy = str(entry["strategy"])
+            digest = _solution_sha256(strategy)
+            verdict = verdict_cache.get(digest)
+            if verdict is None:
+                role = f"strategy_{index}"
+                verdict, _ = await _judge(
+                    config,
+                    strategy_state_audit_prompt(
+                        problem, outline, reference_solution, strategy
+                    ),
+                    pool,
+                    str(checkpoint.scratch_dir(role)),
+                    checkpoint,
+                    role,
+                    output_schema=STATE_AUDIT_OUTPUT_SCHEMA,
+                    allow_tools=False,
+                )
+                verdict_cache[digest] = verdict
+            count = recognized_step_count(verdict)
+            record: dict[str, object] = {
+                "strategy_index": index,
+                "candidate_id": str(entry["candidate_id"]),
+                "state": "S" if count == 3 else "U",
+                "strategy_acquired": count == 3,
+                "acquisition_basis": "reference_steps" if count == 3 else "none",
+                "recognized_step_count": count,
+                "steps": verdict["steps"],
+                "strategy_sha256": digest,
+                "audit_model": config.audit_model,
+            }
+            if "raw_strategy_index" in entry:
+                record["raw_strategy_index"] = int(entry["raw_strategy_index"])
+            records.append(record)
+        acquired_count = sum(bool(record["strategy_acquired"]) for record in records)
+        final_record: dict[str, object] = {
+            "problem_id": problem.problem_id,
+            "arm": arm.name,
+            "seed": seed,
+            "solver_model": config.model,
+            "audit_model": config.audit_model,
+            "state": "S" if acquired_count else "U",
+            "strategy_acquired": acquired_count > 0,
+            "strategy_acquired_count": acquired_count,
+            "strategy_count": len(records),
+            "steps": [],
+            "note": (
+                f"{acquired_count}/{len(records)} candidate strategies recognize "
+                "all three frozen strategy mechanisms."
+            ),
+            "strategies": records,
+            "budget_cuts": {},
+        }
+        checkpoint.prepare_completion(
+            state_path.relative_to(RESULTS_ROOT).as_posix()
+        )
+        write_seed_state_audit(output_dir, final_record)
+        checkpoint.complete()
+        log.info(
+            "%s/%s seed %d: %d/%d strategies acquired",
+            arm.name,
+            problem.problem_id,
+            seed,
+            acquired_count,
+            len(records),
+        )
+    finally:
+        checkpoint.close()
+
+
 def _bank_targets(
     arm: ArmConfig, bank_dir: Path, seed: int
 ) -> list[tuple[Path, dict[str, object]]]:
@@ -477,6 +638,69 @@ async def main() -> None:
                 f"{problem.problem_id}"
             )
     seeds = select_seeds(arm, args.seeds)
+
+    if arm.mode in {MODE_UNIFORM_STRATEGY_ONLY, MODE_UNIFORM_COMPRESS}:
+        def strategy_artifact_done(problem: Problem, seed: int) -> bool:
+            output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+            if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
+                return uniform_strategy_only_done(output_dir)
+            return (
+                seed_done(output_dir)
+                and (output_dir / COMPRESSED_STRATEGIES_FILENAME).is_file()
+            )
+
+        generated_strategy_artifacts = [
+            (problem, seed)
+            for problem in problems
+            for seed in seeds
+            if strategy_artifact_done(problem, seed)
+        ]
+        missing = len(problems) * len(seeds) - len(generated_strategy_artifacts)
+        if missing:
+            log.warning("%d strategy artifacts are missing and are skipped", missing)
+        pending_strategy_artifacts = [
+            (problem, seed)
+            for problem, seed in generated_strategy_artifacts
+            if not (
+                seed_output_dir(config, arm, problem.problem_id, seed)
+                / SEED_STATE_AUDIT_FILENAME
+            ).exists()
+        ]
+        log.info(
+            "Arm %s: %d strategy artifacts to state-audit, %d already current",
+            arm.name,
+            len(pending_strategy_artifacts),
+            len(generated_strategy_artifacts) - len(pending_strategy_artifacts),
+        )
+        if pending_strategy_artifacts:
+            pool = TokenPool.from_env(token_env_name(config.audit_model))
+            tasks = [
+                lambda p=problem, s=seed: state_audit_strategy_artifact(
+                    config,
+                    arm,
+                    p,
+                    s,
+                    pool,
+                    state_references[p.problem_id][1],
+                )
+                for problem, seed in pending_strategy_artifacts
+            ]
+            await run_all(tasks, config.max_concurrency)
+        state_path, state_count = compile_arm_state_audit(config, arm)
+        log.info("Compiled %d state records -> %s", state_count, state_path)
+        failed = [
+            (problem.problem_id, seed)
+            for problem, seed in pending_strategy_artifacts
+            if not (
+                seed_output_dir(config, arm, problem.problem_id, seed)
+                / SEED_STATE_AUDIT_FILENAME
+            ).exists()
+        ]
+        if failed:
+            raise SystemExit(
+                f"{len(failed)} strategy-state audit task(s) failed; rerun"
+            )
+        return
 
     generated = [
         (problem, seed)

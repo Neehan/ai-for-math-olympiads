@@ -33,6 +33,7 @@ from src.constants import (
     MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
+    MODE_UNIFORM_STRATEGY_ONLY,
     OUTLINES_FILE_ENV,
     OUTLINES_URL,
     PARALLEL_BANK_PROTOCOL,
@@ -44,6 +45,8 @@ from src.constants import (
     PROBLEMS_URL,
     RESULTS_ROOT,
     SCRATCH_SUBDIR,
+    SELECTION_FILE_ENV,
+    SELECTION_URL,
     SESSION_STATE_SUBDIR,
     SEED_AUDIT_FILENAME,
     SEED_STATE_AUDIT_FILENAME,
@@ -209,6 +212,137 @@ def load_problems() -> list[Problem]:
     return problems
 
 
+def load_selection_candidates(
+    source_model: str,
+) -> dict[str, dict[str, Any]]:
+    """Load frozen candidates with canonical strategy-acquisition labels."""
+    selected: dict[str, dict[str, Any]] = {}
+    for record in _fetch_jsonl(SELECTION_FILE_ENV, SELECTION_URL):
+        if record.get("source_model") != source_model:
+            continue
+        problem_id = record.get("problem_id")
+        oracle = record.get("oracle_strategy")
+        generated = record.get("generated_strategies")
+        if (
+            not isinstance(problem_id, str)
+            or not isinstance(oracle, str)
+            or not oracle.strip()
+            or not isinstance(generated, list)
+            or len(generated) != 3
+        ):
+            raise ValueError("Malformed hard-hint selection record")
+        if len(oracle.split()) > 25:
+            raise ValueError(f"{problem_id}: oracle selection sketch exceeds 25 words")
+        normalized: list[dict[str, object]] = []
+        for index, item in enumerate(generated, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"{problem_id}: malformed generated strategy")
+            strategy = item.get("strategy")
+            strategy_acquired = item.get("strategy_acquired")
+            acquisition_basis = item.get("acquisition_basis")
+            adjudication_note = item.get("adjudication_note")
+            candidate_id = item.get("candidate_id", f"generated_{index}")
+            if not isinstance(strategy, str) or not strategy.strip():
+                raise ValueError(f"{problem_id}: empty generated strategy")
+            if len(strategy.split()) > 25:
+                raise ValueError(
+                    f"{problem_id}: generated strategy {index} exceeds 25 words"
+                )
+            if not isinstance(strategy_acquired, bool):
+                raise ValueError(
+                    f"{problem_id}: generated strategy {index} lacks frozen "
+                    "strategy_acquired label"
+                )
+            if acquisition_basis not in {
+                "reference_steps",
+                "human_alternative",
+                "none",
+            }:
+                raise ValueError(
+                    f"{problem_id}: generated strategy {index} has invalid "
+                    "acquisition_basis"
+                )
+            if strategy_acquired != (acquisition_basis != "none"):
+                raise ValueError(
+                    f"{problem_id}: generated strategy {index} has inconsistent "
+                    "strategy_acquired and acquisition_basis"
+                )
+            if acquisition_basis == "human_alternative" and (
+                not isinstance(adjudication_note, str)
+                or not adjudication_note.strip()
+            ):
+                raise ValueError(
+                    f"{problem_id}: human alternative strategy {index} requires "
+                    "an adjudication_note"
+                )
+            if acquisition_basis != "human_alternative" and adjudication_note is not None:
+                raise ValueError(
+                    f"{problem_id}: generated strategy {index} has an unexpected "
+                    "adjudication_note"
+                )
+            if (
+                not isinstance(candidate_id, str)
+                or not candidate_id.strip()
+                or candidate_id == "oracle"
+            ):
+                raise ValueError(
+                    f"{problem_id}: generated strategy {index} has invalid candidate_id"
+                )
+            normalized.append(
+                {
+                    "candidate_id": candidate_id.strip(),
+                    "strategy": strategy.strip(),
+                    "strategy_acquired": strategy_acquired,
+                    "acquisition_basis": acquisition_basis,
+                    **(
+                        {"adjudication_note": adjudication_note.strip()}
+                        if isinstance(adjudication_note, str)
+                        else {}
+                    ),
+                }
+            )
+        candidate_ids = [str(item["candidate_id"]) for item in normalized]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError(f"{problem_id}: duplicate generated candidate_id")
+        if problem_id in selected:
+            raise ValueError(
+                f"Duplicate hard-hint selection record for {source_model}/{problem_id}"
+            )
+        selected[problem_id] = {
+            "problem_id": problem_id,
+            "source_model": source_model,
+            "oracle_strategy": oracle.strip(),
+            "generated_strategies": normalized,
+        }
+    return selected
+
+
+def write_auxiliary_result(
+    output_dir: Path,
+    artifact_name: str,
+    artifact: dict[str, object],
+    meta: dict[str, object],
+    *,
+    audit: dict[str, object] | None = None,
+) -> None:
+    """Durably write a non-proof strategy artifact and its completion marker."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(
+        output_dir / artifact_name,
+        (json.dumps(artifact, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+    if audit is not None:
+        write_seed_audit(output_dir, audit)
+    _atomic_write_bytes(
+        output_dir / SOLUTION_FILENAME,
+        b"Auxiliary strategy experiment; no proof artifact.\n",
+    )
+    _atomic_write_bytes(
+        output_dir / META_FILENAME,
+        (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+
+
 def _outline_reference(record: dict[str, Any]) -> str:
     """Select index 0 after verifying its explicit outline-matching marker."""
     problem_id = record.get("problem_id")
@@ -360,6 +494,31 @@ def uniform_strategy_bank_done(output_dir: Path) -> bool:
     return all(
         (bank_run_output_dir(output_dir, run) / META_FILENAME).exists()
         for run in range(1, 9)
+    )
+
+
+def uniform_strategy_only_done(output_dir: Path) -> bool:
+    """True when a planner-only bank has a valid frozen strategy artifact."""
+    meta_path = output_dir / META_FILENAME
+    strategies_path = output_dir / UNIFORM_STRATEGIES_FILENAME
+    if (
+        not meta_path.exists()
+        or not strategies_path.exists()
+        or not (output_dir / SOLUTION_FILENAME).exists()
+    ):
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        artifact = json.loads(strategies_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    strategies = artifact.get("strategies")
+    return (
+        meta.get("mode") == MODE_UNIFORM_STRATEGY_ONLY
+        and isinstance(strategies, list)
+        and len(strategies) == meta.get("strategy_count")
+        and all(isinstance(strategy, str) and strategy.strip() for strategy in strategies)
+        and (bool(strategies) or isinstance(meta.get("planner_failure"), str))
     )
 
 
@@ -812,10 +971,11 @@ def write_uniform_strategy_plan_artifacts(
     assignments: list[int],
     plan_scratch_path: Path,
 ) -> None:
-    """Persist the shared planner output after every executor has finished.
+    """Persist the shared planner output before optional executor generation.
 
-    The bank-level meta.json remains reserved as the completion marker and is
-    written only after every executor run has completed.
+    For a full Uniform-C bank, top-level meta.json remains reserved as the
+    completion marker and is written only after every executor finishes. A
+    planner-only bank writes its own marker immediately after these artifacts.
     """
     bank_dir.mkdir(parents=True, exist_ok=True)
     log_lines = "\n".join(
@@ -972,6 +1132,55 @@ def write_uniform_strategy_bank_meta(
             "run_01 through run_"
             f"{config.uniform_strategy_branches:02d}; this file is not a candidate proof.\n"
         ).encode("utf-8"),
+    )
+    _atomic_write_bytes(
+        bank_dir / META_FILENAME,
+        (json.dumps(meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+
+
+def write_uniform_strategy_only_meta(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    bank_dir: Path,
+    plan_phases: list[PhaseResult],
+    strategy_count: int,
+    provider_session_ids: dict[str, str],
+    *,
+    reused_from: str | None = None,
+    planner_failure: str | None = None,
+) -> None:
+    """Write the completion marker for a planner-only strategy bank."""
+    if strategy_count < 0:
+        raise ValueError("Planner-only strategy count cannot be negative")
+    if strategy_count == 0 and not planner_failure:
+        raise ValueError("Empty planner-only bank requires a failure reason")
+    plan_spent = sum(phase.output_tokens for phase in plan_phases)
+    meta: dict[str, object] = {
+        "problem_id": problem.problem_id,
+        "arm": arm.name,
+        "mode": MODE_UNIFORM_STRATEGY_ONLY,
+        "hint": arm.hint,
+        "model": config.model,
+        "effort": config.effort,
+        "seed": seed,
+        "budget_output_tokens": config.uniform_strategy_plan_tokens,
+        "output_tokens_spent": plan_spent,
+        "uniform_strategy_plan_budget_output_tokens": config.uniform_strategy_plan_tokens,
+        "uniform_strategy_plan_output_tokens_spent": plan_spent,
+        "strategy_count": strategy_count,
+        "provider_session_ids": dict(sorted(provider_session_ids.items())),
+        "gradeable_solution_emitted": False,
+    }
+    if reused_from is not None:
+        meta["reused_from"] = reused_from
+    if planner_failure is not None:
+        meta["planner_failure"] = planner_failure
+    _atomic_write_bytes(
+        bank_dir / SOLUTION_FILENAME,
+        b"Planner-only Uniform-C strategy bank; no proof artifact.\n",
     )
     _atomic_write_bytes(
         bank_dir / META_FILENAME,

@@ -14,10 +14,14 @@ from src.constants import (
     PROMPTS_DIR,
     REVISE_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
+    STRATEGY_STATE_AUDIT_PROMPT_FILE,
     SYSTEM_PROMPT_FILE,
     TASK_PROMPT_FILE,
     UNIFORM_STRATEGY_PLAN_PROMPT_FILE,
     UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE,
+    UNIFORM_COMPRESS_PROMPT_FILE,
+    SELECTION_PROMPT_FILE,
+    SELECTION_NO_PROBLEM_PROMPT_FILE,
     WRAP_UP_PROMPT_FILE,
 )
 from src.models import Problem
@@ -171,5 +175,70 @@ def state_audit_prompt(
             "outline": outline.strip(),
             "reference_solution": reference_solution.strip(),
             "solution": solution_text.strip(),
+        },
+    )
+
+
+def strategy_state_audit_prompt(
+    problem: Problem,
+    outline: str,
+    reference_solution: str,
+    strategy_text: str,
+) -> str:
+    """Reference-guided mechanism recognition for a proposed strategy."""
+    return _render(
+        _load(STRATEGY_STATE_AUDIT_PROMPT_FILE),
+        {
+            "statement": problem.statement.strip(),
+            "outline": outline.strip(),
+            "reference_solution": reference_solution.strip(),
+            "strategy": strategy_text.strip(),
+        },
+    )
+
+
+def uniform_compress_prompt(
+    problem: Problem,
+    strategy_text: str,
+    examples: list[tuple[str, str]],
+) -> str:
+    """Compress one generated strategy in the frozen oracle-sketch style."""
+    rendered_examples = "\n\n".join(
+        f"Example {index}\nProblem:\n{statement.strip()}\nSketch:\n{hint.strip()}"
+        for index, (statement, hint) in enumerate(examples, start=1)
+    )
+    return _render(
+        _load(UNIFORM_COMPRESS_PROMPT_FILE),
+        {
+            "examples": rendered_examples,
+            "statement": problem.statement.strip(),
+            "strategy": strategy_text.strip(),
+        },
+    )
+
+
+def selection_prompt(problem: Problem, candidates: list[str]) -> str:
+    """Rank four anonymous strategy sketches for the stated problem."""
+    return _render(
+        _load(SELECTION_PROMPT_FILE),
+        {
+            "statement": problem.statement.strip(),
+            "candidates": "\n\n".join(
+                f"Strategy {index}: {candidate.strip()}"
+                for index, candidate in enumerate(candidates, start=1)
+            ),
+        },
+    )
+
+
+def selection_no_problem_prompt(candidates: list[str]) -> str:
+    """Rank four anonymous sketches for reference-author style without a problem."""
+    return _render(
+        _load(SELECTION_NO_PROBLEM_PROMPT_FILE),
+        {
+            "candidates": "\n\n".join(
+                f"Strategy {index}: {candidate.strip()}"
+                for index, candidate in enumerate(candidates, start=1)
+            )
         },
     )

@@ -43,6 +43,19 @@ class StagingMergeTests(unittest.TestCase):
 
             self.assertTrue((seed / "scratch.txt").is_file())
 
+    def test_completed_selection_attempt_retains_deterministic_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            seed = root / "model" / "selection" / "problem" / "seed_1"
+            seed.mkdir(parents=True)
+            for name in ("meta.json", "solution.md", "selection.json", "audit.json"):
+                (seed / name).write_text("frozen", encoding="utf-8")
+
+            prune_staging(root)
+
+            self.assertTrue((seed / "selection.json").is_file())
+            self.assertTrue((seed / "audit.json").is_file())
+
     def test_marker_only_normal_attempt_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

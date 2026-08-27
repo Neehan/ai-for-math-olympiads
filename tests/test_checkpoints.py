@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import fcntl
+from pathlib import Path
 from unittest.mock import patch
 
 from claude_agent_sdk import (
@@ -15,10 +16,13 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
-from src.checkpoint import AttemptCheckpoint
+from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
 from src.constants import (
     CHECKPOINT_ROOT_ENV,
     DEFER_CHECKPOINT_CLEANUP_ENV,
+    SELECTION_PROMPT_FILE,
+    STATE_AUDIT_PROMPT_FILE,
+    UNIFORM_COMPRESS_PROMPT_FILE,
 )
 from src.models import PhaseResult, ReconnectEvent
 from src.run import _checkpointed_phase
@@ -67,6 +71,34 @@ class CheckpointTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.env.stop()
         self.temp.cleanup()
+
+    def test_posthoc_prompts_do_not_change_legacy_protocol_fingerprint(self) -> None:
+        root = Path(self.temp.name)
+        prompts = root / "prompts"
+        prompts.mkdir()
+        settings = root / "settings.json"
+        settings.write_text("settings", encoding="utf-8")
+        (prompts / "solve.md").write_text("solve-v1", encoding="utf-8")
+        protocol_fingerprint.cache_clear()
+        with patch("src.checkpoint.PROMPTS_DIR", prompts):
+            baseline = protocol_fingerprint(settings)
+            (prompts / STATE_AUDIT_PROMPT_FILE).write_text(
+                "state-v1", encoding="utf-8"
+            )
+            (prompts / UNIFORM_COMPRESS_PROMPT_FILE).write_text(
+                "compress-v1", encoding="utf-8"
+            )
+            (prompts / SELECTION_PROMPT_FILE).write_text(
+                "selection-v1", encoding="utf-8"
+            )
+            protocol_fingerprint.cache_clear()
+            self.assertEqual(protocol_fingerprint(settings), baseline)
+            protocol_fingerprint.cache_clear()
+            self.assertNotEqual(
+                protocol_fingerprint(settings, (UNIFORM_COMPRESS_PROMPT_FILE,)),
+                baseline,
+            )
+        protocol_fingerprint.cache_clear()
 
     def test_mid_phase_tracker_and_prefix_survive_process_restart(self) -> None:
         first = AttemptCheckpoint(self.identity)

@@ -2,7 +2,7 @@
 # Build the image and run the generation or audit pipeline in throwaway
 # containers behind the same egress firewall. One public `audit` command first
 # grades correctness, then launches a separate
-# internal container for route-state annotation on the four eligible arms.
+# internal container for route-state annotation on eligible arms.
 # Keeping the stages separate prevents state annotations from influencing
 # correctness verdicts.
 #
@@ -13,7 +13,8 @@
 # agent settings profiles are mounted read-only so editing them needs no rebuild.
 #
 # The run stage mounts a staging dir holding only meta.json resume markers
-# (never prior solutions/logs). On exit, only newly completed attempts are
+# (never prior proof solutions/logs). Compression additionally receives only
+# the planner-only strategies and their non-proof manifest. On exit, only newly completed attempts are
 # merged into results/; the audit stage mounts the full tree (the judge reads
 # solutions).
 #
@@ -92,6 +93,9 @@ mkdir -p "$RESULTS_HOST_ROOT"
 ARM_NAME=""
 MODEL_NAME=$(python -c 'import json; print(json.load(open("config.json"))["model"])')
 AUDIT_MODEL_NAME=$(python -c 'import json; print(json.load(open("config.json"))["audit_model"])')
+WORKER_MODEL_NAME=""
+PROBLEMS_FILTER=""
+DOMAIN_FILTER=""
 EXPECT_VALUE=""
 for ARGUMENT in "$@"; do
     if [ "$EXPECT_VALUE" = "arm" ]; then
@@ -109,21 +113,89 @@ for ARGUMENT in "$@"; do
         EXPECT_VALUE=""
         continue
     fi
+    if [ "$EXPECT_VALUE" = "worker_model" ]; then
+        WORKER_MODEL_NAME="$ARGUMENT"
+        EXPECT_VALUE=""
+        continue
+    fi
+    if [ "$EXPECT_VALUE" = "problems" ]; then
+        PROBLEMS_FILTER="$ARGUMENT"
+        EXPECT_VALUE=""
+        continue
+    fi
+    if [ "$EXPECT_VALUE" = "domain" ]; then
+        DOMAIN_FILTER="$ARGUMENT"
+        EXPECT_VALUE=""
+        continue
+    fi
     case "$ARGUMENT" in
         --arm) EXPECT_VALUE="arm" ;;
         --model) EXPECT_VALUE="model" ;;
         --audit-model) EXPECT_VALUE="audit_model" ;;
+        --worker-model) EXPECT_VALUE="worker_model" ;;
+        --problems) EXPECT_VALUE="problems" ;;
+        --domain) EXPECT_VALUE="domain" ;;
         --arm=*) ARM_NAME=${ARGUMENT#--arm=} ;;
         --model=*) MODEL_NAME=${ARGUMENT#--model=} ;;
         --audit-model=*) AUDIT_MODEL_NAME=${ARGUMENT#--audit-model=} ;;
+        --worker-model=*) WORKER_MODEL_NAME=${ARGUMENT#--worker-model=} ;;
+        --problems=*) PROBLEMS_FILTER=${ARGUMENT#--problems=} ;;
+        --domain=*) DOMAIN_FILTER=${ARGUMENT#--domain=} ;;
     esac
 done
+if [ -n "$EXPECT_VALUE" ]; then
+    echo "ERROR: --${EXPECT_VALUE//_/-} requires a value" >&2
+    exit 2
+fi
 if [ -z "$ARM_NAME" ]; then
     echo "ERROR: --arm requires a value" >&2
     exit 2
 fi
 
 if [ "$1" = "run" ]; then
+    case "$ARM_NAME" in
+        baseline-uniform-compress)
+            WORKER_MODEL_NAME=${WORKER_MODEL_NAME:-litellm/gpt-5.6-sol}
+            ;;
+        selection-10k|selection|selection-40k)
+            WORKER_MODEL_NAME=${WORKER_MODEL_NAME:-$MODEL_NAME}
+            ;;
+        selection-no-problem)
+            if [ -z "$WORKER_MODEL_NAME" ]; then
+                echo "ERROR: selection-no-problem requires --worker-model" >&2
+                exit 2
+            fi
+            ;;
+    esac
+fi
+IS_SELECTION_ARM=0
+case "$ARM_NAME" in
+    selection-10k|selection|selection-40k|selection-no-problem)
+        IS_SELECTION_ARM=1
+        ;;
+esac
+CHECKPOINT_ARM_ID=$ARM_NAME
+if [ -n "$WORKER_MODEL_NAME" ]; then
+    CHECKPOINT_ARM_ID="$ARM_NAME:$WORKER_MODEL_NAME"
+fi
+
+if [ "$1" = "run" ] && [ "$ARM_NAME" = "baseline-uniform-strategy-only" ]; then
+    if [ -z "$DOMAIN_FILTER" ] || [ -n "$PROBLEMS_FILTER" ]; then
+        reuse_args=(--results-root "$RESULTS_HOST_ROOT" --model "$MODEL_NAME")
+        if [ -n "$PROBLEMS_FILTER" ]; then
+            reuse_args+=(--problems "$PROBLEMS_FILTER")
+        fi
+        python scripts/reuse_uniform_strategies.py "${reuse_args[@]}"
+    else
+        echo "planner reuse skipped for --domain-only selection; pass explicit --problems to reuse existing banks" >&2
+    fi
+fi
+
+if [ "$1" = "run" ]; then
+    ACTIVE_MODEL=${WORKER_MODEL_NAME:-$MODEL_NAME}
+elif [ "$IS_SELECTION_ARM" -eq 1 ]; then
+    # Selection verdicts are deterministic fields written during generation;
+    # recompiling them does not call a judge model.
     ACTIVE_MODEL=$MODEL_NAME
 else
     ACTIVE_MODEL=$AUDIT_MODEL_NAME
@@ -188,13 +260,13 @@ esac
 if [ "$DATASET_NAME" = "math-contests-2026" ]; then
     # Preserve the exact legacy identity so paid in-flight checkpoints remain
     # resumable after adding the dataset selector.
-    CHECKPOINT_NAMESPACE=$(python -c \
-        'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:5]).encode()); prompts=sorted(pathlib.Path("prompts").glob("*.md")); prompts=[p for p in prompts if p.name!="state_audit.md"]; files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[5]),*prompts]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
-        "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$ACTIVE_AGENT_SETTINGS")
+    CHECKPOINT_NAMESPACE=$(python scripts/checkpoint_namespace.py \
+        "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$CHECKPOINT_ARM_ID" \
+        "$ACTIVE_AGENT_SETTINGS")
 else
-    CHECKPOINT_NAMESPACE=$(python -c \
-        'import hashlib,pathlib,sys; h=hashlib.sha256("\0".join(sys.argv[1:6]).encode()); prompts=sorted(pathlib.Path("prompts").glob("*.md")); prompts=[p for p in prompts if p.name!="state_audit.md"]; files=[pathlib.Path("config.json"),pathlib.Path(sys.argv[6]),*prompts]; [h.update(p.name.encode()+b"\0"+p.read_bytes()+b"\0") for p in files]; print(h.hexdigest()[:24])' \
-        "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$ARM_NAME" "$DATASET_NAME" "$ACTIVE_AGENT_SETTINGS")
+    CHECKPOINT_NAMESPACE=$(python scripts/checkpoint_namespace.py \
+        "$1" "$MODEL_NAME" "$AUDIT_MODEL_NAME" "$CHECKPOINT_ARM_ID" \
+        "$DATASET_NAME" "$ACTIVE_AGENT_SETTINGS")
 fi
 CHECKPOINT_MOUNT="$PWD/.session-checkpoints/runtime/$CHECKPOINT_NAMESPACE"
 mkdir -p "$CHECKPOINT_MOUNT"
@@ -235,6 +307,41 @@ if [ "$1" = "run" ]; then
     STAGING=$(mktemp -d "$PWD/.$RESULTS_DIR_NAME-staging.XXXXXX")
     rsync -a --include='*/' --include='meta.json' --exclude='*' \
         "$RESULTS_HOST_ROOT"/ "$STAGING"/
+    if [ "$ARM_NAME" = "baseline-uniform-strategy-only" ]; then
+        MODEL_DIR_NAME=${MODEL_NAME//\//-}
+        PLANNER_ONLY_ROOT="$RESULTS_HOST_ROOT/$MODEL_DIR_NAME/baseline-uniform-strategy-only"
+        STAGED_PLANNER_ONLY_ROOT="$STAGING/$MODEL_DIR_NAME/baseline-uniform-strategy-only"
+        if [ -d "$PLANNER_ONLY_ROOT" ]; then
+            mkdir -p "$STAGED_PLANNER_ONLY_ROOT"
+            rsync -a --include='*/' --include='meta.json' --include='solution.md' \
+                --include='strategies.json' --exclude='*' \
+                "$PLANNER_ONLY_ROOT"/ "$STAGED_PLANNER_ONLY_ROOT"/
+        fi
+    fi
+    if [ "$ARM_NAME" = "baseline-uniform-compress" ]; then
+        MODEL_DIR_NAME=${MODEL_NAME//\//-}
+        SOURCE_STRATEGY_ROOT="$RESULTS_HOST_ROOT/$MODEL_DIR_NAME/baseline-uniform-strategy-only"
+        STAGED_STRATEGY_ROOT="$STAGING/$MODEL_DIR_NAME/baseline-uniform-strategy-only"
+        if [ -d "$SOURCE_STRATEGY_ROOT" ]; then
+            mkdir -p "$STAGED_STRATEGY_ROOT"
+            rsync -a --include='*/' --include='meta.json' --include='solution.md' \
+                --include='strategies.json' --exclude='*' \
+                "$SOURCE_STRATEGY_ROOT"/ "$STAGED_STRATEGY_ROOT"/
+        fi
+    fi
+    if [ "$IS_SELECTION_ARM" -eq 1 ]; then
+        MODEL_DIR_NAME=${MODEL_NAME//\//-}
+        SELECTION_ROOT="$RESULTS_HOST_ROOT/$MODEL_DIR_NAME/$ARM_NAME"
+        STAGED_SELECTION_ROOT="$STAGING/$MODEL_DIR_NAME/$ARM_NAME"
+        if [ -d "$SELECTION_ROOT" ]; then
+            mkdir -p "$STAGED_SELECTION_ROOT"
+            # Existing deterministic verdicts are needed when run.py rebuilds
+            # the complete arm-level audit.jsonl after a partial resumption.
+            rsync -a --include='*/' --include='meta.json' --include='solution.md' \
+                --include='selection.json' --include='audit.json' --exclude='*' \
+                "$SELECTION_ROOT"/ "$STAGED_SELECTION_ROOT"/
+        fi
+    fi
     RESULTS_MOUNT="$STAGING"
 fi
 
@@ -257,16 +364,17 @@ docker run --rm --cap-add=NET_ADMIN \
     -v "$CHECKPOINT_MOUNT:/c" \
     -e HARNESS_CHECKPOINT_ROOT=/c \
     -e "HARNESS_DATASET=$DATASET_NAME" \
+    -e "HARNESS_ARM=$ARM_NAME" \
     -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
     -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
     "$IMAGE" "$@"
 
-# State/route annotation is needed only for the two temporal trajectories and
-# the two search controls. Standalone fixed-compute arms stop after correctness
-# grading, which avoids annotation calls unused by either analysis.
+# State/strategy annotation is needed only for the temporal trajectories,
+# search controls, and the compressed candidates displayed in selection.
+# Standalone fixed-compute arms stop after correctness grading.
 RUN_STATE_AUDIT=0
 case "$ARM_NAME" in
-    baseline-sequential|hint-sequential|baseline-parallel|baseline-uniform-strategy)
+    baseline-sequential|hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only|baseline-uniform-compress)
         RUN_STATE_AUDIT=1
         ;;
 esac
@@ -292,6 +400,7 @@ if [ "$1" = "audit" ] && [ "$RUN_STATE_AUDIT" -eq 1 ]; then
         -v "$STATE_CHECKPOINT_MOUNT:/c" \
         -e HARNESS_CHECKPOINT_ROOT=/c \
         -e "HARNESS_DATASET=$DATASET_NAME" \
+        -e "HARNESS_ARM=$ARM_NAME" \
         -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
         -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
         "$IMAGE" state-audit "${@:2}"

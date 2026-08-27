@@ -44,10 +44,15 @@ from src.constants import (
     CONFIG_PATH,
     LOG_FORMAT,
     LOG_LEVEL,
+    MAX_OUTPUT_TOKENS_PER_RESPONSE,
     META_FILENAME,
     MODE_PARALLEL,
     MODE_SEQUENTIAL,
     MODE_UNIFORM_STRATEGY,
+    MODE_UNIFORM_STRATEGY_ONLY,
+    MODE_UNIFORM_COMPRESS,
+    MODE_SELECTION,
+    MODE_SELECTION_NO_PROBLEM,
     PARALLEL_BANK_PROTOCOL,
     PERMISSION_MODE,
     RESULTS_ROOT,
@@ -116,6 +121,8 @@ def _audit_options(
     resume_session_id: str | None = None,
     output_schema: dict[str, object] = AUDIT_OUTPUT_SCHEMA,
     allow_tools: bool = True,
+    max_output_tokens_per_response: int = MAX_OUTPUT_TOKENS_PER_RESPONSE,
+    max_turns: int | None = None,
 ) -> ClaudeAgentOptions:
     """Judge session options: scratch tools to CHECK (audit, not solve),
     structured 0/5/6/7 output, opaque scratch cwd (never the repo root).
@@ -129,7 +136,12 @@ def _audit_options(
         cli_path=os.environ.get(CLI_PATH_ENV),
         effort=config.effort,  # type: ignore[arg-type]
         stderr=stderr_tail,
-        env=isolated_session_env(config.audit_model, oauth_token, scratch_dir),
+        env=isolated_session_env(
+            config.audit_model,
+            oauth_token,
+            scratch_dir,
+            max_output_tokens_per_response,
+        ),
         allowed_tools=list(ALLOWED_TOOLS) if allow_tools else [],
         disallowed_tools=[
             *disallowed_tools_for_model(config.audit_model),
@@ -145,11 +157,27 @@ def _audit_options(
             ),
         },
         permission_mode=PERMISSION_MODE,
-        max_turns=config.audit_max_turns,
+        max_turns=max_turns if max_turns is not None else config.audit_max_turns,
         cwd=scratch_dir,
         output_format={"type": "json_schema", "schema": output_schema},
         session_id=session_id,
         resume=resume_session_id,
+    )
+
+
+def _completed_without_verdict(result: ResultMessage) -> bool:
+    """Whether a bounded judge call ended after model work but made no decision."""
+    if isinstance(result.structured_output, dict):
+        return False
+    limit_reached = (
+        result.stop_reason == "max_tokens"
+        or result.subtype == "error_max_turns"
+        or any("max turn" in error.casefold() for error in (result.errors or []))
+    )
+    return limit_reached or (
+        not result.is_error
+        and result.num_turns > 0
+        and not isinstance(result.structured_output, dict)
     )
 
 
@@ -163,6 +191,9 @@ async def _judge(
     *,
     output_schema: dict[str, object] = AUDIT_OUTPUT_SCHEMA,
     allow_tools: bool = True,
+    max_output_tokens_per_response: int = MAX_OUTPUT_TOKENS_PER_RESPONSE,
+    max_turns: int | None = None,
+    terminal_no_verdict: bool = False,
 ) -> tuple[dict[str, object], list[ReconnectEvent]]:
     """Run one judge call and return its validated structured verdict."""
     saved = checkpoint.call_result(role)
@@ -194,6 +225,8 @@ async def _judge(
             resume_session_id=resume_id,
             output_schema=output_schema,
             allow_tools=allow_tools,
+            max_output_tokens_per_response=max_output_tokens_per_response,
+            max_turns=max_turns,
         ),
         session_id=checkpoint.session_id(role),
         reconnects=checkpoint.reconnects(role),
@@ -211,11 +244,37 @@ async def _judge(
         finally:
             reconnects = session.reconnect_events
             checkpoint.save_session(role, session.session_id, reconnects)
-    if result is None or result.is_error:
+    if result is None:
         raise RuntimeError(f"Judge call failed: {result and result.errors}")
+    if terminal_no_verdict and _completed_without_verdict(result):
+        verdict = {
+            "decision_status": "no_decision",
+            "stop_reason": result.stop_reason or result.subtype,
+            "usage": dict(result.usage) if isinstance(result.usage, dict) else {},
+        }
+        checkpoint.finish_call(
+            role,
+            {
+                "verdict": verdict,
+                "reconnects": [dataclasses.asdict(event) for event in reconnects],
+                "process_resume_count": int(active.get("process_resume_count", 0)),
+            },
+            session.session_id,
+            reconnects,
+        )
+        return verdict, reconnects
+    if result.is_error and not (
+        terminal_no_verdict and isinstance(result.structured_output, dict)
+    ):
+        raise RuntimeError(f"Judge call failed: {result.errors}")
     if not isinstance(result.structured_output, dict):
         raise RuntimeError("Judge returned no structured verdict")
-    verdict: dict[str, object] = result.structured_output
+    verdict: dict[str, object] = dict(result.structured_output)
+    if terminal_no_verdict:
+        verdict["stop_reason"] = result.stop_reason or result.subtype
+        verdict["usage"] = (
+            dict(result.usage) if isinstance(result.usage, dict) else {}
+        )
     checkpoint.finish_call(
         role,
         {
@@ -940,6 +999,13 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
+    if arm.mode in {MODE_UNIFORM_STRATEGY_ONLY, MODE_UNIFORM_COMPRESS}:
+        log.info("Arm %s has no proof artifacts; strategy audit follows", arm.name)
+        return
+    if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
+        path, count = compile_arm_audit(config, arm)
+        log.info("Compiled %d deterministic selection verdicts -> %s", count, path)
+        return
     if args.all_checkpoints and arm.mode != MODE_SEQUENTIAL:
         raise SystemExit("--all-checkpoints is valid only for sequential arms")
     all_problems = load_problems()
