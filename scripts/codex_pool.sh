@@ -196,6 +196,7 @@ start_slot() {
         docker rm "$CONTAINER" >/dev/null
     fi
     docker run -d --name "$CONTAINER" \
+        --restart unless-stopped \
         --network "$NETWORK" \
         --label ai.olympiad.codex-litellm-pool=true \
         --label "ai.olympiad.codex-litellm-slot=${SLOT}" \
