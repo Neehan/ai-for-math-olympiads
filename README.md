@@ -1,78 +1,79 @@
-# Strategy Access and Test-Time Scaling
+# Strategy Access and Execution in Test-Time Scaling
 
 ## Research question
 
-When a reasoning model fails a fresh olympiad proof, is the missing resource more inference or access to the right strategy?
+Why do apparently useful test-time-compute allocations disagree? We test one operational hypothesis:
 
-Our primary hypothesis is a discovery--execution dissociation:
+> Breadth and depth act on different bottlenecks: breadth can increase access to viable strategies, while depth can improve their execution as rigorous proofs.
 
-> A model can execute a concise strategy that substantial inference devoted to finding strategies does not discover.
+These are observable interfaces in an inference procedure, not claims about separate neural modules. All conclusions are finite-budget statements about the tested models, problems, and controllers. The retained selector arms are exploratory and are not part of the primary claim.
 
-The claim is finite and operational: it concerns the tested models, problems, inference procedures, and budgets. A frozen oracle sketch is a diagnostic intervention, not a deployable source of free information.
+## Measurement
 
-## Contributions
+- **Strategy proposed:** a planner artifact contains the frozen reference route or a human-adjudicated viable alternative.
+- **Strategy acquired:** a proof attempt contains a complete viable route. Every independently accepted proof necessarily counts as acquired, including proofs using alternative routes.
+- **Proof solved:** a blinded correctness audit scores the submitted proof at least 5/7.
+- **Strategy selected:** a fixed-pool selector ranks any human-verified viable candidate first.
 
-### 1. Strategy access versus inference compute
+For incomplete artifacts, the three-step outline of the frozen reference proof supplies a reproducible lower bound on strategy acquisition. Alternative routes used in headline cases are adjudicated separately.
 
-Compare matched unaided and strategy-conditioned inference. The central cases are problems where depth, independent sampling, and diversified plan search do not produce a viable strategy, while the same model turns a frozen audited sketch of at most 25 words into a valid proof. This is the paper's required contribution.
+## Experiments
 
-### 2. Explain the scaling dynamics
+One compute unit is at most 200k eligible output tokens.
 
-Each problem has a human-verified three-step outline of one complete oracle strategy. Retrospective annotations derive `U/P/S` states from changes in recognized mechanisms at every Self-Refine checkpoint. The proposed mechanism is that persistent `U→U` transitions generate acquisition plateaus, while entry into `P` raises the probability of complete strategy acquisition. Keep this contribution only if condition-specific transition matrices predict held-out state occupancy and acquisition coverage better than simpler alternatives. These oracle-dependent states explain the dynamics; they are not deployment-time signals.
+| Arm | Allocation | Interpretation |
+|---|---|---|
+| `baseline` | Three independent 1× proofs | Initial end-to-end capability and frozen failure cohorts |
+| `baseline-sequential` | Three Self-Refine trajectories through 8× | End-to-end depth; proposal and execution remain mixed |
+| `baseline-parallel` | Three bank seeds, each with eight independent 1× proofs | End-to-end breadth and eventual strategy access, not proposal alone |
+| `baseline-uniform-strategy` | One 80k extractor and eight 190k executors | Explicit plans followed by balanced execution; cross-plan selection is bypassed |
+| `baseline-uniform-strategy-only` | The frozen seed-1 planner artifacts without executors | Explicit proposal coverage for the realized Uniform-C bank |
+| `selection` | Rank three compressed proposals plus the oracle with the problem, three independent 1× attempts | Exploratory fixed-pool strategy selection |
+| `selection-no-problem` | Identical pool, order, model, and 1× protocol without the problem | Exploratory provenance/style-leakage control |
+| `hint-sequential` | One frozen ≤25-word oracle strategy followed by Self-Refine through 8× | Conditional execution after proposal and comparative selection are bypassed |
+| `hint` / `placebo-hint` | Correct or within-domain shifted sketch at 1× | Immediate semantic-information effect and prompt-form control |
 
-### 3. Predict whether more inference is worthwhile
+Uniform-C extracts `m≤8` strategies. Its eight executors are assigned round-robin, so each strategy receives either `floor(8/m)` or `ceil(8/m)` runs; allocation counts differ by at most one. Report planner coverage and executor outcomes separately. Uniform-C branches are dependent and are never reported as pass@`k`.
 
-Among unaided trajectories unsolved at 2×, predict whether they produce a valid proof by 8× using only information available without an oracle outline: the problem, generated artifacts, critique history, budget, model, and whether an artifact is missing. Fit and freeze the predictor on the 35-problem benchmark, then test it without refitting on the 22 locked non-geometry problems from the Advanced split of IMO-ProofBench. Compare against model-only and Bayesian base-rate predictors; report precision, recall, calibration, compute saved, and recovered solves at a predeclared operating point.
+## Strategy-access and execution protocol
 
-## Experiment arms
+1. **Proposal.** Audit raw planner strategies before execution. Report reference-route matches and human-adjudicated viable alternatives separately. Planner coverage is the explicit-proposal result.
+2. **Eventual access.** Audit Parallel-8 and Uniform-C executor outputs for a complete strategy and a valid proof. These are realistic mixed search procedures, not pure proposal assays.
+3. **Exploratory selection.** On single-reference problems, freeze one four-sketch candidate set from proposal seed 1 and have experts label every candidate `viable`, `nonviable`, or `unclear`. Selector seeds 1–3 reuse that same set with independently randomized orders. These retained controls are not needed for the primary access–execution claim.
+4. **Execution.** Compare unaided and oracle-conditioned Self-Refine under the same budgets and stopping rule. Because the oracle arm begins with one verified strategy and no competitors, its scaling curve measures conditional proof execution.
 
-One unit of compute is at most 200k eligible output tokens, including hidden reasoning, visible output, and tool use.
+Uniform-C planner and executor artifacts are audited independently under the same frozen access rule. A strategy observed only in an executor counts as eventual arm-level access, not as explicit planner proposal.
 
-1. **Baseline:** three independent 1× attempts on every problem.
-2. **Hint:** fresh 1× attempts with the frozen ≤25-word oracle sketch. This establishes the immediate strategy effect; it is not spliced into sequential curves.
-3. **Placebo:** the same wrapper containing the next problem's frozen oracle hint after a lexicographic cyclic shift within domain, controlling for mathematical density and strategy-prompt effects without correct problem--strategy alignment.
-4. **Unaided Self-Refine:** three trajectories with checkpoints at every integer budget through 8×.
-5. **Hinted Self-Refine:** three fresh trajectories under the same protocol and budgets, with the oracle sketch retained in context.
-6. **Parallel-8:** eight independent 1× attempts. Report per-problem `c/8` and pass@\(k\) for \(k\in\{1,2,4,8\}\).
-7. **Uniform-C-8:** one shared 80k strategy extractor proposes up to eight deduplicated whole-proof plans; eight fresh 190k executors are assigned cyclically. Report plan coverage and executor outcomes separately; dependent branches are not pass@\(k\).
-8. **Proposal/selection diagnostic:** `baseline-uniform-strategy-only` freezes the same extractor's raw proposals without executors. `baseline-uniform-compress` samples three proposals without replacement or outcome filtering under a fixed seed and uses GPT-5.6-sol to compress each to at most 25 words while preserving its route and errors. Problems with fewer than three proposals are excluded and reported. The same three-step strategy audit labels reference-strategy acquisition; before rankings are run, blinded expert review may additionally accept a genuinely valid alternative strategy and records that provenance separately. A deterministic builder then freezes the canonical `strategy_acquired` label and candidate text in `hard_hint_selection.jsonl`. `selection` asks the source model to rank those three sketches plus the oracle sketch with the problem under a tool-free, one-turn, 20k-output-token (0.1×) cap, while `selection-no-problem` uses the identical candidate order and cap without the problem to measure oracle-style leakage. We report whether the top-ranked candidate acquired a verified strategy and, separately, the exact oracle rank. For GPT-5.4 only, `selection-10k` and `selection-40k` repeat the identical task and randomized orders at 0.05× and 0.2× as a budget sensitivity.
+## Current GPT-5.4 evidence
 
-The main comparison is unaided versus hinted Self-Refine. Run Baseline, Hint, Placebo, and both Self-Refine conditions on all 35 non-geometry algebra/combinatorics/number-theory problems. Run Parallel-8 and Uniform-C-8 as search-coverage stress tests on the frozen baseline-failure cohort. Then replicate the core comparison on the 22 locked non-geometry problems from the Advanced split of IMO-ProofBench for selected models.
+On the 23 problems that fail Baseline reliability:
 
-## Auditing and measurement
+- Unaided Self-Refine reliably solves 10/23.
+- Parallel-8 acquires and proves a strategy at least once on 14/23.
+- Uniform-C acquires a strategy on 13/23 and proves 12/23.
+- The frozen reference route appears explicitly in 3/23 Uniform-C planner banks; this is a lower bound pending alternative-route adjudication.
+- Oracle-conditioned Self-Refine reliably solves 22/23.
 
-- Proof success is blinded audit score ≥5/7; report ≥6 and human verification as sensitivities. Problems are inferential units.
-- Reliability arms report every `0/3`--`3/3` cell; primary reliable success is ≥2/3.
-- Strategy audits record the three human-verified oracle-outline mechanisms and separately adjudicate complete alternative strategies.
-- Planner-only and compressed proposals receive the same frozen three-mechanism audit. Any candidate rejected only because it follows a different route is adjudicated by blinded experts before selection; accepted alternatives carry a short adjudication note. Selection cannot run until every displayed generated candidate has a canonical `strategy_acquired` label bound to its exact compressed text.
-- `S` begins when all three verified mechanisms appear together or a valid proof is produced, and is thereafter absorbing. Before acquisition, `P` means the incomplete recognized-step count increased from the preceding observed checkpoint; `U` means it stayed flat or decreased. Missing output is `NA`, not `U`, and does not update the comparison point.
-- Retain tokens, first-passing budget, late successes, plan assignments, audit agreement, prompts, endpoints, and configuration.
+Thus current evidence strongly supports an access–execution separation: breadth recovers additional strategies, while externally supplying a verified strategy makes depth productive on nearly every failure. Selection remains unresolved until the 1× three-seed study and candidate-viability review are complete. The archived 20k and 40k runs are pilot data, not the primary selection result.
 
-## Current evidence
+## Auditing
 
-Current audited curves show the intended separation, but the full balanced experiment and search controls are still being completed:
+- Proof success is audit score ≥5/7; report ≥6 and expert adjudication as sensitivities.
+- Reliability arms report all `0/3`–`3/3` cells; primary reliable success is ≥2/3.
+- Raw planner proposals receive a binary frozen-reference-route audit. Human review separately accepts viable alternatives.
+- Sequential and executor artifacts retain proof correctness, recognized route mechanisms, tokens, rounds, first-passing budget, and plan assignment.
+- Problems are the inferential units. Parallel branches and repeated executors do not inflate the sample size.
 
-- Muse Spark 1.2: unaided `8→8/35`, hinted `20→21/35` from 1× to 8×.
-- Claude Opus 4.8: unaided `17→23/35`, hinted `24→34/35`.
-- GPT-5.4: unaided `17→22/35`, hinted `28→34/35`.
-- GPT-5.5: unaided `28→31/35`, hinted `35→35/35`.
+## Scope
 
-Across the currently complete dense annotations, unaided productive checkpoints acquire a complete strategy in the next increment in `9/103` cases, versus `10/792` after unproductive checkpoints. The unproductive self-loop is `0.934`. These are repeated transitions within problems, so inference clusters by problem; the current estimate is exploratory until the frozen analysis is confirmed externally.
-
-Preliminary problem-level validation also favors the three-state explanation over an acquired/not-acquired chain when the oracle annotations are observed, but missingness is informative and a simple `P/U/NA` rule is currently competitive with the full Markov model. The Markov contribution stays only if it predicts held-out state occupancies and acquisition curves better than simpler baselines. The separate no-reference unaided predictor remains to be frozen and tested across datasets.
-
-## Go/no-go
-
-- **Contribution 1 stays** if the dissociation replicates across the completed benchmark, model families, search controls, placebo, and human proof checks.
-- **Contribution 2 stays** if three-step oracle-strategy acquisition and the resulting `U/P/S` dynamics predict held-out state occupancies and acquisition curves better than simpler alternatives, with complete alternative strategies adjudicated separately.
-- **Contribution 3 stays** only if the frozen no-reference 2× predictor generalizes without refitting to the locked external set and beats model-only and Bayesian baselines. Otherwise report the retrospective state result and drop the operational classifier.
+Run the complete study on the 35 fresh 2026 non-geometry problems. The primary GPT-5.4 depth-versus-breadth comparison uses three 8× Self-Refine trajectories and three Parallel-8 banks on every problem. Replicate the core unaided-versus-oracle comparison on the 22 non-geometry Advanced IMO-ProofBench problems. Claims are bounded to the tested finite budgets and search procedures.
 
 ## Results backup
 
-Set `HF_TOKEN` in `.env`, then incrementally upload both ignored result trees to the private Hugging Face dataset:
+Set `HF_TOKEN` in `.env`, then upload only the active `results/` and `results-imobench/` trees:
 
 ```bash
 ./scripts/upload_results_to_hf.sh
 ```
 
-The default destination is `notadib/strategy-ceiling`; override it with `HF_RESULTS_REPO` if needed.
+The default private destination is `notadib/strategy-ceiling`. Root-level `results-archive/` is intentionally ignored by Git and excluded from this uploader.

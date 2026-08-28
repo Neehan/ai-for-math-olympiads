@@ -35,6 +35,23 @@ class ArmConfig:
     seeds: list[int]
 
 
+def arm_checkpoint_identity(arm: ArmConfig) -> dict[str, object]:
+    """Return the attempt protocol without Parallel's replication count.
+
+    Parallel's configured seed list controls which independent banks the host
+    launches; it does not change the protocol inside any bank. Canonicalizing
+    that field preserves paid seed-1 checkpoints created before the study
+    expanded from one bank to three.
+    """
+    return {
+        "name": arm.name,
+        "hint": arm.hint,
+        "mode": arm.mode,
+        "budget_units": arm.budget_units,
+        "seeds": [1] if arm.mode == "parallel" else list(arm.seeds),
+    }
+
+
 @dataclass(frozen=True)
 class ExperimentConfig:
     """Validated top-level experiment configuration from config.json."""
@@ -51,20 +68,10 @@ class ExperimentConfig:
     audit_max_turns: int
     max_concurrency: int
     arms: dict[str, ArmConfig]
-    selection_output_tokens: dict[str, int] = field(default_factory=dict)
 
     def budget_tokens(self, arm: ArmConfig) -> int:
         """Total output-token budget for one attempt of this arm."""
         return self.unit_output_tokens * arm.budget_units
-
-    def selection_budget_tokens(self, arm: ArmConfig) -> int:
-        """Configured output-token cap for one selection decision."""
-        try:
-            return self.selection_output_tokens[arm.name]
-        except KeyError as error:
-            raise ValueError(
-                f"Selection arm {arm.name!r} has no configured token cap"
-            ) from error
 
     @property
     def model_dirname(self) -> str:

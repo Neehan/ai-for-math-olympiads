@@ -1,13 +1,14 @@
 """Annotate observable route-progress states for every audited proof artifact.
 
-Correctness remains owned by ``audit.json``.  This stage reuses those immutable
-scores: a passing checkpoint or complete 3/3 strategy recognition enters S;
+Correctness remains owned by ``audit.json``.  For proof trajectories, this stage
+reuses those immutable scores: a passing checkpoint or complete 3/3 strategy recognition enters S;
 missing solution text remains unobserved; only nonempty score-below-5 artifacts
 receive a reference-guided three-step outline annotation.  Before acquisition,
 an increased but incomplete recognized-step count is P and a flat or decreasing
 incomplete count is U.  S is carried forward after first complete strategy
 acquisition.  The first artifact is compared with zero recognized steps.  The
-final state is derived by code, not selected by the annotator.
+final state is derived by code, not selected by the annotator. Raw planner
+proposals use a separate binary frozen-oracle-strategy match audit.
 """
 
 from __future__ import annotations
@@ -26,14 +27,13 @@ from src.checkpoint import AttemptCheckpoint
 from src.concurrency import run_all
 from src.config import load_config, override_models
 from src.constants import (
-    COMPRESSED_STRATEGIES_FILENAME,
     CONFIG_PATH,
     LOG_FORMAT,
     LOG_LEVEL,
     MODE_PARALLEL,
     MODE_SEQUENTIAL,
-    MODE_UNIFORM_STRATEGY,
     MODE_UNIFORM_COMPRESS,
+    MODE_UNIFORM_STRATEGY,
     MODE_UNIFORM_STRATEGY_ONLY,
     RESULTS_ROOT,
     SEED_AUDIT_FILENAME,
@@ -88,6 +88,16 @@ STATE_AUDIT_OUTPUT_SCHEMA: dict[str, object] = {
         },
     },
     "required": ["steps"],
+    "additionalProperties": False,
+}
+
+STRATEGY_MATCH_OUTPUT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "oracle_strategy_match": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 600},
+    },
+    "required": ["oracle_strategy_match", "reason"],
     "additionalProperties": False,
 }
 
@@ -419,73 +429,42 @@ async def state_audit_strategy_artifact(
     pool: TokenPool,
     reference_solution: str,
 ) -> None:
-    """Annotate each planner/compressed proposal for strategy acquisition."""
+    """Annotate each raw planner proposal for strategy acquisition."""
     output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
     state_path = output_dir / SEED_STATE_AUDIT_FILENAME
     if state_path.exists():
         return
-    if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
-        strategy_artifact = json.loads(
-            (output_dir / UNIFORM_STRATEGIES_FILENAME).read_text(encoding="utf-8")
-        )
-        raw_strategies = strategy_artifact.get("strategies")
-        if not isinstance(raw_strategies, list) or not all(
-            isinstance(strategy, str) and strategy.strip()
-            for strategy in raw_strategies
-        ):
-            raise ValueError(f"Malformed planner-only strategy bank: {output_dir}")
-        entries = [
-            {
-                "candidate_id": f"strategy_{index}",
-                "strategy": str(strategy).strip(),
-            }
-            for index, strategy in enumerate(raw_strategies, start=1)
-        ]
-    elif arm.mode == MODE_UNIFORM_COMPRESS:
-        strategy_artifact = json.loads(
-            (output_dir / COMPRESSED_STRATEGIES_FILENAME).read_text(encoding="utf-8")
-        )
-        raw_entries = strategy_artifact.get("generated_strategies")
-        if not isinstance(raw_entries, list):
-            raise ValueError(f"Malformed compressed strategy artifact: {output_dir}")
-        entries = []
-        for index, item in enumerate(raw_entries, start=1):
-            if not isinstance(item, dict):
-                raise ValueError(f"Malformed compressed strategy {index}: {output_dir}")
-            candidate_id = item.get("candidate_id")
-            strategy = item.get("strategy")
-            raw_strategy_index = item.get("raw_strategy_index")
-            if (
-                not isinstance(candidate_id, str)
-                or not candidate_id.strip()
-                or not isinstance(strategy, str)
-                or not strategy.strip()
-                or type(raw_strategy_index) is not int
-                or raw_strategy_index < 1
-            ):
-                raise ValueError(
-                    f"Malformed compressed strategy {index}: {output_dir}"
-                )
-            entries.append(
-                {
-                    "candidate_id": candidate_id.strip(),
-                    "strategy": strategy.strip(),
-                    "raw_strategy_index": raw_strategy_index,
-                }
-            )
-    else:
+    if arm.mode != MODE_UNIFORM_STRATEGY_ONLY:
         raise ValueError(f"Unsupported strategy-artifact mode: {arm.mode}")
+    strategy_artifact = json.loads(
+        (output_dir / UNIFORM_STRATEGIES_FILENAME).read_text(encoding="utf-8")
+    )
+    raw_strategies = strategy_artifact.get("strategies")
+    if not isinstance(raw_strategies, list) or not all(
+        isinstance(strategy, str) and strategy.strip()
+        for strategy in raw_strategies
+    ):
+        raise ValueError(f"Malformed planner-only strategy bank: {output_dir}")
+    entries = [
+        {
+            "candidate_id": f"strategy_{index}",
+            "strategy": str(strategy).strip(),
+        }
+        for index, strategy in enumerate(raw_strategies, start=1)
+    ]
     strategies = [str(entry["strategy"]) for entry in entries]
-    outline = _outline(problem)
+    oracle_strategy = (problem.hint_h2 or "").strip()
+    if not oracle_strategy:
+        raise ValueError(f"{problem.problem_id}: no frozen oracle strategy")
     checkpoint = AttemptCheckpoint(
         {
-            "stage": "strategy_state_audit",
+            "stage": "oracle_strategy_match_audit_v1",
             "solver_model": config.model,
             "state_audit_model": config.audit_model,
             "arm": arm.name,
             "problem_id": problem.problem_id,
             "problem_statement": problem.statement,
-            "outline": outline,
+            "oracle_strategy": oracle_strategy,
             "reference_solution": reference_solution,
             "seed": seed,
             "strategies": strategies,
@@ -503,32 +482,40 @@ async def state_audit_strategy_artifact(
                 verdict, _ = await _judge(
                     config,
                     strategy_state_audit_prompt(
-                        problem, outline, reference_solution, strategy
+                        problem, oracle_strategy, reference_solution, strategy
                     ),
                     pool,
                     str(checkpoint.scratch_dir(role)),
                     checkpoint,
                     role,
-                    output_schema=STATE_AUDIT_OUTPUT_SCHEMA,
+                    output_schema=STRATEGY_MATCH_OUTPUT_SCHEMA,
                     allow_tools=False,
                 )
                 verdict_cache[digest] = verdict
-            count = recognized_step_count(verdict)
+            match = verdict.get("oracle_strategy_match")
+            reason = verdict.get("reason")
+            if (
+                not isinstance(match, bool)
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or any(
+                    ord(character) < 32 and character not in "\n\t\r"
+                    for character in reason
+                )
+            ):
+                raise ValueError("Malformed oracle-strategy-match verdict")
             record: dict[str, object] = {
                 "strategy_index": index,
                 "candidate_id": str(entry["candidate_id"]),
-                "state": "S" if count == 3 else "U",
-                "strategy_acquired": count == 3,
-                "acquisition_basis": "reference_steps" if count == 3 else "none",
-                "recognized_step_count": count,
-                "steps": verdict["steps"],
+                "oracle_strategy_match": match,
+                "reason": reason.strip(),
                 "strategy_sha256": digest,
                 "audit_model": config.audit_model,
             }
-            if "raw_strategy_index" in entry:
-                record["raw_strategy_index"] = int(entry["raw_strategy_index"])
             records.append(record)
-        acquired_count = sum(bool(record["strategy_acquired"]) for record in records)
+        acquired_count = sum(
+            bool(record["oracle_strategy_match"]) for record in records
+        )
         final_record: dict[str, object] = {
             "problem_id": problem.problem_id,
             "arm": arm.name,
@@ -536,13 +523,10 @@ async def state_audit_strategy_artifact(
             "solver_model": config.model,
             "audit_model": config.audit_model,
             "state": "S" if acquired_count else "U",
-            "strategy_acquired": acquired_count > 0,
-            "strategy_acquired_count": acquired_count,
-            "strategy_count": len(records),
             "steps": [],
             "note": (
-                f"{acquired_count}/{len(records)} candidate strategies recognize "
-                "all three frozen strategy mechanisms."
+                f"{acquired_count}/{len(records)} candidate strategies match the "
+                "frozen oracle strategy."
             ),
             "strategies": records,
             "budget_cuts": {},
@@ -620,6 +604,11 @@ async def main() -> None:
     if args.arm not in config.arms:
         raise SystemExit(f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}")
     arm = config.arms[args.arm]
+    if arm.mode == MODE_UNIFORM_COMPRESS:
+        raise SystemExit(
+            "baseline-uniform-compress has no state-audit stage; audit the "
+            "matching baseline-uniform-strategy-only raw proposals instead"
+        )
     if args.all_checkpoints and arm.mode != MODE_SEQUENTIAL:
         raise SystemExit("--all-checkpoints is valid only for sequential arms")
     all_problems = load_problems()
@@ -639,15 +628,10 @@ async def main() -> None:
             )
     seeds = select_seeds(arm, args.seeds)
 
-    if arm.mode in {MODE_UNIFORM_STRATEGY_ONLY, MODE_UNIFORM_COMPRESS}:
+    if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
         def strategy_artifact_done(problem: Problem, seed: int) -> bool:
             output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
-            if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
-                return uniform_strategy_only_done(output_dir)
-            return (
-                seed_done(output_dir)
-                and (output_dir / COMPRESSED_STRATEGIES_FILENAME).is_file()
-            )
+            return uniform_strategy_only_done(output_dir)
 
         generated_strategy_artifacts = [
             (problem, seed)

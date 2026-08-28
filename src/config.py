@@ -33,7 +33,6 @@ _REQUIRED_TOP_KEYS: frozenset[str] = frozenset(
         "max_turns_per_phase",
         "audit_max_turns",
         "max_concurrency",
-        "selection_output_tokens",
         "arms",
     }
 )
@@ -81,13 +80,6 @@ def load_config(path: Path) -> ExperimentConfig:
     if not isinstance(arms_raw, dict) or not arms_raw:
         raise ValueError(f"{path}: 'arms' must be a non-empty object")
     arms = {name: _parse_arm(name, spec) for name, spec in arms_raw.items()}
-    raw_selection_budgets = raw["selection_output_tokens"]
-    if not isinstance(raw_selection_budgets, dict):
-        raise ValueError(f"{path}: selection_output_tokens must be an object")
-    selection_output_tokens = {
-        str(name): int(str(value))
-        for name, value in raw_selection_budgets.items()
-    }
     config = ExperimentConfig(
         model=str(raw["model"]),
         audit_model=str(raw["audit_model"]),
@@ -103,7 +95,6 @@ def load_config(path: Path) -> ExperimentConfig:
         audit_max_turns=int(raw["audit_max_turns"]),
         max_concurrency=int(raw["max_concurrency"]),
         arms=arms,
-        selection_output_tokens=selection_output_tokens,
     )
     if config.effort not in _VALID_EFFORTS:
         raise ValueError(f"{path}: effort must be one of {sorted(_VALID_EFFORTS)}")
@@ -154,11 +145,12 @@ def load_config(path: Path) -> ExperimentConfig:
                 f"Strategy executor budget ({executor_budget})"
             )
     auxiliary_specs = {
-        "baseline-uniform-strategy-only": (MODE_UNIFORM_STRATEGY_ONLY, [1]),
+        "baseline-uniform-strategy-only": (
+            MODE_UNIFORM_STRATEGY_ONLY,
+            [1],
+        ),
         "baseline-uniform-compress": (MODE_UNIFORM_COMPRESS, [1]),
-        "selection-10k": (MODE_SELECTION, [1, 2, 3]),
         "selection": (MODE_SELECTION, [1, 2, 3]),
-        "selection-40k": (MODE_SELECTION, [1, 2, 3]),
         "selection-no-problem": (MODE_SELECTION_NO_PROBLEM, [1, 2, 3]),
     }
     for name, (mode, seeds) in auxiliary_specs.items():
@@ -174,22 +166,6 @@ def load_config(path: Path) -> ExperimentConfig:
             raise ValueError(
                 f"{path}: {name} must use hint='none', mode={mode!r}, "
                 f"budget_units=1, and seeds {seeds}"
-            )
-    selection_arm_names = {
-        arm.name
-        for arm in config.arms.values()
-        if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}
-    }
-    if set(config.selection_output_tokens) != selection_arm_names:
-        raise ValueError(
-            f"{path}: selection_output_tokens keys must exactly match selection "
-            f"arms {sorted(selection_arm_names)}"
-        )
-    for name, tokens in config.selection_output_tokens.items():
-        if not 0 < tokens < config.unit_output_tokens:
-            raise ValueError(
-                f"{path}: selection_output_tokens[{name!r}] must be positive "
-                "and below unit_output_tokens"
             )
     baseline = config.arms.get("baseline")
     parallel = config.arms.get("baseline-parallel")
@@ -208,11 +184,11 @@ def load_config(path: Path) -> ExperimentConfig:
         parallel.hint != HINT_NONE
         or parallel.mode != MODE_PARALLEL
         or parallel.budget_units != 8
-        or parallel.seeds != [1]
+        or parallel.seeds != [1, 2, 3]
     ):
         raise ValueError(
-            f"{path}: baseline-parallel must be one fresh 8x no-hint bank "
-            "with seeds [1]"
+            f"{path}: baseline-parallel must use fresh 8x no-hint banks "
+            "with seeds [1, 2, 3]"
         )
     hint = config.arms.get("hint")
     if hint is None:

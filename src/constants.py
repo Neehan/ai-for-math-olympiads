@@ -71,7 +71,7 @@ STATE_AUDIT_PROMPT_FILE: str = "state_audit.md"
 STRATEGY_STATE_AUDIT_PROMPT_FILE: str = "strategy_state_audit.md"
 UNIFORM_COMPRESS_PROMPT_FILE: str = "uniform_compress.md"
 SELECTION_PROMPT_FILE: str = "selection.md"
-SELECTION_NO_PROBLEM_PROMPT_FILE: str = "selection_no_problem.md"
+SELECTION_WRAP_PROMPT_FILE: str = "selection_wrap.md"
 
 # --- Problem/hint data sources -------------------------------------------
 # Never committed (contest identity); fetched straight into memory, or from
@@ -149,7 +149,7 @@ MODES: frozenset[str] = frozenset(
 )
 
 # Auxiliary workers do not define the source-model result tree. The compressor
-# is frozen; selection uses the source model unless --worker-model overrides it.
+# is frozen; both selection conditions always use the source model.
 DEFAULT_UNIFORM_COMPRESS_MODEL: str = "litellm/gpt-5.6-sol"
 UNIFORM_COMPRESS_SAMPLE_SEED: int = 20260827
 UNIFORM_COMPRESS_EXAMPLE_IDS: tuple[str, ...] = {

@@ -46,7 +46,7 @@ export PROBLEMS_FILE=/run/contest/problems.jsonl
 export HINTS_FILE=/run/contest/hints.jsonl
 export OUTLINES_FILE=/run/contest/outlines.jsonl
 case "${HARNESS_ARM:-}" in
-    selection-10k|selection|selection-40k|selection-no-problem)
+    selection|selection-no-problem)
         python - <<'PY'
 import urllib.request
 from src.constants import SELECTION_URL

@@ -16,13 +16,15 @@ from src.constants import (
     PARALLEL_BANK_PROTOCOL,
     RUN_REFERENCE_FILENAME,
     SEED_AUDIT_FILENAME,
+    SEED_STATE_AUDIT_FILENAME,
     SOLUTION_FILENAME,
 )
-from src.models import Problem
-from src.run import _solve_parallel_run, solve_parallel_bank
+from src.models import Problem, arm_checkpoint_identity
+from src.run import _solve_parallel_run, run_checkpoint_identity, solve_parallel_bank
 from src.storage import (
     bank_run_output_dir,
     compile_arm_audit,
+    compile_arm_state_audit,
     parallel_bank_done,
     write_parallel_bank_meta,
 )
@@ -60,6 +62,17 @@ def _write_member(bank_dir: Path, run: int, *, tokens: int | None = None) -> Non
 
 
 class ParallelBankTests(unittest.TestCase):
+    def test_parallel_checkpoint_identity_excludes_replication_count(self) -> None:
+        config = load_config(CONFIG_PATH)
+        arm = config.arms["baseline-parallel"]
+        problem = Problem("p", "Statement", "algebra", None, None, None)
+        self.assertEqual(arm_checkpoint_identity(arm)["seeds"], [1])
+        first = run_checkpoint_identity(config, arm, problem, 1)
+        second = run_checkpoint_identity(config, arm, problem, 2)
+        self.assertEqual(first["arm"], second["arm"])
+        self.assertEqual(first["seed"], 1)
+        self.assertEqual(second["seed"], 2)
+
     def test_run_directories_are_fixed_and_zero_padded(self) -> None:
         root = Path("bank")
         self.assertEqual(bank_run_output_dir(root, 1), root / "run_01")
@@ -259,13 +272,17 @@ class ParallelBankTests(unittest.TestCase):
             self.assertEqual(record["pass_at_k"]["8"], 1.0)
             self.assertEqual(record["budget_cuts"], {})
 
-    def test_compiled_audit_excludes_retired_protocol_and_seeds(self) -> None:
+    def test_compiled_audit_includes_configured_banks_only(self) -> None:
         config = load_config(CONFIG_PATH)
         arm = config.arms["baseline-parallel"]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             arm_root = root / config.model_dirname / arm.name / "p"
-            for seed, protocol in ((1, "retired"), (2, PARALLEL_BANK_PROTOCOL)):
+            for seed, protocol in (
+                (1, "retired"),
+                (2, PARALLEL_BANK_PROTOCOL),
+                (4, PARALLEL_BANK_PROTOCOL),
+            ):
                 seed_dir = arm_root / f"seed_{seed}"
                 seed_dir.mkdir(parents=True)
                 (seed_dir / SEED_AUDIT_FILENAME).write_text(
@@ -280,7 +297,9 @@ class ParallelBankTests(unittest.TestCase):
                 )
             with patch("src.storage.RESULTS_ROOT", root):
                 path, count = compile_arm_audit(config, arm)
-            self.assertEqual(count, 0)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(count, 1)
+            self.assertEqual([record["seed"] for record in records], [2])
 
             seed_1 = arm_root / "seed_1" / SEED_AUDIT_FILENAME
             seed_1.write_text(
@@ -296,8 +315,36 @@ class ParallelBankTests(unittest.TestCase):
             with patch("src.storage.RESULTS_ROOT", root):
                 path, count = compile_arm_audit(config, arm)
             records = [json.loads(line) for line in path.read_text().splitlines()]
-            self.assertEqual(count, 1)
-            self.assertEqual([record["seed"] for record in records], [1])
+            self.assertEqual(count, 2)
+            self.assertEqual([record["seed"] for record in records], [1, 2])
+
+    def test_compiled_state_audit_includes_all_configured_banks(self) -> None:
+        config = load_config(CONFIG_PATH)
+        arm = config.arms["baseline-parallel"]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            arm_root = root / config.model_dirname / arm.name / "p"
+            for seed in (1, 2, 3, 4):
+                run_dir = arm_root / f"seed_{seed}" / "run_01"
+                run_dir.mkdir(parents=True)
+                (run_dir / SEED_STATE_AUDIT_FILENAME).write_text(
+                    json.dumps(
+                        {
+                            "problem_id": "p",
+                            "arm": arm.name,
+                            "seed": seed,
+                            "parallel_bank_seed": seed,
+                            "parallel_run": 1,
+                            "state": "U",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            with patch("src.storage.RESULTS_ROOT", root):
+                path, count = compile_arm_state_audit(config, arm)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(count, 3)
+            self.assertEqual([record["seed"] for record in records], [1, 2, 3])
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
-You are compressing a proposed mathematical proof strategy into the exact style of the reference sketches below. Return only JSON matching the supplied schema.
+You are canonicalizing one mathematical proof strategy. Return only JSON matching the supplied schema.
 
-The compressed sketch must contain at most 25 whitespace-delimited words. Preserve the proposal's actual load-bearing route, lemma, construction, and any mathematical errors. Do not repair, improve, validate, or combine it with another solution. Do not state the problem's requested final answer, classification, winner, or conclusion; describe proof mechanisms only. Use concise imperative proof-sketch prose, not commentary about the proposal.
+Rewrite the input strategy for solving a problem as a sketch containing 18--25 whitespace-delimited words. Use concise, neutral mathematical proof-sketch prose and notation following the style of the given examples. Do not preserve incidental wording, voice, or formatting from the input.
 
-Style examples (each includes its problem statement and corresponding frozen sketch):
+Preserve the input strategy's actual load-bearing route, lemmas, constructions, constants, and mathematical errors. Be faithful and do not repair, validate, strengthen, combine, or import any missing mechanism. Do not skip any important load bearing step. Do not give away the problem's final answer. Only reveal the path.
+
+The examples are human written sketches and illustrate the intended mathematical density, specificity, and level of abstraction, style, and content. Your output must be indistinguishable from them in a blind audit without actual problem statement.
+
+Examples (each includes its problem statement and corresponding sketch):
 
 {{examples}}
 
@@ -10,6 +14,6 @@ Target problem:
 
 {{statement}}
 
-Raw proposed strategy:
+Input strategy:
 
 {{strategy}}

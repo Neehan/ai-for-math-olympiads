@@ -21,6 +21,7 @@ from src.constants import (
     CHECKPOINT_ROOT_ENV,
     DEFER_CHECKPOINT_CLEANUP_ENV,
     SELECTION_PROMPT_FILE,
+    SELECTION_WRAP_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
     UNIFORM_COMPRESS_PROMPT_FILE,
 )
@@ -90,6 +91,9 @@ class CheckpointTests(unittest.TestCase):
             )
             (prompts / SELECTION_PROMPT_FILE).write_text(
                 "selection-v1", encoding="utf-8"
+            )
+            (prompts / SELECTION_WRAP_PROMPT_FILE).write_text(
+                "selection-wrap-v1", encoding="utf-8"
             )
             protocol_fingerprint.cache_clear()
             self.assertEqual(protocol_fingerprint(settings), baseline)

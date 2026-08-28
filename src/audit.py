@@ -59,7 +59,13 @@ from src.constants import (
     SEED_AUDIT_FILENAME,
     UNIFORM_STRATEGIES_FILENAME,
 )
-from src.models import ArmConfig, ExperimentConfig, Problem, ReconnectEvent
+from src.models import (
+    ArmConfig,
+    ExperimentConfig,
+    Problem,
+    ReconnectEvent,
+    arm_checkpoint_identity,
+)
 from src.prompts import audit_prompt
 from src.run import select_problems, select_seeds
 from src.solver import (
@@ -489,7 +495,7 @@ async def audit_seed(
             "solver_model": config.model,
             "audit_model": config.audit_model,
             "effort": config.effort,
-            "arm": dataclasses.asdict(arm),
+            "arm": arm_checkpoint_identity(arm),
             "problem_id": problem.problem_id,
             "problem_statement": problem.statement,
             "seed": seed,
@@ -999,7 +1005,12 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
-    if arm.mode in {MODE_UNIFORM_STRATEGY_ONLY, MODE_UNIFORM_COMPRESS}:
+    if arm.mode == MODE_UNIFORM_COMPRESS:
+        raise SystemExit(
+            "baseline-uniform-compress has no audit stage; audit the matching "
+            "baseline-uniform-strategy-only raw proposals instead"
+        )
+    if arm.mode == MODE_UNIFORM_STRATEGY_ONLY:
         log.info("Arm %s has no proof artifacts; strategy audit follows", arm.name)
         return
     if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:

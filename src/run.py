@@ -5,23 +5,25 @@ Usage:
     python -m src.run --arm hint --problems usamo-2026-3,china-2026-5
 
 An attempt = one (problem, seed) pair. Mode 'single' runs one solve phase;
-mode 'sequential' runs solve -> (critique -> revise)*; mode 'parallel' forms
-one bank of eight fresh independent 1x attempts;
+mode 'sequential' runs solve -> (critique -> revise)*; each mode 'parallel'
+seed forms one bank of eight fresh independent 1x attempts;
 mode 'uniform_strategy' runs one shared planner followed by eight fresh proof
 executors; auxiliary modes freeze/compress/rank strategy proposals. Completed attempts (meta.json present) are skipped, so an
 interrupted run resumes cleanly.
 """
 
 import argparse
-import dataclasses
+import hashlib
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 import anyio
 
 from src.checkpoint import (
     AttemptCheckpoint,
+    phase_record,
     progress_tool_calls,
     protocol_fingerprint,
     tool_calls_from_records,
@@ -54,14 +56,26 @@ from src.constants import (
     PHASE_WRAP_UP,
     RESULTS_ROOT,
     RUN_REFERENCE_FILENAME,
+    SELECTION_FILENAME,
+    SELECTION_PROMPT_FILE,
+    SELECTION_WRAP_PROMPT_FILE,
     SEQUENTIAL_MIN_ROUNDS_BEFORE_CONVERGENCE,
     SEQUENTIAL_NO_GAP_STREAK_TO_STOP,
 )
-from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
+from src.models import (
+    ArmConfig,
+    ExperimentConfig,
+    PhaseResult,
+    Problem,
+    arm_checkpoint_identity,
+)
 from src.openrouter_routing import route_for
 from src.prompts import (
     critique_prompt,
     revise_prompt,
+    selection_no_problem_prompt,
+    selection_prompt,
+    selection_wrap_prompt,
     task_prompt,
     uniform_strategy_execute_prompt,
     uniform_strategy_plan_prompt,
@@ -85,7 +99,6 @@ from src.solver import (
 )
 from src.storage import (
     bank_run_output_dir,
-    compile_arm_audit,
     load_problems,
     load_selection_candidates,
     parallel_bank_done,
@@ -94,13 +107,18 @@ from src.storage import (
     uniform_strategy_bank_done,
     uniform_strategy_only_done,
     write_parallel_bank_meta,
+    write_auxiliary_result,
     write_uniform_strategy_bank_meta,
     write_uniform_strategy_plan_artifacts,
     write_uniform_strategy_planner_failure,
     write_uniform_strategy_only_meta,
     write_seed_outputs,
 )
-from src.strategy_experiments import compress_uniform_strategies, run_selection
+from src.strategy_experiments import (
+    _selection_candidates,
+    compress_uniform_strategies,
+    compression_source_status,
+)
 from src.token_pool import TokenPool
 
 log = logging.getLogger("run")
@@ -297,6 +315,239 @@ async def _run_strict_wrap_phase(
             ),
         )
         phases.append(wrapped)
+
+
+_SELECTION_RANKING_RE = re.compile(
+    r"<ranking>\s*([1-4])\s*,\s*([1-4])\s*,\s*([1-4])\s*,\s*([1-4])\s*</ranking>",
+    re.IGNORECASE,
+)
+_SELECTION_REASON_RE = re.compile(
+    r"<reason>\s*(.*?)\s*</reason>", re.IGNORECASE | re.DOTALL
+)
+
+
+def _parse_selection_decision(text: str) -> dict[str, object] | None:
+    """Parse the final tagged ranking; malformed or incomplete output is absent."""
+    rankings = list(_SELECTION_RANKING_RE.finditer(text))
+    reasons = list(_SELECTION_REASON_RE.finditer(text))
+    if not rankings or not reasons:
+        return None
+    ranking = [int(value) for value in rankings[-1].groups()]
+    reason = reasons[-1].group(1).strip()
+    if sorted(ranking) != [1, 2, 3, 4] or not reason:
+        return None
+    return {"ranking": ranking, "reason": reason}
+
+
+async def run_selection(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    pool: TokenPool,
+    frozen_record: dict[str, Any],
+    *,
+    include_problem: bool,
+) -> None:
+    """Rank four strategies under the standard work/reserve budget controller."""
+    candidates, oracle_position = _selection_candidates(
+        problem, frozen_record, seed, config.model
+    )
+    budget_tokens = config.budget_tokens(arm)
+    reserve_tokens = config.wrap_up_reserve_tokens
+    if reserve_tokens <= 0 or reserve_tokens >= budget_tokens:
+        raise ValueError(
+            f"Selection budget {budget_tokens} must exceed its positive "
+            f"wrap-up reserve {reserve_tokens}"
+        )
+    candidate_texts = [str(candidate["strategy"]) for candidate in candidates]
+    prompt = (
+        selection_prompt(
+            problem, candidate_texts, budget_tokens, reserve_tokens
+        )
+        if include_problem
+        else selection_no_problem_prompt(
+            candidate_texts, budget_tokens, reserve_tokens
+        )
+    )
+    output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
+    checkpoint = AttemptCheckpoint(
+        {
+            "stage": arm.mode,
+            "source_model": config.model,
+            "problem_id": problem.problem_id,
+            **(
+                {"problem_statement": problem.statement}
+                if include_problem
+                else {}
+            ),
+            "seed": seed,
+            "include_problem": include_problem,
+            "budget_output_tokens": budget_tokens,
+            "working_output_tokens": budget_tokens - reserve_tokens,
+            "wrap_up_reserve_tokens": reserve_tokens,
+            "tools_enabled_during_work": True,
+            "tools_enabled_during_wrap": False,
+            "max_turns_per_phase": config.max_turns_per_phase,
+            "agent_runtime_policy": agent_runtime_policy(config.model),
+            "selection_protocol_fingerprint": protocol_fingerprint(
+                agent_settings_path(config.model),
+                (SELECTION_PROMPT_FILE, SELECTION_WRAP_PROMPT_FILE),
+            ),
+            # Bind resumption to the displayed order without persisting the
+            # hidden oracle/provenance labels in the tool-visible checkpoint.
+            "candidate_strategy_sha256s": [
+                hashlib.sha256(text.encode("utf-8")).hexdigest()
+                for text in candidate_texts
+            ],
+        }
+    )
+    role = "selection"
+    try:
+        scratch_path = checkpoint.scratch_dir(role)
+        phases = checkpoint.phases(role)
+        tracker = checkpoint.tracker(role, budget_tokens, reserve_tokens)
+        active = checkpoint.active(role)
+        active_is_wrap = (
+            active is not None and active.get("label") == "selection_wrap"
+        )
+        needs_work_session = not active_is_wrap and (
+            active is not None or not phases
+        )
+        if needs_work_session:
+            async with ResumableClaudeSession(
+                pool,
+                lambda token, session_id, resume_id, stderr: build_options(
+                    config,
+                    str(scratch_path),
+                    max(1, tracker.remaining),
+                    token,
+                    stderr,
+                    session_id=session_id,
+                    resume_session_id=resume_id,
+                    tools_enabled=True,
+                ),
+                session_id=checkpoint.session_id(role),
+                reconnects=checkpoint.reconnects(role),
+            ) as client:
+                checkpoint.save_session(
+                    role, client.session_id, client.reconnect_events
+                )
+                phases.append(
+                    await _checkpointed_phase(
+                        checkpoint,
+                        role,
+                        client,
+                        tracker,
+                        prompt,
+                        "selection_work",
+                        tracker.soft_limit_tokens,
+                    )
+                )
+
+        await _run_strict_wrap_phase(
+            config,
+            checkpoint,
+            role,
+            tracker,
+            phases,
+            scratch_path,
+            pool,
+            "selection_wrap",
+            selection_wrap_prompt(tracker.remaining),
+            reserve_tokens,
+        )
+
+        completed_verdicts = [
+            parsed
+            for phase in phases
+            if (
+                not phase.budget_exhausted
+                and phase.cumulative_output_tokens <= budget_tokens
+            )
+            for parsed in [_parse_selection_decision(phase.text)]
+            if parsed is not None
+        ]
+        verdict = completed_verdicts[-1] if completed_verdicts else {}
+        ranking_value = verdict.get("ranking")
+        valid_ranking = (
+            isinstance(ranking_value, list)
+            and all(type(position) is int for position in ranking_value)
+            and sorted(ranking_value) == [1, 2, 3, 4]
+        )
+        ranking = (
+            [int(position) for position in ranking_value]
+            if valid_ranking and isinstance(ranking_value, list)
+            else []
+        )
+        ranked_candidates = [candidates[position - 1] for position in ranking]
+        oracle_rank = ranking.index(oracle_position) + 1 if ranking else None
+        top = ranked_candidates[0] if ranked_candidates else None
+        decision_status = "selected" if valid_ranking else "no_decision"
+        terminal_stop_reason = phases[-1].stop_reason if phases else "no_response"
+        artifact: dict[str, object] = {
+            "problem_id": problem.problem_id,
+            "source_model": config.model,
+            "seed": seed,
+            "include_problem": include_problem,
+            "decision_status": decision_status,
+            "candidates": candidates,
+            "ranking_positions": ranking,
+            "ranked_candidate_ids": [
+                candidate["candidate_id"] for candidate in ranked_candidates
+            ],
+            "reason": str(
+                verdict.get(
+                    "reason",
+                    f"No valid within-budget ranking returned ({terminal_stop_reason}).",
+                )
+            ),
+            "stop_reason": terminal_stop_reason,
+            "phases": [phase_record(phase) for phase in phases],
+        }
+        audit: dict[str, object] = {
+            "problem_id": problem.problem_id,
+            "arm": arm.name,
+            "seed": seed,
+            "source_model": config.model,
+            "decision_status": decision_status,
+            "oracle_rank": oracle_rank,
+            "oracle_top1": oracle_rank == 1,
+            "top_candidate_id": top["candidate_id"] if top is not None else None,
+        }
+        if include_problem:
+            audit["oracle_strategy_match_top1"] = bool(
+                top is not None and top["oracle_strategy_match"]
+            )
+        meta: dict[str, object] = {
+            "problem_id": problem.problem_id,
+            "arm": arm.name,
+            "mode": arm.mode,
+            "model": config.model,
+            "seed": seed,
+            "candidate_count": 4,
+            "budget_output_tokens": budget_tokens,
+            "working_output_tokens": budget_tokens - reserve_tokens,
+            "wrap_up_reserve_tokens": reserve_tokens,
+            "output_tokens_spent": tracker.spent,
+            "budget_eligible": tracker.spent <= budget_tokens,
+            "tools_enabled_during_work": True,
+            "tools_enabled_during_wrap": False,
+            "max_turns_per_phase": config.max_turns_per_phase,
+            "oracle_position": oracle_position,
+            "decision_status": decision_status,
+            "provider_session_ids": checkpoint.session_ids(),
+            "gradeable_solution_emitted": False,
+        }
+        checkpoint.prepare_completion(
+            (output_dir / "meta.json").relative_to(RESULTS_ROOT).as_posix()
+        )
+        write_auxiliary_result(
+            output_dir, SELECTION_FILENAME, artifact, meta, audit=audit
+        )
+        checkpoint.complete()
+    finally:
+        checkpoint.close()
 
 
 def _planner_text(phases: list[PhaseResult], budget_tokens: int) -> str:
@@ -931,7 +1182,7 @@ def run_checkpoint_identity(
         "stage": "run",
         "model": config.model,
         "effort": config.effort,
-        "arm": dataclasses.asdict(arm),
+        "arm": arm_checkpoint_identity(arm),
         "problem_id": problem.problem_id,
         "problem_statement": problem.statement,
         "hint": hint_for(problem, arm),
@@ -1002,8 +1253,8 @@ async def solve_seed(
         return
 
     if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
-        if selection_record is None or worker_model is None:
-            raise ValueError("Selection requires a frozen candidate record and worker model")
+        if selection_record is None:
+            raise ValueError("Selection requires a frozen candidate record")
         await run_selection(
             config,
             arm,
@@ -1011,7 +1262,6 @@ async def solve_seed(
             seed,
             pool,
             selection_record,
-            worker_model,
             include_problem=arm.mode == MODE_SELECTION,
         )
         return
@@ -1288,8 +1538,8 @@ async def main() -> None:
         "--worker-model",
         default=None,
         help=(
-            "Auxiliary worker override: compressor/selector model. Compression "
-            "defaults to litellm/gpt-5.6-sol; selection defaults to the source model."
+            "Compression worker override (default: litellm/gpt-5.6-sol). "
+            "Selection arms always use the source model."
         ),
     )
     args = parser.parse_args()
@@ -1310,32 +1560,19 @@ async def main() -> None:
         hint_for(problem, arm)
 
     worker_model: str | None = args.worker_model
-    if arm.mode == MODE_UNIFORM_COMPRESS and worker_model is None:
-        worker_model = DEFAULT_UNIFORM_COMPRESS_MODEL
-    elif arm.mode == MODE_SELECTION and worker_model is None:
-        worker_model = config.model
-    elif arm.mode == MODE_SELECTION_NO_PROBLEM and worker_model is None:
-        raise SystemExit("selection-no-problem requires --worker-model")
-    elif arm.mode not in {
-        MODE_UNIFORM_COMPRESS,
-        MODE_SELECTION,
-        MODE_SELECTION_NO_PROBLEM,
-    } and worker_model is not None:
-        raise SystemExit("--worker-model is valid only for compression/selection arms")
+    if arm.mode == MODE_UNIFORM_COMPRESS:
+        worker_model = worker_model or DEFAULT_UNIFORM_COMPRESS_MODEL
+    elif arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
+        if worker_model is not None:
+            raise SystemExit(
+                "Selection arms must use the source model; omit --worker-model"
+            )
+    elif worker_model is not None:
+        raise SystemExit("--worker-model is valid only for the compression arm")
 
     selection_records: dict[str, dict[str, object]] = {}
     if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
         selection_records = load_selection_candidates(config.model)
-        missing = [
-            problem.problem_id
-            for problem in problems
-            if problem.problem_id not in selection_records
-        ]
-        if missing:
-            raise ValueError(
-                "Frozen hard_hint_selection.jsonl has no candidate set for "
-                f"{config.model}: {missing}"
-            )
 
     def generation_done(selected_arm: ArmConfig, output_dir: Path) -> bool:
         if selected_arm.mode == MODE_PARALLEL:
@@ -1346,7 +1583,7 @@ async def main() -> None:
             return uniform_strategy_only_done(output_dir)
         return seed_done(output_dir)
 
-    pending = [
+    candidate_pairs = [
         (problem, seed)
         for problem in problems
         for seed in seeds
@@ -1354,13 +1591,60 @@ async def main() -> None:
             arm, seed_output_dir(config, arm, problem.problem_id, seed)
         )
     ]
+    skipped_count = 0
+    if arm.mode == MODE_UNIFORM_COMPRESS:
+        pending = []
+        skipped: list[str] = []
+        for problem, seed in candidate_pairs:
+            eligible, reason = compression_source_status(
+                config, problem.problem_id, seed
+            )
+            if eligible:
+                pending.append((problem, seed))
+            else:
+                skipped.append(f"{problem.problem_id}/seed_{seed} ({reason})")
+        if skipped:
+            skipped_count = len(skipped)
+            log.warning(
+                "Compression skipped %d attempt(s) without at least three available "
+                "planner proposals: %s",
+                len(skipped),
+                ", ".join(skipped),
+            )
+    elif arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
+        pending = []
+        skipped = []
+        for problem, seed in candidate_pairs:
+            if problem.problem_id in selection_records:
+                pending.append((problem, seed))
+            else:
+                skipped.append(f"{problem.problem_id}/seed_{seed}")
+        if skipped:
+            skipped_count = len(skipped)
+            log.warning(
+                "Selection skipped %d attempt(s) without a frozen candidate set: %s",
+                len(skipped),
+                ", ".join(skipped),
+            )
+    else:
+        pending = candidate_pairs
     total = len(problems) * len(seeds)
-    log.info(
-        "Arm %s: %d attempts to run, %d already done",
-        arm.name,
-        len(pending),
-        total - len(pending),
-    )
+    completed_count = total - len(candidate_pairs)
+    if skipped_count:
+        log.info(
+            "Arm %s: %d attempts to run, %d already done, %d unavailable skipped",
+            arm.name,
+            len(pending),
+            completed_count,
+            skipped_count,
+        )
+    else:
+        log.info(
+            "Arm %s: %d attempts to run, %d already done",
+            arm.name,
+            len(pending),
+            completed_count,
+        )
     active_model = worker_model or config.model
     pool = TokenPool.from_env(token_env_name(active_model))
     tasks = [
@@ -1388,9 +1672,6 @@ async def main() -> None:
         else config.max_concurrency
     )
     await run_all(tasks, outer_limit)
-    if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
-        path, count = compile_arm_audit(config, arm)
-        log.info("Compiled %d deterministic selection verdicts -> %s", count, path)
 
 
 if __name__ == "__main__":

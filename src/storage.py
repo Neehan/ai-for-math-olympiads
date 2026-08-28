@@ -215,16 +215,18 @@ def load_problems() -> list[Problem]:
 def load_selection_candidates(
     source_model: str,
 ) -> dict[str, dict[str, Any]]:
-    """Load frozen candidates with canonical strategy-acquisition labels."""
+    """Load one frozen proposal-seed-1 candidate set per problem."""
     selected: dict[str, dict[str, Any]] = {}
     for record in _fetch_jsonl(SELECTION_FILE_ENV, SELECTION_URL):
         if record.get("source_model") != source_model:
             continue
         problem_id = record.get("problem_id")
+        proposal_seed = record.get("proposal_seed")
         oracle = record.get("oracle_strategy")
         generated = record.get("generated_strategies")
         if (
             not isinstance(problem_id, str)
+            or proposal_seed != 1
             or not isinstance(oracle, str)
             or not oracle.strip()
             or not isinstance(generated, list)
@@ -238,47 +240,19 @@ def load_selection_candidates(
             if not isinstance(item, dict):
                 raise ValueError(f"{problem_id}: malformed generated strategy")
             strategy = item.get("strategy")
-            strategy_acquired = item.get("strategy_acquired")
-            acquisition_basis = item.get("acquisition_basis")
-            adjudication_note = item.get("adjudication_note")
+            oracle_strategy_match = item.get("oracle_strategy_match")
             candidate_id = item.get("candidate_id", f"generated_{index}")
             if not isinstance(strategy, str) or not strategy.strip():
                 raise ValueError(f"{problem_id}: empty generated strategy")
-            if len(strategy.split()) > 25:
+            if not 18 <= len(strategy.split()) <= 25:
                 raise ValueError(
-                    f"{problem_id}: generated strategy {index} exceeds 25 words"
+                    f"{problem_id}: generated strategy {index} must contain "
+                    "18--25 words"
                 )
-            if not isinstance(strategy_acquired, bool):
+            if not isinstance(oracle_strategy_match, bool):
                 raise ValueError(
                     f"{problem_id}: generated strategy {index} lacks frozen "
-                    "strategy_acquired label"
-                )
-            if acquisition_basis not in {
-                "reference_steps",
-                "human_alternative",
-                "none",
-            }:
-                raise ValueError(
-                    f"{problem_id}: generated strategy {index} has invalid "
-                    "acquisition_basis"
-                )
-            if strategy_acquired != (acquisition_basis != "none"):
-                raise ValueError(
-                    f"{problem_id}: generated strategy {index} has inconsistent "
-                    "strategy_acquired and acquisition_basis"
-                )
-            if acquisition_basis == "human_alternative" and (
-                not isinstance(adjudication_note, str)
-                or not adjudication_note.strip()
-            ):
-                raise ValueError(
-                    f"{problem_id}: human alternative strategy {index} requires "
-                    "an adjudication_note"
-                )
-            if acquisition_basis != "human_alternative" and adjudication_note is not None:
-                raise ValueError(
-                    f"{problem_id}: generated strategy {index} has an unexpected "
-                    "adjudication_note"
+                    "oracle_strategy_match label"
                 )
             if (
                 not isinstance(candidate_id, str)
@@ -292,13 +266,7 @@ def load_selection_candidates(
                 {
                     "candidate_id": candidate_id.strip(),
                     "strategy": strategy.strip(),
-                    "strategy_acquired": strategy_acquired,
-                    "acquisition_basis": acquisition_basis,
-                    **(
-                        {"adjudication_note": adjudication_note.strip()}
-                        if isinstance(adjudication_note, str)
-                        else {}
-                    ),
+                    "oracle_strategy_match": oracle_strategy_match,
                 }
             )
         candidate_ids = [str(item["candidate_id"]) for item in normalized]
@@ -311,6 +279,7 @@ def load_selection_candidates(
         selected[problem_id] = {
             "problem_id": problem_id,
             "source_model": source_model,
+            "proposal_seed": 1,
             "oracle_strategy": oracle.strip(),
             "generated_strategies": normalized,
         }
@@ -1323,7 +1292,12 @@ def archive_audit_scratches(
         )
 
 
-def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, int]:
+def compile_arm_audit(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    *,
+    results_root: Path | None = None,
+) -> tuple[Path, int]:
     """Compile every configured-seed verdict into the arm's audit.jsonl.
 
     Scans the arm's whole results tree rather than any CLI problem filter, so
@@ -1332,7 +1306,8 @@ def compile_arm_audit(config: ExperimentConfig, arm: ArmConfig) -> tuple[Path, i
     silently mixed into a current analysis. One line per audited configured
     (problem, seed), sorted. Returns the path and record count.
     """
-    arm_root = RESULTS_ROOT / config.model_dirname / arm.name
+    root = RESULTS_ROOT if results_root is None else results_root
+    arm_root = root / config.model_dirname / arm.name
     records: list[dict[str, object]] = []
     for audit_file in sorted(arm_root.glob(f"*/seed_*/{SEED_AUDIT_FILENAME}")):
         seed_name = audit_file.parent.name

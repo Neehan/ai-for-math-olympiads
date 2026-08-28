@@ -82,9 +82,6 @@ if [ -f .env ]; then
     . ./.env
     set +a
 fi
-IMAGE=olympiad-harness
-docker build -q -t "$IMAGE" -f docker/Dockerfile . >/dev/null
-mkdir -p "$RESULTS_HOST_ROOT"
 
 # Mount only this stage/model/arm's opaque checkpoint namespace.  Mounting the
 # whole bank would let a tool-using solver inspect interrupted work from a
@@ -157,12 +154,9 @@ if [ "$1" = "run" ]; then
         baseline-uniform-compress)
             WORKER_MODEL_NAME=${WORKER_MODEL_NAME:-litellm/gpt-5.6-sol}
             ;;
-        selection-10k|selection|selection-40k)
-            WORKER_MODEL_NAME=${WORKER_MODEL_NAME:-$MODEL_NAME}
-            ;;
-        selection-no-problem)
-            if [ -z "$WORKER_MODEL_NAME" ]; then
-                echo "ERROR: selection-no-problem requires --worker-model" >&2
+        selection|selection-no-problem)
+            if [ -n "$WORKER_MODEL_NAME" ]; then
+                echo "ERROR: selection arms must use the source model; omit --worker-model" >&2
                 exit 2
             fi
             ;;
@@ -170,10 +164,27 @@ if [ "$1" = "run" ]; then
 fi
 IS_SELECTION_ARM=0
 case "$ARM_NAME" in
-    selection-10k|selection|selection-40k|selection-no-problem)
+    selection|selection-no-problem)
         IS_SELECTION_ARM=1
         ;;
 esac
+if [ "$1" = "audit" ] && [ "$ARM_NAME" = "baseline-uniform-compress" ]; then
+    echo "ERROR: baseline-uniform-compress has no audit stage; audit baseline-uniform-strategy-only instead" >&2
+    exit 2
+fi
+if [ "$1" = "audit" ] && [ "$IS_SELECTION_ARM" -eq 1 ]; then
+    # Selection writes its deterministic per-attempt verdict during generation.
+    # Recompiling the arm index needs neither a judge nor provider connectivity.
+    python scripts/compile_selection_audit.py \
+        --results-root "$RESULTS_HOST_ROOT" \
+        --model "$MODEL_NAME" \
+        --arm "$ARM_NAME"
+    exit 0
+fi
+
+IMAGE=olympiad-harness
+docker build -q -t "$IMAGE" -f docker/Dockerfile . >/dev/null
+mkdir -p "$RESULTS_HOST_ROOT"
 CHECKPOINT_ARM_ID=$ARM_NAME
 if [ -n "$WORKER_MODEL_NAME" ]; then
     CHECKPOINT_ARM_ID="$ARM_NAME:$WORKER_MODEL_NAME"
@@ -305,8 +316,19 @@ trap finish_stage EXIT
 
 if [ "$1" = "run" ]; then
     STAGING=$(mktemp -d "$PWD/.$RESULTS_DIR_NAME-staging.XXXXXX")
-    rsync -a --include='*/' --include='meta.json' --exclude='*' \
-        "$RESULTS_HOST_ROOT"/ "$STAGING"/
+    if [ "$IS_SELECTION_ARM" -eq 1 ]; then
+        MODEL_DIR_NAME=${MODEL_NAME//\//-}
+        # A selector needs completion-path existence to skip finished attempts,
+        # never prior rankings, oracle positions, or other experimental output.
+        python scripts/stage_selection_markers.py \
+            --source-root "$RESULTS_HOST_ROOT" \
+            --destination-root "$STAGING" \
+            --model-dir "$MODEL_DIR_NAME" \
+            --arm "$ARM_NAME"
+    else
+        rsync -a --include='*/' --include='meta.json' --exclude='*' \
+            "$RESULTS_HOST_ROOT"/ "$STAGING"/
+    fi
     if [ "$ARM_NAME" = "baseline-uniform-strategy-only" ]; then
         MODEL_DIR_NAME=${MODEL_NAME//\//-}
         PLANNER_ONLY_ROOT="$RESULTS_HOST_ROOT/$MODEL_DIR_NAME/baseline-uniform-strategy-only"
@@ -327,19 +349,6 @@ if [ "$1" = "run" ]; then
             rsync -a --include='*/' --include='meta.json' --include='solution.md' \
                 --include='strategies.json' --exclude='*' \
                 "$SOURCE_STRATEGY_ROOT"/ "$STAGED_STRATEGY_ROOT"/
-        fi
-    fi
-    if [ "$IS_SELECTION_ARM" -eq 1 ]; then
-        MODEL_DIR_NAME=${MODEL_NAME//\//-}
-        SELECTION_ROOT="$RESULTS_HOST_ROOT/$MODEL_DIR_NAME/$ARM_NAME"
-        STAGED_SELECTION_ROOT="$STAGING/$MODEL_DIR_NAME/$ARM_NAME"
-        if [ -d "$SELECTION_ROOT" ]; then
-            mkdir -p "$STAGED_SELECTION_ROOT"
-            # Existing deterministic verdicts are needed when run.py rebuilds
-            # the complete arm-level audit.jsonl after a partial resumption.
-            rsync -a --include='*/' --include='meta.json' --include='solution.md' \
-                --include='selection.json' --include='audit.json' --exclude='*' \
-                "$SELECTION_ROOT"/ "$STAGED_SELECTION_ROOT"/
         fi
     fi
     RESULTS_MOUNT="$STAGING"
@@ -369,12 +378,24 @@ docker run --rm --cap-add=NET_ADMIN \
     -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
     "$IMAGE" "$@"
 
+if [ "$1" = "run" ] && [ "$IS_SELECTION_ARM" -eq 1 ]; then
+    # Merge the isolated per-attempt outputs before compiling the complete arm.
+    # Compilation is mechanical and runs on the host, outside the selector's
+    # tool-visible container.
+    finish_stage
+    STAGING=""
+    python scripts/compile_selection_audit.py \
+        --results-root "$RESULTS_HOST_ROOT" \
+        --model "$MODEL_NAME" \
+        --arm "$ARM_NAME"
+fi
+
 # State/strategy annotation is needed only for the temporal trajectories,
-# search controls, and the compressed candidates displayed in selection.
+# search controls, and the raw planner proposals later displayed in compressed form.
 # Standalone fixed-compute arms stop after correctness grading.
 RUN_STATE_AUDIT=0
 case "$ARM_NAME" in
-    baseline-sequential|hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only|baseline-uniform-compress)
+    baseline-sequential|hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only)
         RUN_STATE_AUDIT=1
         ;;
 esac

@@ -1,31 +1,51 @@
 # ICLR TODO
 
-## Freeze before more full runs
+## Freeze the claim
 
-- [ ] Freeze one primary endpoint: paired reliable coverage at the final 8× cap for fresh unaided versus oracle-sketch Self-Refine on each model's baseline-failure cohort.
-- [ ] Use each Self-Refine arm's own 1×/2×/4×/8× artifacts for the five-family curves; additionally materialize and audit every integer 1× increment for both Self-Refine conditions of Opus 4.8 and GPT-5.4.
-- [ ] Freeze hashes for the 35 problems, sketches, prompts, stopping rules, model endpoints, run order, audit threshold, and analysis code; log realized tokens and rounds.
-- [ ] Validate anytime 2×/4× cuts against independent hard-stopped runs on a locked subset; otherwise keep only the final 8× comparison primary.
+- [ ] Center the paper on two observable bottlenecks: **strategy access** and **proof execution**.
+- [ ] State the mechanism as `P(proof | policy) = P(strategy accessed | policy) x P(proof | strategy accessed, policy)`.
+- [ ] Claim that the framework *reconciles* prior depth-versus-breadth findings; do not claim to establish the mechanism of every prior study.
+- [ ] Remove strategy selection from the title, main decomposition, and primary experiments. Keep completed selector runs as exploratory archive only.
+- [ ] Define access as a valid proof, all three verified reference mechanisms in their required roles, or a human-adjudicated complete alternative strategy.
+- [ ] Bound every conclusion to the tested model, harness, policy, and finite compute cap.
 
-## Search and content controls
+## Primary 35-problem study
 
-- [ ] Audit and document `baseline-uniform-strategy` as a proof-domain adaptation of **coarse-grained TTS-Uniform without entropy filtering**: one shared 80k-token strategy extractor, uniform allocation of eight fresh 190k-token executors, and no oracle selection.
-- [ ] Publish the exact extraction and execution prompts and state every adaptation: whole-proof coverage, semantic deduplication, an eight-strategy cap, proof auditing instead of answer entropy, and no majority-vote aggregation.
-- [ ] Run Parallel-8 and the TTS-Uniform-C adaptation on the same frozen baseline-failure cohort; report `c/8` and pass@$k$ only for IID Parallel, and raw executor/strategy yield for the dependent uniform-allocation bank.
-- [ ] Freeze a matched mathematical placebo for every problem and, on a locked subset, a same-length sketch with the decisive route clause removed.
+- [ ] Complete three unaided and three oracle-conditioned Self-Refine trajectories for all four paper models on all 35 problems.
+- [ ] Complete the standalone baseline, shuffled-sketch placebo, and oracle cells.
+- [ ] Use GPT-5.4 as the primary breadth model. On all 35 problems, complete three independent Parallel-8 banks; the existing bank is seed 1.
+- [ ] Keep one Parallel-8 bank for Muse and Opus as cross-model replication. GPT-5.5 breadth is optional because its failure cohort is small.
+- [ ] Keep Uniform-C-8 as a secondary diagnostic with one realized planner bank per evaluated model; do not spend compute obtaining three-bank reliability.
+- [ ] Audit every Parallel branch, Uniform-C proposal, and Uniform-C executor for strategy access and proof correctness.
 
-## Audits
+## External confirmation
 
-- [ ] Have two blinded olympiad experts adjudicate every first-passage proof, every final 8× proof, and every proof or plan used in a headline dissociation case.
-- [ ] Audit route presence in unaided and TTS-Uniform-C trajectories and adherence in oracle-sketch trajectories; allow valid routes different from the reference solution.
-- [ ] Double-label U/P states with a frozen rubric and audit a random failure sample large enough to estimate automated-audit false negatives.
+- [ ] Complete the existing three-seed unaided and oracle-conditioned runs on all 22 non-geometry Advanced IMO-ProofBench problems for GPT-5.4 and Muse Spark~1.2.
+- [ ] Freeze each model's external baseline-failure cohort before inspecting the remaining arms.
+- [ ] Run one preregistered GPT-5.4 Parallel-8 bank on the external failure cohort. One bank is sufficient here as a problem-level confirmation; report it as one randomized policy realization, not 2/3 reliability.
+- [ ] Test the frozen directional predictions: oracle conditioning raises terminal proof coverage, and Parallel-8 raises strategy-access coverage relative to the mean single-trajectory depth rate.
 
-## Analysis and paper
+## Expert validation
 
-- [ ] Report raw 0/3–3/3 cells, current-checkpoint and cumulative coverage, exact paired uncertainty over problems, and sensitivity at scores ≥6, 7, and 3/3 reliability.
-- [ ] Bound every null claim to the tested controller and maximum allocation; never equate early self-convergence with consuming the full 8× budget.
-- [ ] Complete the 35-problem, five-family panel and a locked external replication, including at least one open-weight model.
-- [x] Freeze the acquisition-state rule: `S` begins at complete 3/3 mechanism recognition or the first audited success and is absorbing; before acquisition, `P` means an incomplete recognized-step count increased and `U` means it stayed flat or decreased; missing artifacts remain unobserved.
-- [ ] Fit the discrete U/P/S model on the two strong models, with four free probabilities per transition matrix; train through 4× and predict 5×–8× on held-out problems, compare condition-specific against shared dynamics, and test parameter recovery, time homogeneity, and Markov sufficiency against time-only, two-state, route-count, and history-aware baselines.
-- [ ] Keep the state model in the main paper only if its parameters are identifiable and frozen out-of-sample predictions beat the simpler baselines; otherwise move it and the proposition to the appendix.
-- [ ] Rebuild every table and TeX figure from an immutable artifact manifest in a clean container.
+- [ ] Human-check every breadth-only acquisition, every acquired-but-unsolved case, every oracle-only rescue, and a frozen stratified sample of negative cases.
+- [ ] Adjudicate complete alternative strategies so reference-route matching is not treated as the only possible access event.
+- [ ] Report automated proof and strategy-audit precision and recall against blinded expert consensus.
+
+## Analysis
+
+- [ ] Treat one 8x Self-Refine trajectory and one Parallel-8 bank as matched-cap policies. Report realized tokens separately because early convergence can make realized compute differ.
+- [ ] For the primary all-35 GPT-5.4 comparison, report 0/3--3/3 access and proof outcomes for both depth and Parallel-8, plus the paired >=2/3 contrast.
+- [ ] For one-bank replications, compare bank access with the mean of the three depth-seed outcomes; never compare any-of-eight directly with the depth 2/3 count.
+- [ ] Report acquisition@k for Parallel-8, per-problem branch frequencies, and breadth-only/depth-only/both/neither overlaps.
+- [ ] Report strategy access and valid proof separately. The gap between them is the observed execution-failure count.
+- [ ] Use problems as inferential units, exact paired tests where applicable, and problem-cluster bootstrap intervals across models.
+- [ ] Label the current pooled breadth estimate as exploratory; reserve confirmatory language for the frozen external analysis.
+
+## Paper
+
+- [ ] Retitle and rewrite around **When Does Long Thinking Help? Separating Strategy Access from Execution in Mathematical Reasoning**.
+- [ ] Explain prior results through the two factors: depth can improve conditional execution, breadth can improve access, and either can plateau when its targeted factor is insensitive to more compute.
+- [ ] Distinguish the contribution from PlanSearch, TTS-Uniform, USACO hints, and Strategy Executability: we intervene on access and execution within the same model--problem failures under matched caps.
+- [ ] Make the main empirical asymmetry explicit: frontier models execute nearly every supplied verified strategy, while unaided depth and breadth still leave strategies unobserved.
+- [ ] Keep the discrete state/Markov analysis only if it adds held-out predictive evidence beyond the two-factor decomposition; otherwise move it to the appendix.
+- [ ] Rebuild every table and figure from one frozen artifact manifest before submission.

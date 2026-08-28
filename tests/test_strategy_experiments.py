@@ -13,10 +13,12 @@ import anyio
 from claude_agent_sdk import ResultMessage
 from scripts.build_selection_dataset import build_records
 from scripts.reuse_uniform_strategies import reuse
+from scripts.stage_selection_markers import stage_markers
 from src.audit import _completed_without_verdict
 from src.config import load_config
 from src.constants import CONFIG_PATH, META_FILENAME, UNIFORM_STRATEGIES_FILENAME
 from src.models import Problem
+from src.models import PhaseResult
 from src.prompts import (
     selection_no_problem_prompt,
     selection_prompt,
@@ -27,9 +29,10 @@ from src.strategy_experiments import (
     _selection_candidates,
     compress_uniform_strategies,
     compression_examples,
-    run_selection,
     sampled_strategy_indices,
 )
+from src.run import _parse_selection_decision, run_selection
+from src.solver import BudgetTracker
 from src.token_pool import TokenPool
 
 
@@ -42,6 +45,29 @@ class _FakeCheckpoint:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def phases(self, _: str) -> list[PhaseResult]:
+        return []
+
+    def tracker(
+        self, _: str, budget_tokens: int, reserve_tokens: int
+    ) -> BudgetTracker:
+        return BudgetTracker(budget_tokens, reserve_tokens)
+
+    def active(self, _: str) -> None:
+        return None
+
+    def session_id(self, _: str) -> None:
+        return None
+
+    def reconnects(self, _: str) -> list[object]:
+        return []
+
+    def save_session(self, *_: object) -> None:
+        pass
+
+    def session_ids(self) -> dict[str, str]:
+        return {}
+
     def prepare_completion(self, _: object) -> None:
         pass
 
@@ -52,7 +78,92 @@ class _FakeCheckpoint:
         pass
 
 
+class _FakeSession:
+    def __init__(self, *_: object, **__: object) -> None:
+        self.session_id = "selection-session"
+        self.reconnect_events: list[object] = []
+
+    async def __aenter__(self) -> "_FakeSession":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        pass
+
+
+def _selection_phase(
+    *,
+    decision: dict[str, object] | None,
+    label: str = "selection_work",
+    cumulative_tokens: int = 100,
+    budget_exhausted: bool = False,
+) -> PhaseResult:
+    text = ""
+    if decision is not None:
+        ranking = decision["ranking"]
+        reason = decision["reason"]
+        if not isinstance(ranking, list):
+            raise TypeError("ranking must be a list")
+        text = (
+            f"<ranking>{','.join(str(value) for value in ranking)}</ranking>\n"
+            f"<reason>{reason}</reason>"
+        )
+    return PhaseResult(
+        label=label,
+        prompt="selection",
+        text=text,
+        output_tokens=cumulative_tokens,
+        cumulative_output_tokens=cumulative_tokens,
+        num_turns=1,
+        duration_ms=1,
+        total_cost_usd=0.0,
+        is_error=False,
+        stop_reason="budget_exhausted" if budget_exhausted else "end_turn",
+        budget_exhausted=budget_exhausted,
+        tool_calls=[],
+        reconnects=[],
+    )
+
+
 class StrategyExperimentTests(unittest.TestCase):
+    def test_selection_staging_exposes_only_opaque_completion_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "results"
+            destination = root / "staging"
+            completed = source / "source-model" / "selection" / "p" / "seed_1"
+            completed.mkdir(parents=True)
+            (completed / "meta.json").write_text(
+                json.dumps({"oracle_position": 3}), encoding="utf-8"
+            )
+            (completed / "selection.json").write_text(
+                json.dumps({"candidates": [{"provenance": "oracle"}]}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                stage_markers(source, destination, "source-model", "selection"),
+                1,
+            )
+            staged = destination / completed.relative_to(source)
+            self.assertEqual(
+                json.loads((staged / "meta.json").read_text(encoding="utf-8")),
+                {},
+            )
+            self.assertFalse((staged / "selection.json").exists())
+
+    def test_selection_decision_parser_is_strict(self) -> None:
+        self.assertEqual(
+            _parse_selection_decision(
+                "<ranking>4, 2, 1, 3</ranking>\n<reason>Fourth is strongest.</reason>"
+            ),
+            {"ranking": [4, 2, 1, 3], "reason": "Fourth is strongest."},
+        )
+        self.assertIsNone(
+            _parse_selection_decision(
+                "<ranking>1,1,2,3</ranking><reason>Duplicate.</reason>"
+            )
+        )
+        self.assertIsNone(_parse_selection_decision("Ranking: 1,2,3,4"))
+
     def test_selector_limit_is_terminal_but_provider_failure_is_not(self) -> None:
         def result(**overrides: object) -> ResultMessage:
             values: dict[str, object] = {
@@ -86,7 +197,7 @@ class StrategyExperimentTests(unittest.TestCase):
             )
         )
 
-    def test_config_contains_configured_auxiliary_arms_and_selection_caps(self) -> None:
+    def test_config_gives_selection_arms_the_standard_one_x_budget(self) -> None:
         config = load_config(CONFIG_PATH)
         self.assertEqual(
             config.arms["baseline-uniform-strategy-only"].mode,
@@ -95,36 +206,27 @@ class StrategyExperimentTests(unittest.TestCase):
         self.assertEqual(
             config.arms["baseline-uniform-compress"].mode, "uniform_compress"
         )
-        self.assertEqual(config.arms["selection"].seeds, [1, 2, 3])
-        self.assertEqual(config.arms["selection-10k"].seeds, [1, 2, 3])
-        self.assertEqual(config.arms["selection-40k"].seeds, [1, 2, 3])
-        self.assertEqual(config.arms["selection-no-problem"].seeds, [1, 2, 3])
         self.assertEqual(
-            {
-                name: config.selection_budget_tokens(config.arms[name])
-                for name in (
-                    "selection-10k",
-                    "selection",
-                    "selection-40k",
-                    "selection-no-problem",
-                )
-            },
-            {
-                "selection-10k": 10_000,
-                "selection": 20_000,
-                "selection-40k": 40_000,
-                "selection-no-problem": 20_000,
-            },
+            config.arms["baseline-uniform-strategy-only"].seeds, [1]
+        )
+        self.assertEqual(
+            config.arms["baseline-uniform-compress"].seeds, [1]
+        )
+        self.assertEqual(config.arms["selection"].seeds, [1, 2, 3])
+        self.assertEqual(config.arms["selection-no-problem"].seeds, [1, 2, 3])
+        self.assertEqual(config.budget_tokens(config.arms["selection"]), 200_000)
+        self.assertEqual(
+            config.budget_tokens(config.arms["selection-no-problem"]), 200_000
         )
 
     def test_strategy_sampling_is_stable_and_uses_three_distinct_raw_entries(self) -> None:
-        first = sampled_strategy_indices("model", "problem", 8)
-        second = sampled_strategy_indices("model", "problem", 8)
+        first = sampled_strategy_indices("model", "problem", 1, 8)
+        second = sampled_strategy_indices("model", "problem", 1, 8)
         self.assertEqual(first, second)
         self.assertEqual(len(first), 3)
         self.assertEqual(len(set(first)), 3)
         with self.assertRaisesRegex(ValueError, "at least three"):
-            sampled_strategy_indices("model", "problem", 2)
+            sampled_strategy_indices("model", "problem", 1, 2)
 
     def test_compression_examples_include_problem_and_avoid_target(self) -> None:
         ids = (
@@ -149,21 +251,20 @@ class StrategyExperimentTests(unittest.TestCase):
         )
         self.assertIn("Problem:\nStatement", prompt)
         self.assertIn("Sketch:\nHint", prompt)
-        self.assertIn("at most 25", prompt)
-        self.assertIn("Do not repair", prompt)
+        self.assertIn("18--25", prompt)
+        self.assertIn("load-bearing route", prompt)
+        self.assertIn("do not repair", prompt.lower())
 
     def test_selection_order_is_reproducible_and_shared_across_controls(self) -> None:
         problem = Problem("p", "Statement", "algebra", None, "Oracle", None)
         record = {
+            "proposal_seed": 1,
             "oracle_strategy": "Oracle",
             "generated_strategies": [
                 {
                     "candidate_id": f"g{i}",
                     "strategy": f"G{i}",
-                    "strategy_acquired": i == 1,
-                    "acquisition_basis": (
-                        "reference_steps" if i == 1 else "none"
-                    ),
+                    "oracle_strategy_match": i == 1,
                 }
                 for i in range(1, 4)
             ],
@@ -173,52 +274,29 @@ class StrategyExperimentTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(oracle_position, second_position)
         texts = [str(item["strategy"]) for item in first]
-        with_problem = selection_prompt(problem, texts)
-        without_problem = selection_no_problem_prompt(texts)
+        with_problem = selection_prompt(problem, texts, 200_000, 20_000)
+        without_problem = selection_no_problem_prompt(texts, 200_000, 20_000)
         for index, text in enumerate(texts, start=1):
             candidate = f"Strategy {index}: {text}"
             self.assertIn(candidate, with_problem)
             self.assertIn(candidate, without_problem)
         self.assertIn("complete correct proof", with_problem)
-        self.assertIn("human-written frozen reference", without_problem)
-
-    def test_selection_accepts_documented_human_alternative(self) -> None:
-        problem = Problem("p", "Statement", "algebra", None, "Oracle", None)
-        record = {
-            "oracle_strategy": "Oracle",
-            "generated_strategies": [
-                {
-                    "candidate_id": "g1",
-                    "strategy": "A different valid route.",
-                    "strategy_acquired": True,
-                    "acquisition_basis": "human_alternative",
-                    "adjudication_note": "Expert verified a complete alternative route.",
-                },
-                {
-                    "candidate_id": "g2",
-                    "strategy": "Incomplete route two.",
-                    "strategy_acquired": False,
-                    "acquisition_basis": "none",
-                },
-                {
-                    "candidate_id": "g3",
-                    "strategy": "Incomplete route three.",
-                    "strategy_acquired": False,
-                    "acquisition_basis": "none",
-                },
-            ],
-        }
-        candidates, _ = _selection_candidates(problem, record, 1, "model")
-        alternative = next(
-            candidate for candidate in candidates if candidate["candidate_id"] == "g1"
+        self.assertIn("complete correct proof", without_problem)
+        self.assertIn("Exactly one is derived", with_problem)
+        self.assertIn("Exactly one is derived", without_problem)
+        self.assertIn("200000 output tokens", with_problem)
+        self.assertIn("180000 output tokens for this exploration", with_problem)
+        self.assertIn("reserves up to 20000 output tokens", with_problem)
+        self.assertIn("provided offline scratch tools", with_problem)
+        self.assertIn("Problem statement:\n\nStatement", with_problem)
+        self.assertIn(
+            "Problem statement:\n\n[WITHHELD FOR THIS CONTROL]",
+            without_problem,
         )
-        self.assertTrue(alternative["strategy_acquired"])
-        self.assertEqual(alternative["acquisition_basis"], "human_alternative")
-        self.assertIn("Expert verified", alternative["adjudication_note"])
-
-        del record["generated_strategies"][0]["adjudication_note"]
-        with self.assertRaisesRegex(ValueError, "adjudication_note"):
-            _selection_candidates(problem, record, 1, "model")
+        self.assertEqual(
+            with_problem.replace("Statement", "[WITHHELD FOR THIS CONTROL]"),
+            without_problem,
+        )
 
     def test_compression_and_selection_emit_complete_auxiliary_artifacts(self) -> None:
         config = dataclasses.replace(load_config(CONFIG_PATH), model="source/model")
@@ -254,14 +332,33 @@ class StrategyExperimentTests(unittest.TestCase):
                 / "seed_1"
             )
             verdicts = [
-                ({"strategy": "Compressed route one"}, []),
-                ({"strategy": "Compressed route two"}, []),
-                ({"strategy": "Compressed route three"}, []),
+                (
+                    {
+                        "strategy": "Define the first proposed construction; apply its stated lemma, preserve its unsupported transition, and derive the claimed terminal bound."
+                    },
+                    [],
+                ),
+                (
+                    {
+                        "strategy": "Encode the second proposed route; invoke its named reduction, retain the unresolved bridge, and conclude through the proposed induction."
+                    },
+                    [],
+                ),
+                (
+                    {
+                        "strategy": "Construct the third proposed object; use its asserted invariant, preserve the missing justification, and close with the suggested counting step."
+                    },
+                    [],
+                ),
             ]
 
-            def checkpoint_factory(_: object) -> _FakeCheckpoint:
-                return _FakeCheckpoint(_, Path(temp) / "checkpoints")
+            checkpoint_identities: list[object] = []
 
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                checkpoint_identities.append(identity)
+                return _FakeCheckpoint(identity, Path(temp) / "checkpoints")
+
+            compressor_judge = AsyncMock(side_effect=verdicts)
             with (
                 patch("src.strategy_experiments.RESULTS_ROOT", root),
                 patch(
@@ -276,7 +373,7 @@ class StrategyExperimentTests(unittest.TestCase):
                     "src.strategy_experiments.AttemptCheckpoint",
                     side_effect=checkpoint_factory,
                 ),
-                patch("src.audit._judge", AsyncMock(side_effect=verdicts)),
+                patch("src.audit._judge", compressor_judge),
             ):
                 anyio.run(
                     compress_uniform_strategies,
@@ -293,41 +390,49 @@ class StrategyExperimentTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
+            self.assertEqual(compressor_judge.await_count, 3)
+            self.assertTrue(
+                all(
+                    "Oracle" not in call.args[1]
+                    for call in compressor_judge.await_args_list
+                )
+            )
             self.assertEqual(len(artifact["generated_strategies"]), 3)
+            self.assertEqual(artifact["oracle_strategy"], "Oracle")
             self.assertTrue((compression_output / "meta.json").is_file())
 
             frozen = {
-                "oracle_strategy": "Oracle",
+                "proposal_seed": 1,
+                "oracle_strategy": artifact["oracle_strategy"],
                 "generated_strategies": [
                     {
                         "candidate_id": candidate["candidate_id"],
                         "strategy": candidate["strategy"],
-                        "strategy_acquired": False,
-                        "acquisition_basis": "none",
+                        "oracle_strategy_match": False,
                     }
                     for candidate in artifact["generated_strategies"]
                 ],
             }
-            selector_judge = AsyncMock(
-                return_value=(
-                    {"ranking": [1, 2, 3, 4], "reason": "Ranked."},
-                    [],
+            selection_phase_runner = AsyncMock(
+                return_value=_selection_phase(
+                    decision={
+                        "ranking": [1, 2, 3, 4],
+                        "reason": "Ranked.",
+                    }
                 )
             )
             with (
-                patch("src.strategy_experiments.RESULTS_ROOT", root),
+                patch("src.run.RESULTS_ROOT", root),
                 patch(
-                    "src.strategy_experiments.seed_output_dir",
+                    "src.run.seed_output_dir",
                     return_value=selection_output,
                 ),
                 patch(
-                    "src.strategy_experiments.AttemptCheckpoint",
+                    "src.run.AttemptCheckpoint",
                     side_effect=checkpoint_factory,
                 ),
-                patch(
-                    "src.audit._judge",
-                    selector_judge,
-                ),
+                patch("src.run.ResumableClaudeSession", _FakeSession),
+                patch("src.run._checkpointed_phase", selection_phase_runner),
             ):
                 anyio.run(
                     partial(
@@ -340,25 +445,47 @@ class StrategyExperimentTests(unittest.TestCase):
                     1,
                     TokenPool(["unused"], "TEST_TOKEN"),
                     frozen,
-                    "source/model",
                 )
             audit = json.loads(
                 (selection_output / "audit.json").read_text(encoding="utf-8")
             )
             self.assertIn(audit["oracle_rank"], {1, 2, 3, 4})
-            self.assertIsInstance(audit["strategy_acquired_top1"], bool)
-            self.assertEqual(audit["strategy_acquired_candidate_count"], 1)
-            self.assertEqual(
-                audit["random_strategy_acquired_top1_probability"], 0.25
+            self.assertIsInstance(audit["oracle_strategy_match_top1"], bool)
+            self.assertNotIn("oracle_strategy_match_candidate_count", audit)
+            self.assertNotIn("random_oracle_strategy_match_top1_probability", audit)
+            self.assertNotIn("style_leakage_oracle_top1", audit)
+            self.assertNotIn("worker_model", audit)
+            self.assertNotIn(
+                "worker_model",
+                json.loads(
+                    (selection_output / "selection.json").read_text(encoding="utf-8")
+                ),
+            )
+            self.assertNotIn(
+                "worker_model",
+                json.loads((selection_output / "meta.json").read_text(encoding="utf-8")),
             )
             self.assertTrue((selection_output / "selection.json").is_file())
+            self.assertEqual(selection_phase_runner.await_count, 1)
             self.assertEqual(
-                selector_judge.await_args.kwargs["max_output_tokens_per_response"],
-                20_000,
+                selection_phase_runner.await_args.args[5], "selection_work"
             )
-            self.assertEqual(selector_judge.await_args.kwargs["max_turns"], 1)
-            self.assertTrue(
-                selector_judge.await_args.kwargs["terminal_no_verdict"]
+            self.assertEqual(selection_phase_runner.await_args.args[6], 180_000)
+            meta = json.loads(
+                (selection_output / "meta.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(meta["tools_enabled_during_work"])
+            self.assertFalse(meta["tools_enabled_during_wrap"])
+            self.assertEqual(meta["working_output_tokens"], 180_000)
+            self.assertEqual(meta["wrap_up_reserve_tokens"], 20_000)
+            selection_identity = checkpoint_identities[-1]
+            self.assertIsInstance(selection_identity, dict)
+            if not isinstance(selection_identity, dict):
+                self.fail("selection checkpoint identity must be a dictionary")
+            self.assertNotIn("candidate_order", selection_identity)
+            self.assertNotIn("oracle_position", selection_identity)
+            self.assertEqual(
+                len(selection_identity["candidate_strategy_sha256s"]), 4
             )
 
     def test_selector_no_decision_is_terminal_and_scored_false(self) -> None:
@@ -366,13 +493,13 @@ class StrategyExperimentTests(unittest.TestCase):
         arm = config.arms["selection"]
         problem = Problem("p", "Statement", "algebra", None, "Oracle", None)
         frozen = {
+            "proposal_seed": 1,
             "oracle_strategy": "Oracle",
             "generated_strategies": [
                 {
                     "candidate_id": f"g{index}",
                     "strategy": f"G{index}",
-                    "strategy_acquired": False,
-                    "acquisition_basis": "none",
+                    "oracle_strategy_match": False,
                 }
                 for index in range(1, 4)
             ],
@@ -384,25 +511,34 @@ class StrategyExperimentTests(unittest.TestCase):
             def checkpoint_factory(identity: object) -> _FakeCheckpoint:
                 return _FakeCheckpoint(identity, Path(temp) / "checkpoints")
 
+            async def exhaust_work_then_wrap(*args: object) -> PhaseResult:
+                tracker = args[3]
+                label = str(args[5])
+                if not isinstance(tracker, BudgetTracker):
+                    raise TypeError("Expected BudgetTracker")
+                message_id = f"message-{label}"
+                phase_tokens = 180_000 if label == "selection_work" else 20_000
+                tracker.add(message_id, {"output_tokens": phase_tokens})
+                tracker.finish_phase(None)
+                return _selection_phase(
+                    decision=None,
+                    label=label,
+                    cumulative_tokens=tracker.spent,
+                    budget_exhausted=True,
+                )
+
+            phase_runner = AsyncMock(side_effect=exhaust_work_then_wrap)
             with (
-                patch("src.strategy_experiments.RESULTS_ROOT", root),
-                patch("src.strategy_experiments.seed_output_dir", return_value=output),
+                patch("src.run.RESULTS_ROOT", root),
+                patch("src.run.seed_output_dir", return_value=output),
                 patch(
-                    "src.strategy_experiments.AttemptCheckpoint",
+                    "src.run.AttemptCheckpoint",
                     side_effect=checkpoint_factory,
                 ),
+                patch("src.run.ResumableClaudeSession", _FakeSession),
                 patch(
-                    "src.audit._judge",
-                    AsyncMock(
-                        return_value=(
-                            {
-                                "decision_status": "no_decision",
-                                "stop_reason": "max_tokens",
-                                "usage": {"output_tokens": 20_000},
-                            },
-                            [],
-                        )
-                    ),
+                    "src.run._checkpointed_phase",
+                    phase_runner,
                 ),
             ):
                 anyio.run(
@@ -413,15 +549,94 @@ class StrategyExperimentTests(unittest.TestCase):
                     1,
                     TokenPool(["unused"], "TEST_TOKEN"),
                     frozen,
-                    "source/model",
                 )
             audit = json.loads((output / "audit.json").read_text(encoding="utf-8"))
             meta = json.loads((output / "meta.json").read_text(encoding="utf-8"))
             self.assertEqual(audit["decision_status"], "no_decision")
             self.assertFalse(audit["oracle_top1"])
-            self.assertFalse(audit["strategy_acquired_top1"])
+            self.assertFalse(audit["oracle_strategy_match_top1"])
             self.assertIsNone(audit["oracle_rank"])
-            self.assertEqual(meta["output_tokens_spent"], 20_000)
+            self.assertEqual(meta["output_tokens_spent"], 200_000)
+            self.assertEqual(phase_runner.await_count, 2)
+            self.assertEqual(
+                [call.args[5] for call in phase_runner.await_args_list],
+                ["selection_work", "selection_wrap"],
+            )
+            self.assertEqual(
+                [call.args[6] for call in phase_runner.await_args_list],
+                [180_000, 200_000],
+            )
+
+    def test_selector_rejects_an_over_budget_ranking(self) -> None:
+        config = dataclasses.replace(load_config(CONFIG_PATH), model="source/model")
+        arm = config.arms["selection"]
+        problem = Problem("p", "Statement", "algebra", None, "Oracle", None)
+        frozen = {
+            "proposal_seed": 1,
+            "oracle_strategy": "Oracle",
+            "generated_strategies": [
+                {
+                    "candidate_id": f"g{index}",
+                    "strategy": f"G{index}",
+                    "oracle_strategy_match": False,
+                }
+                for index in range(1, 4)
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "results"
+            output = root / "source-model" / arm.name / "p" / "seed_1"
+
+            def checkpoint_factory(identity: object) -> _FakeCheckpoint:
+                return _FakeCheckpoint(identity, Path(temp) / "checkpoints")
+
+            async def exceed_budget(*args: object) -> PhaseResult:
+                tracker = args[3]
+                if not isinstance(tracker, BudgetTracker):
+                    raise TypeError("Expected BudgetTracker")
+                tracker.add("over-budget", {"output_tokens": 200_001})
+                tracker.finish_phase(None)
+                return _selection_phase(
+                    decision={
+                        "ranking": [1, 2, 3, 4],
+                        "reason": "Over-budget ranking.",
+                    },
+                    cumulative_tokens=tracker.spent,
+                    budget_exhausted=True,
+                )
+
+            with (
+                patch("src.run.RESULTS_ROOT", root),
+                patch("src.run.seed_output_dir", return_value=output),
+                patch(
+                    "src.run.AttemptCheckpoint",
+                    side_effect=checkpoint_factory,
+                ),
+                patch("src.run.ResumableClaudeSession", _FakeSession),
+                patch(
+                    "src.run._checkpointed_phase",
+                    AsyncMock(side_effect=exceed_budget),
+                ),
+            ):
+                anyio.run(
+                    partial(run_selection, include_problem=True),
+                    config,
+                    arm,
+                    problem,
+                    1,
+                    TokenPool(["unused"], "TEST_TOKEN"),
+                    frozen,
+                )
+            audit = json.loads((output / "audit.json").read_text(encoding="utf-8"))
+            artifact = json.loads(
+                (output / "selection.json").read_text(encoding="utf-8")
+            )
+            meta = json.loads((output / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(audit["decision_status"], "no_decision")
+            self.assertIsNone(audit["oracle_rank"])
+            self.assertEqual(artifact["ranking_positions"], [])
+            self.assertEqual(artifact["stop_reason"], "budget_exhausted")
+            self.assertFalse(meta["budget_eligible"])
 
     def test_reuse_copies_only_planner_artifacts_and_marks_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -500,90 +715,133 @@ class StrategyExperimentTests(unittest.TestCase):
             )
             for source_model in ("model/a", "model/b"):
                 model_dir = source_model.replace("/", "-")
-                output = (
-                    root
-                    / "results"
-                    / model_dir
-                    / "baseline-uniform-compress"
-                    / "p"
-                    / "seed_1"
-                )
-                output.mkdir(parents=True)
-                generated = [
-                    {
-                        "candidate_id": f"generated_{index}",
-                        "raw_strategy_index": index,
-                        "strategy": (
-                            "First generated route"
-                            if index == 1
-                            else f"Generated route {index}"
+                for seed in (1,):
+                    raw_output = (
+                        root
+                        / "results"
+                        / model_dir
+                        / "baseline-uniform-strategy-only"
+                        / "p"
+                        / f"seed_{seed}"
+                    )
+                    output = (
+                        root
+                        / "results"
+                        / model_dir
+                        / "baseline-uniform-compress"
+                        / "p"
+                        / f"seed_{seed}"
+                    )
+                    raw_output.mkdir(parents=True)
+                    output.mkdir(parents=True)
+                    raw_strategies = [
+                        f"Uncompressed raw strategy {index} for seed {seed}."
+                        for index in range(1, 4)
+                    ]
+                    generated = [
+                        {
+                            "candidate_id": f"generated_{index}",
+                            "raw_strategy_index": index,
+                            "raw_strategy": raw_strategies[index - 1],
+                            "strategy": (
+                                f"Define generated route {index} for seed {seed}; apply its "
+                                "stated construction, preserve the unresolved lemma, and "
+                                "finish through its proposed counting argument."
+                            ),
+                        }
+                        for index in range(1, 4)
+                    ]
+                    (raw_output / "strategies.json").write_text(
+                        json.dumps(
+                            {
+                                "strategies": raw_strategies,
+                                "run_strategy_indices": [],
+                            }
                         ),
-                    }
-                    for index in range(1, 4)
-                ]
-                (output / "compressed_strategies.json").write_text(
-                    json.dumps(
-                        {
-                            "problem_id": "p",
-                            "source_model": source_model,
-                            "oracle_strategy": "Frozen oracle route",
-                            "generated_strategies": generated,
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                (output / "meta.json").write_text(
-                    json.dumps(
-                        {
-                            "problem_id": "p",
-                            "model": source_model,
-                            "mode": "uniform_compress",
-                            "sample_seed": 20260827,
-                            "sampled_raw_strategy_indices": [1, 2, 3],
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                (output / "state_audit.json").write_text(
-                    json.dumps(
-                        {
-                            "problem_id": "p",
-                            "arm": "baseline-uniform-compress",
-                            "solver_model": source_model,
-                            "strategies": [
-                                {
-                                    "strategy_index": index,
-                                    "candidate_id": candidate["candidate_id"],
-                                    "raw_strategy_index": candidate[
-                                        "raw_strategy_index"
-                                    ],
-                                    "strategy_sha256": hashlib.sha256(
-                                        candidate["strategy"].encode("utf-8")
-                                    ).hexdigest(),
-                                    "state": "S" if index == 1 else "U",
-                                    "strategy_acquired": index == 1,
-                                    "acquisition_basis": (
-                                        "reference_steps" if index == 1 else "none"
-                                    ),
-                                }
-                                for index, candidate in enumerate(generated, 1)
-                            ],
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-
+                        encoding="utf-8",
+                    )
+                    (raw_output / "meta.json").write_text(
+                        json.dumps(
+                            {
+                                "problem_id": "p",
+                                "model": source_model,
+                                "mode": "uniform_strategy_only",
+                                "seed": seed,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    (raw_output / "state_audit.json").write_text(
+                        json.dumps(
+                            {
+                                "problem_id": "p",
+                                "arm": "baseline-uniform-strategy-only",
+                                "solver_model": source_model,
+                                "seed": seed,
+                                "strategies": [
+                                    {
+                                        "strategy_index": index,
+                                        "candidate_id": f"strategy_{index}",
+                                        "strategy_sha256": hashlib.sha256(
+                                            strategy.encode("utf-8")
+                                        ).hexdigest(),
+                                        "oracle_strategy_match": index == 1,
+                                    }
+                                    for index, strategy in enumerate(raw_strategies, 1)
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    (output / "compressed_strategies.json").write_text(
+                        json.dumps(
+                            {
+                                "problem_id": "p",
+                                "source_model": source_model,
+                                "oracle_strategy": "Frozen oracle route",
+                                "generated_strategies": generated,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    (output / "meta.json").write_text(
+                        json.dumps(
+                            {
+                                "problem_id": "p",
+                                "model": source_model,
+                                "mode": "uniform_compress",
+                                "seed": seed,
+                                "sample_seed": 20260827,
+                                "sampled_raw_strategy_indices": [1, 2, 3],
+                                "oracle_strategy_sha256": hashlib.sha256(
+                                    b"Frozen oracle route"
+                                ).hexdigest(),
+                                "oracle_word_count": 3,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
             records = build_records(root / "results", hints)
             self.assertEqual(
-                [(record["source_model"], record["problem_id"]) for record in records],
-                [("model/a", "p"), ("model/b", "p")],
+                [
+                    (
+                        record["source_model"],
+                        record["problem_id"],
+                        record["proposal_seed"],
+                    )
+                    for record in records
+                ],
+                [
+                    ("model/a", "p", 1),
+                    ("model/b", "p", 1),
+                ],
             )
             first_a = records[0]["generated_strategies"][0]
             first_b = records[1]["generated_strategies"][0]
-            self.assertIs(first_a["strategy_acquired"], True)
-            self.assertIs(first_b["strategy_acquired"], True)
-            self.assertEqual(first_a["acquisition_basis"], "reference_steps")
-            self.assertEqual(first_b["acquisition_basis"], "reference_steps")
+            self.assertIs(first_a["oracle_strategy_match"], True)
+            self.assertIs(first_b["oracle_strategy_match"], True)
+            self.assertNotIn("strategy_acquired", first_a)
+            self.assertNotIn("acquisition_basis", first_a)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from src.constants import (
     UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE,
     UNIFORM_COMPRESS_PROMPT_FILE,
     SELECTION_PROMPT_FILE,
-    SELECTION_NO_PROBLEM_PROMPT_FILE,
+    SELECTION_WRAP_PROMPT_FILE,
     WRAP_UP_PROMPT_FILE,
 )
 from src.models import Problem
@@ -181,16 +181,16 @@ def state_audit_prompt(
 
 def strategy_state_audit_prompt(
     problem: Problem,
-    outline: str,
+    oracle_strategy: str,
     reference_solution: str,
     strategy_text: str,
 ) -> str:
-    """Reference-guided mechanism recognition for a proposed strategy."""
+    """Reference-guided oracle-route matching for a proposed strategy."""
     return _render(
         _load(STRATEGY_STATE_AUDIT_PROMPT_FILE),
         {
             "statement": problem.statement.strip(),
-            "outline": outline.strip(),
+            "oracle_strategy": oracle_strategy.strip(),
             "reference_solution": reference_solution.strip(),
             "strategy": strategy_text.strip(),
         },
@@ -217,12 +217,20 @@ def uniform_compress_prompt(
     )
 
 
-def selection_prompt(problem: Problem, candidates: list[str]) -> str:
+def selection_prompt(
+    problem: Problem,
+    candidates: list[str],
+    budget_tokens: int,
+    reserve_tokens: int,
+) -> str:
     """Rank four anonymous strategy sketches for the stated problem."""
     return _render(
         _load(SELECTION_PROMPT_FILE),
         {
             "statement": problem.statement.strip(),
+            "budget_tokens": str(budget_tokens),
+            "working_tokens": str(budget_tokens - reserve_tokens),
+            "reserve_tokens": str(reserve_tokens),
             "candidates": "\n\n".join(
                 f"Strategy {index}: {candidate.strip()}"
                 for index, candidate in enumerate(candidates, start=1)
@@ -231,14 +239,28 @@ def selection_prompt(problem: Problem, candidates: list[str]) -> str:
     )
 
 
-def selection_no_problem_prompt(candidates: list[str]) -> str:
-    """Rank four anonymous sketches for reference-author style without a problem."""
+def selection_no_problem_prompt(
+    candidates: list[str], budget_tokens: int, reserve_tokens: int
+) -> str:
+    """Render the identical selection task with only the statement withheld."""
     return _render(
-        _load(SELECTION_NO_PROBLEM_PROMPT_FILE),
+        _load(SELECTION_PROMPT_FILE),
         {
+            "statement": "[WITHHELD FOR THIS CONTROL]",
+            "budget_tokens": str(budget_tokens),
+            "working_tokens": str(budget_tokens - reserve_tokens),
+            "reserve_tokens": str(reserve_tokens),
             "candidates": "\n\n".join(
                 f"Strategy {index}: {candidate.strip()}"
                 for index, candidate in enumerate(candidates, start=1)
             )
         },
+    )
+
+
+def selection_wrap_prompt(remaining_tokens: int) -> str:
+    """Request the final structured ranking inside the reserved half-budget."""
+    return _render(
+        _load(SELECTION_WRAP_PROMPT_FILE),
+        {"remaining_tokens": str(remaining_tokens)},
     )

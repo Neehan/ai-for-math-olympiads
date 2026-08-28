@@ -1145,13 +1145,13 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await run_all([lambda: task() for _ in range(8)], limit=8)
         self.assertEqual(peak, 8)
 
-    def test_expensive_search_controls_use_one_eight_run_bank(self) -> None:
+    def test_parallel_uses_three_banks_and_uniform_uses_one(self) -> None:
         config = load_config(CONFIG_PATH)
         baseline = config.arms["baseline"].seeds
         banks = config.arms["baseline-parallel"].seeds
         self.assertEqual(config.max_concurrency, 8)
         self.assertEqual(baseline, [1, 2, 3])
-        self.assertEqual(banks, [1])
+        self.assertEqual(banks, [1, 2, 3])
 
     def test_uniform_strategy_bank_is_exactly_budget_matched(self) -> None:
         config = load_config(CONFIG_PATH)
