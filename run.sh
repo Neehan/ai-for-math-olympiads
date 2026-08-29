@@ -13,9 +13,8 @@
 # agent settings profiles are mounted read-only so editing them needs no rebuild.
 #
 # The run stage normally mounts only meta.json resume markers. Compression
-# additionally receives planner artifacts. Matched late interventions receive
-# only the original 3x audit scores needed for problem-level inclusion; those
-# staged records are erased before a solver starts.
+# additionally receives planner artifacts. Matched late interventions share
+# only their private native-prefix checkpoint store.
 # On exit, only newly completed attempts are merged into results/; the audit
 # stage mounts the full tree because the judge must read solutions.
 #
@@ -359,28 +358,12 @@ if [ "$1" = "run" ]; then
                 "$SOURCE_STRATEGY_ROOT"/ "$STAGED_STRATEGY_ROOT"/
         fi
     fi
-    if [ "$ARM_NAME" = "late-baseline-sequential" ]; then
-        # Stage only the original baseline audits used to freeze the hard
-        # problem set. The controller extracts three integer 3x scores per
-        # problem and deletes this tree before any tool-enabled solver starts.
-        MODEL_DIR_NAME=${MODEL_NAME//\//-}
-        SOURCE_BASELINE_ROOT="$RESULTS_HOST_ROOT/$MODEL_DIR_NAME/baseline-sequential"
-        STAGED_BASELINE_ROOT="$STAGING/$MODEL_DIR_NAME/baseline-sequential"
-        if [ -d "$SOURCE_BASELINE_ROOT" ]; then
-            mkdir -p "$STAGED_BASELINE_ROOT"
-            rsync -a --include='*/' --include='audit.json' --exclude='*' \
-                "$SOURCE_BASELINE_ROOT"/ "$STAGED_BASELINE_ROOT"/
-        fi
-    fi
     RESULTS_MOUNT="$STAGING"
 fi
 
 checkpoint_args=()
 if [ "$1" = "run" ]; then
     checkpoint_args=(-e HARNESS_DEFER_CHECKPOINT_CLEANUP=1)
-    if [ "$ARM_NAME" = "late-hint-sequential" ] || [ "$ARM_NAME" = "late-baseline-sequential" ]; then
-        checkpoint_args+=(-e HARNESS_DELETE_LATE_SOURCE_RESULTS_AFTER_LOAD=1)
-    fi
 fi
 
 # Bash 3.2 + nounset rejects "${empty_array[@]}"; the guarded form emits zero

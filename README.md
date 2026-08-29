@@ -29,7 +29,7 @@ One compute unit is at most 200k eligible output tokens.
 | `selection` | Rank three compressed proposals plus the oracle with the problem, three independent 1× attempts | Exploratory fixed-pool strategy selection |
 | `selection-no-problem` | Identical pool, order, model, and 1× protocol without the problem | Exploratory provenance/style-leakage control |
 | `hint-sequential` | One frozen ≤25-word oracle strategy followed by Self-Refine through 8× | Conditional execution after proposal and comparative selection are bypassed |
-| `late-baseline-sequential` / `late-hint-sequential` | On problems with fewer than 2/3 original passes at 3×, fork the same fresh native 3× trajectory and continue for 1× without or with the oracle strategy | Matched estimate of whether accumulated reasoning history attenuates oracle guidance |
+| `late-baseline-sequential` / `late-hint-sequential` | On an explicitly supplied problem set, fork the same fresh native 3× trajectory and continue for 1× without or with the oracle strategy | Matched estimate of whether accumulated reasoning history attenuates oracle guidance |
 | `hint` / `placebo-hint` | Correct or within-domain shifted sketch at 1× | Immediate semantic-information effect and prompt-form control |
 
 Uniform-C extracts `m≤8` strategies. Its eight executors are assigned round-robin, so each strategy receives either `floor(8/m)` or `ceil(8/m)` runs; allocation counts differ by at most one. Report planner coverage and executor outcomes separately. Uniform-C branches are dependent and are never reported as pass@`k`.

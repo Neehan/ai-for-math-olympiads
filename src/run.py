@@ -73,16 +73,11 @@ from src.models import (
     arm_checkpoint_identity,
 )
 from src.late_intervention import (
-    BASELINE_SOURCE_ARM,
-    DELETE_STAGED_SOURCES_ENV,
     LATE_BASELINE_ARM,
     PREFIX_UNITS,
     LatePrefixSource,
-    LateProblemEligibility,
     fork_native_session,
     load_prefix_source,
-    problem_eligibility,
-    remove_staged_result_sources,
     save_prefix_source,
 )
 from src.openrouter_routing import route_for
@@ -1398,11 +1393,9 @@ async def solve_late_baseline_seed(
     problem: Problem,
     seed: int,
     pool: TokenPool,
-    eligibility: LateProblemEligibility,
 ) -> None:
     """Create a native 3x prefix, retain it, then run the no-hint 4th block."""
     checkpoint_identity = run_checkpoint_identity(config, arm, problem, seed)
-    checkpoint_identity["late_problem_eligibility"] = eligibility.provenance
     checkpoint = AttemptCheckpoint(checkpoint_identity)
     try:
         prefix_scratch = checkpoint.scratch_dir("prefix")
@@ -1431,21 +1424,12 @@ async def solve_late_baseline_seed(
                 prefix_session_id,
                 prefix_phases,
                 prefix_tracker.spent,
-                eligibility,
             )
-        else:
-            source_eligibility_matches = all(
-                source.provenance.get(key) == value
-                for key, value in eligibility.provenance.items()
+        elif source.session_id != prefix_session_id:
+            raise ValueError(
+                "Retained prefix belongs to a different native session; "
+                "refusing to mix reruns"
             )
-            if (
-                source.session_id != prefix_session_id
-                or not source_eligibility_matches
-            ):
-                raise ValueError(
-                    "Retained prefix belongs to a different native session or "
-                    "eligibility cohort; refusing to mix reruns"
-                )
 
         control_session_id = checkpoint.session_id("control")
         if control_session_id is None:
@@ -1490,7 +1474,6 @@ async def solve_late_baseline_seed(
             termination_reason=termination_reason,
             provider_session_ids=checkpoint.session_ids(),
             meta_extra={
-                **eligibility.provenance,
                 "intervention": "native_3x_prefix_then_no_hint_1x",
                 "prefix_budget_units": PREFIX_UNITS,
                 "prefix_output_tokens_spent": prefix_tracker.spent,
@@ -1611,7 +1594,6 @@ async def solve_seed(
     worker_model: str | None = None,
     all_problems: list[Problem] | None = None,
     selection_record: dict[str, object] | None = None,
-    late_problem_eligibility: LateProblemEligibility | None = None,
     late_prefix_source: LatePrefixSource | None = None,
 ) -> None:
     """Run one attempt (one seed) of one problem under one arm; write outputs.
@@ -1622,20 +1604,18 @@ async def solve_seed(
     what it has; only that phase may spend into the hard budget.
     """
     if arm.name == LATE_BASELINE_ARM_NAME:
-        if late_problem_eligibility is None or late_prefix_source is not None:
-            raise ValueError("Late baseline requires its problem eligibility only")
-        await solve_late_baseline_seed(
-            config, arm, problem, seed, pool, late_problem_eligibility
-        )
+        if late_prefix_source is not None:
+            raise ValueError("Late baseline does not accept a retained prefix")
+        await solve_late_baseline_seed(config, arm, problem, seed, pool)
         return
     if arm.name == LATE_HINT_ARM_NAME:
-        if late_prefix_source is None or late_problem_eligibility is not None:
+        if late_prefix_source is None:
             raise ValueError("Late hint requires its retained native 3x source only")
         await solve_late_hint_seed(
             config, arm, problem, seed, pool, late_prefix_source
         )
         return
-    if late_problem_eligibility is not None or late_prefix_source is not None:
+    if late_prefix_source is not None:
         raise ValueError("Late intervention inputs are valid only for late arms")
 
     if arm.mode == MODE_PARALLEL:
@@ -1974,32 +1954,6 @@ async def main() -> None:
     if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
         selection_records = load_selection_candidates(config.model)
 
-    late_problem_eligibilities: dict[str, LateProblemEligibility] = {}
-    if arm.name == LATE_BASELINE_ARM_NAME:
-        included: list[Problem] = []
-        excluded: list[str] = []
-        for problem in problems:
-            eligibility, reason = problem_eligibility(config, problem)
-            if eligibility is None:
-                excluded.append(f"{problem.problem_id} ({reason})")
-                continue
-            late_problem_eligibilities[problem.problem_id] = eligibility
-            included.append(problem)
-        problems = included
-        if excluded:
-            log.warning(
-                "Late intervention excluded %d problem(s) under the frozen "
-                "problem-level 3x rule: %s",
-                len(excluded),
-                ", ".join(excluded),
-            )
-    if arm.name in LATE_INTERVENTION_ARMS:
-        if os.environ.get(DELETE_STAGED_SOURCES_ENV) != "1":
-            raise RuntimeError(
-                "Late intervention arms require the isolated run.sh staging boundary"
-            )
-        remove_staged_result_sources(config, BASELINE_SOURCE_ARM)
-
     def generation_done(selected_arm: ArmConfig, output_dir: Path) -> bool:
         if selected_arm.mode == MODE_PARALLEL:
             return parallel_bank_done(output_dir)
@@ -2104,11 +2058,6 @@ async def main() -> None:
             worker_model=worker_model,
             all_problems=all_problems,
             selection_record=selection_records.get(p.problem_id),
-            late_problem_eligibility=(
-                late_problem_eligibilities.get(p.problem_id)
-                if arm.name == LATE_BASELINE_ARM_NAME
-                else None
-            ),
             late_prefix_source=late_prefix_sources.get((p.problem_id, s)),
         )
         for problem, seed in pending

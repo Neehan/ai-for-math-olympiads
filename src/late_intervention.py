@@ -17,29 +17,16 @@ from src.checkpoint import phase_from_record, phase_record, protocol_fingerprint
 from src.constants import (
     CHECKPOINT_ROOT_DEFAULT,
     CHECKPOINT_ROOT_ENV,
-    META_FILENAME,
-    RESULTS_ROOT,
-    SEED_AUDIT_FILENAME,
     SESSION_STATE_SUBDIR,
 )
 from src.models import ExperimentConfig, PhaseResult, Problem
 from src.solver import agent_settings_path
 
-BASELINE_SOURCE_ARM = "baseline-sequential"
 LATE_BASELINE_ARM = "late-baseline-sequential"
 PREFIX_UNITS = 3
-PASS_THRESHOLD = 5
-PREFIX_SCHEMA_VERSION = 1
-DELETE_STAGED_SOURCES_ENV = "HARNESS_DELETE_LATE_SOURCE_RESULTS_AFTER_LOAD"
+PREFIX_SCHEMA_VERSION = 2
 
 _FORK_LOCK = threading.Lock()
-
-
-@dataclass(frozen=True)
-class LateProblemEligibility:
-    """Frozen problem-level inclusion decision from the original 3x runs."""
-
-    provenance: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -90,100 +77,6 @@ def prefix_source_dir(
     return _checkpoint_root() / "late-prefixes" / digest[:24]
 
 
-def _audit_path(
-    config: ExperimentConfig, arm: str, problem_id: str, seed: int
-) -> Path:
-    return (
-        RESULTS_ROOT
-        / config.model_dirname
-        / arm
-        / problem_id
-        / f"seed_{seed}"
-        / SEED_AUDIT_FILENAME
-    )
-
-
-def _cut_score(
-    path: Path,
-    *,
-    problem_id: str,
-    arm: str,
-    seed: int,
-    model: str,
-) -> tuple[int, dict[str, object]]:
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    record = json.loads(path.read_text(encoding="utf-8"))
-    expected = {
-        "problem_id": problem_id,
-        "arm": arm,
-        "seed": seed,
-        "solver_model": model,
-    }
-    mismatches = {
-        key: {"expected": value, "actual": record.get(key)}
-        for key, value in expected.items()
-        if record.get(key) != value
-    }
-    if mismatches:
-        raise ValueError(f"Late-source audit identity mismatch: {mismatches}")
-    cuts = record.get("budget_cuts")
-    cut = cuts.get("3x") if isinstance(cuts, dict) else None
-    if not isinstance(cut, dict) or not isinstance(cut.get("audit_score"), int):
-        raise ValueError(f"{path} has no audited 3x checkpoint")
-    return int(cut["audit_score"]), cut
-
-
-def problem_eligibility(
-    config: ExperimentConfig, problem: Problem
-) -> tuple[LateProblemEligibility | None, str]:
-    """Include a problem iff fewer than two original seeds pass at 3x."""
-    scores: dict[str, int] = {}
-    audit_models: dict[str, str | None] = {}
-    try:
-        for seed in (1, 2, 3):
-            path = _audit_path(
-                config, BASELINE_SOURCE_ARM, problem.problem_id, seed
-            )
-            score, cut = _cut_score(
-                path,
-                problem_id=problem.problem_id,
-                arm=BASELINE_SOURCE_ARM,
-                seed=seed,
-                model=config.model,
-            )
-            scores[str(seed)] = score
-            raw_model = cut.get("audit_model")
-            audit_models[str(seed)] = str(raw_model) if raw_model else None
-    except (FileNotFoundError, ValueError) as error:
-        return None, str(error)
-
-    pass_count = sum(score >= PASS_THRESHOLD for score in scores.values())
-    if pass_count >= 2:
-        return None, f"original baseline passed {pass_count}/3 seeds by 3x"
-    return (
-        LateProblemEligibility(
-            provenance={
-                "eligibility_source_arm": BASELINE_SOURCE_ARM,
-                "eligibility_checkpoint": "3x",
-                "eligibility_rule": "fewer_than_2_of_3_pass_at_3x",
-                "eligibility_pass_threshold": PASS_THRESHOLD,
-                "eligibility_scores": scores,
-                "eligibility_audit_models": audit_models,
-                "eligibility_pass_count": pass_count,
-            }
-        ),
-        "eligible",
-    )
-
-
-def remove_staged_result_sources(config: ExperimentConfig, arm: str) -> None:
-    """Delete staged audit dependencies before any tool-enabled solver starts."""
-    root = RESULTS_ROOT / config.model_dirname / arm
-    if root.exists():
-        shutil.rmtree(root)
-
-
 def _proof_at_prefix(phases: list[PhaseResult]) -> str:
     for phase in reversed(phases):
         if phase.label != "critique" and not phase.budget_exhausted and phase.text.strip():
@@ -199,7 +92,6 @@ def save_prefix_source(
     session_id: str,
     phases: list[PhaseResult],
     output_tokens_spent: int,
-    eligibility: LateProblemEligibility,
 ) -> LatePrefixSource:
     """Atomically retain the exact native transcript and filesystem at 3x."""
     source_dir = prefix_source_dir(config, problem, seed)
@@ -208,7 +100,6 @@ def save_prefix_source(
     identity = _source_identity(config, problem, seed)
     manifest: dict[str, object] = {
         **identity,
-        **eligibility.provenance,
         "source_arm": LATE_BASELINE_ARM,
         "scratch_name": scratch_path.name,
         "source_session_id": session_id,
@@ -248,7 +139,7 @@ def save_prefix_source(
 def load_prefix_source(
     config: ExperimentConfig, problem: Problem, seed: int
 ) -> tuple[LatePrefixSource | None, str]:
-    """Load every retained prefix in the frozen hard-problem intervention set."""
+    """Load one retained prefix selected by the caller's problem list."""
     source_dir = prefix_source_dir(config, problem, seed)
     manifest_path = source_dir / "manifest.json"
     phases_path = source_dir / "prefix_phases.json"
