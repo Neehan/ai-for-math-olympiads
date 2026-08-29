@@ -22,8 +22,8 @@
     "placebo-hint": { "hint": "h1", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
     "hint": { "hint": "h2", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
     "hint-sequential": { "hint": "h2", "mode": "sequential", "budget_units": 8, "seeds": [1, 2, 3] },
-    "late-baseline-sequential": { "hint": "none", "mode": "sequential", "budget_units": 1, "seeds": [1, 2, 3] },
-    "late-hint-sequential": { "hint": "h2", "mode": "sequential", "budget_units": 1, "seeds": [1, 2, 3] },
+    "late-baseline-sequential": { "hint": "none", "mode": "sequential", "budget_units": 4, "seeds": [1, 2, 3] },
+    "late-hint-sequential": { "hint": "h2", "mode": "sequential", "budget_units": 4, "seeds": [1, 2, 3] },
     "outline": { "hint": "h3", "mode": "single", "budget_units": 1, "seeds": [1, 2, 3] },
     "outline-sequential": { "hint": "h3", "mode": "sequential", "budget_units": 8, "seeds": [1, 2, 3] }
   }

@@ -13,6 +13,7 @@ interrupted run resumes cleanly.
 """
 
 import argparse
+import dataclasses
 import hashlib
 import logging
 import os
@@ -38,7 +39,7 @@ from src.constants import (
     HINT_H2,
     HINT_H3,
     HINT_NONE,
-    LATE_REPLAY_PROMPT_FILE,
+    LATE_CONTINUATION_PROMPT_FILE,
     LOG_FORMAT,
     LOG_LEVEL,
     META_FILENAME,
@@ -71,16 +72,23 @@ from src.models import (
     Problem,
     arm_checkpoint_identity,
 )
-from src.late_replay import (
-    LateReplaySource,
-    SOURCE_CUTOFF_UNITS,
-    load_late_replay_source,
-    remove_staged_sources,
+from src.late_intervention import (
+    BASELINE_SOURCE_ARM,
+    DELETE_STAGED_SOURCES_ENV,
+    LATE_BASELINE_ARM,
+    PREFIX_UNITS,
+    LatePrefixSource,
+    LateProblemEligibility,
+    fork_native_session,
+    load_prefix_source,
+    problem_eligibility,
+    remove_staged_result_sources,
+    save_prefix_source,
 )
 from src.openrouter_routing import route_for
 from src.prompts import (
     critique_prompt,
-    late_replay_prompt,
+    late_continuation_prompt,
     revise_prompt,
     selection_no_problem_prompt,
     selection_prompt,
@@ -133,9 +141,8 @@ from src.token_pool import TokenPool
 log = logging.getLogger("run")
 
 LATE_HINT_ARM_NAME = "late-hint-sequential"
-LATE_BASELINE_ARM_NAME = "late-baseline-sequential"
-LATE_REPLAY_ARMS = frozenset({LATE_BASELINE_ARM_NAME, LATE_HINT_ARM_NAME})
-DELETE_LATE_REPLAY_SOURCES_ENV = "HARNESS_DELETE_LATE_REPLAY_SOURCES_AFTER_LOAD"
+LATE_BASELINE_ARM_NAME = LATE_BASELINE_ARM
+LATE_INTERVENTION_ARMS = frozenset({LATE_BASELINE_ARM_NAME, LATE_HINT_ARM_NAME})
 
 
 async def _checkpointed_phase(
@@ -1211,7 +1218,11 @@ def run_checkpoint_identity(
         "max_turns_per_phase": config.max_turns_per_phase,
         "protocol_fingerprint": protocol_fingerprint(
             agent_settings_path(config.model),
-            (LATE_REPLAY_PROMPT_FILE,) if arm.name in LATE_REPLAY_ARMS else (),
+            (
+                (LATE_CONTINUATION_PROMPT_FILE,)
+                if arm.name in LATE_INTERVENTION_ARMS
+                else ()
+            ),
         ),
     }
     # Local proxy/server routes, Meta, and frozen OpenRouter aliases have
@@ -1237,6 +1248,359 @@ def _sequential_self_converged(round_num: int, no_gap_streak: int) -> bool:
     )
 
 
+async def _run_late_sequential_role(
+    config: ExperimentConfig,
+    checkpoint: AttemptCheckpoint,
+    role: str,
+    scratch_path: Path,
+    pool: TokenPool,
+    budget_tokens: int,
+    initial_prompt: str,
+    initial_label: str,
+    *,
+    allow_self_convergence: bool,
+) -> tuple[list[PhaseResult], BudgetTracker, str]:
+    """Run one resumable sequential leg of the matched late experiment."""
+    phases = checkpoint.phases(role)
+    tracker = checkpoint.tracker(
+        role, budget_tokens, config.wrap_up_reserve_tokens
+    )
+    termination_reason = "token_limit"
+
+    async with ResumableClaudeSession(
+        pool,
+        lambda token, session_id, resume_id, stderr: build_options(
+            config,
+            str(scratch_path),
+            max(1, tracker.remaining),
+            token,
+            stderr,
+            session_id=session_id,
+            resume_session_id=resume_id,
+        ),
+        session_id=checkpoint.session_id(role),
+        reconnects=checkpoint.reconnects(role),
+    ) as client:
+        checkpoint.save_session(role, client.session_id, client.reconnect_events)
+        if not phases:
+            phase = await _checkpointed_phase(
+                checkpoint,
+                role,
+                client,
+                tracker,
+                initial_prompt,
+                initial_label,
+                tracker.soft_limit_tokens,
+            )
+            phases.append(phase)
+
+        active = checkpoint.active(role)
+        if active is not None and active.get("label") in {
+            PHASE_SOLVE,
+            PHASE_CRITIQUE,
+            PHASE_REVISE,
+        }:
+            recovered = await _checkpointed_phase(
+                checkpoint,
+                role,
+                client,
+                tracker,
+                str(active["prompt"]),
+                str(active["label"]),
+                int(active["stop_at_tokens"]),
+            )
+            phases.append(recovered)
+
+        no_gap_streak = 0
+        for phase in phases:
+            if phase.label == PHASE_CRITIQUE:
+                if not phase.budget_exhausted and _critique_reports_no_gap(phase.text):
+                    no_gap_streak += 1
+                else:
+                    no_gap_streak = 0
+        round_num = sum(phase.label == PHASE_CRITIQUE for phase in phases)
+
+        while not tracker.soft_exhausted and not (
+            allow_self_convergence
+            and _sequential_self_converged(round_num, no_gap_streak)
+        ):
+            if phases[-1].label in {PHASE_SOLVE, PHASE_REVISE}:
+                round_num += 1
+                critique = await _checkpointed_phase(
+                    checkpoint,
+                    role,
+                    client,
+                    tracker,
+                    critique_prompt(),
+                    PHASE_CRITIQUE,
+                    tracker.soft_limit_tokens,
+                )
+                phases.append(critique)
+                if not critique.budget_exhausted and _critique_reports_no_gap(
+                    critique.text
+                ):
+                    no_gap_streak += 1
+                else:
+                    no_gap_streak = 0
+                if (
+                    allow_self_convergence
+                    and _sequential_self_converged(round_num, no_gap_streak)
+                ) or tracker.soft_exhausted:
+                    break
+
+            if phases[-1].label == PHASE_CRITIQUE:
+                revise = await _checkpointed_phase(
+                    checkpoint,
+                    role,
+                    client,
+                    tracker,
+                    revise_prompt(),
+                    PHASE_REVISE,
+                    tracker.soft_limit_tokens,
+                )
+                phases.append(revise)
+
+        termination_reason = (
+            "self_converged"
+            if allow_self_convergence
+            and _sequential_self_converged(round_num, no_gap_streak)
+            else "token_limit"
+        )
+
+    await _run_strict_wrap_phase(
+        config,
+        checkpoint,
+        role,
+        tracker,
+        phases,
+        scratch_path,
+        pool,
+        PHASE_WRAP_UP,
+        wrap_up_prompt(tracker.remaining),
+        config.wrap_up_reserve_tokens,
+    )
+    return phases, tracker, termination_reason
+
+
+def _offset_phases(phases: list[PhaseResult], offset: int) -> list[PhaseResult]:
+    return [
+        dataclasses.replace(
+            phase,
+            cumulative_output_tokens=phase.cumulative_output_tokens + offset,
+        )
+        for phase in phases
+    ]
+
+
+async def solve_late_baseline_seed(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    pool: TokenPool,
+    eligibility: LateProblemEligibility,
+) -> None:
+    """Create a native 3x prefix, retain it, then run the no-hint 4th block."""
+    checkpoint_identity = run_checkpoint_identity(config, arm, problem, seed)
+    checkpoint_identity["late_problem_eligibility"] = eligibility.provenance
+    checkpoint = AttemptCheckpoint(checkpoint_identity)
+    try:
+        prefix_scratch = checkpoint.scratch_dir("prefix")
+        prefix_budget = PREFIX_UNITS * config.unit_output_tokens
+        prefix_phases, prefix_tracker, _ = await _run_late_sequential_role(
+            config,
+            checkpoint,
+            "prefix",
+            prefix_scratch,
+            pool,
+            prefix_budget,
+            task_prompt(problem, None, str(prefix_scratch), prefix_budget),
+            PHASE_SOLVE,
+            allow_self_convergence=False,
+        )
+        prefix_session_id = checkpoint.session_id("prefix")
+        if prefix_session_id is None:
+            raise RuntimeError("Completed late prefix has no native session id")
+        source, _ = load_prefix_source(config, problem, seed)
+        if source is None:
+            source = save_prefix_source(
+                config,
+                problem,
+                seed,
+                prefix_scratch,
+                prefix_session_id,
+                prefix_phases,
+                prefix_tracker.spent,
+                eligibility,
+            )
+        else:
+            source_eligibility_matches = all(
+                source.provenance.get(key) == value
+                for key, value in eligibility.provenance.items()
+            )
+            if (
+                source.session_id != prefix_session_id
+                or not source_eligibility_matches
+            ):
+                raise ValueError(
+                    "Retained prefix belongs to a different native session or "
+                    "eligibility cohort; refusing to mix reruns"
+                )
+
+        control_session_id = checkpoint.session_id("control")
+        if control_session_id is None:
+            control_session_id = fork_native_session(
+                prefix_scratch, prefix_session_id
+            )
+            checkpoint.save_session("control", control_session_id, [])
+        branch_budget = config.unit_output_tokens
+        control_phases, control_tracker, termination_reason = (
+            await _run_late_sequential_role(
+                config,
+                checkpoint,
+                "control",
+                prefix_scratch,
+                pool,
+                branch_budget,
+                late_continuation_prompt(
+                    None, str(prefix_scratch), branch_budget
+                ),
+                PHASE_REVISE,
+                allow_self_convergence=True,
+            )
+        )
+        phases = [
+            *prefix_phases,
+            *_offset_phases(control_phases, prefix_tracker.spent),
+        ]
+        expected_output_dir = seed_output_dir(
+            config, arm, problem.problem_id, seed
+        )
+        checkpoint.prepare_completion(
+            (expected_output_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+        )
+        output_dir = write_seed_outputs(
+            config,
+            arm,
+            problem,
+            seed,
+            config.budget_tokens(arm),
+            phases,
+            prefix_scratch,
+            termination_reason=termination_reason,
+            provider_session_ids=checkpoint.session_ids(),
+            meta_extra={
+                **eligibility.provenance,
+                "intervention": "native_3x_prefix_then_no_hint_1x",
+                "prefix_budget_units": PREFIX_UNITS,
+                "prefix_output_tokens_spent": prefix_tracker.spent,
+                "continuation_budget_units": 1,
+                "continuation_output_tokens_spent": control_tracker.spent,
+                "native_prefix_source_retained": True,
+                "native_prefix_session_id": source.session_id,
+                "control_fork_session_id": control_session_id,
+                "late_intervention_protocol": (
+                    "matched_native_3x_sibling_forks_v1"
+                ),
+            },
+        )
+        log.info(
+            "%s/%s seed %d done -> %s",
+            arm.name,
+            problem.problem_id,
+            seed,
+            output_dir,
+        )
+        checkpoint.complete()
+    finally:
+        checkpoint.close()
+
+
+async def solve_late_hint_seed(
+    config: ExperimentConfig,
+    arm: ArmConfig,
+    problem: Problem,
+    seed: int,
+    pool: TokenPool,
+    source: LatePrefixSource,
+) -> None:
+    """Fork the retained 3x native state and spend one block with h2."""
+    checkpoint_identity = run_checkpoint_identity(config, arm, problem, seed)
+    checkpoint_identity["late_prefix_source"] = source.provenance
+    checkpoint = AttemptCheckpoint(checkpoint_identity)
+    try:
+        scratch_path = checkpoint.restore_scratch_dir(
+            "main", source.scratch_name, source.workspace
+        )
+        branch_session_id = checkpoint.session_id("main")
+        if branch_session_id is None:
+            branch_session_id = fork_native_session(scratch_path, source.session_id)
+            checkpoint.save_session("main", branch_session_id, [])
+        branch_budget = config.unit_output_tokens
+        branch_phases, tracker, termination_reason = await _run_late_sequential_role(
+            config,
+            checkpoint,
+            "main",
+            scratch_path,
+            pool,
+            branch_budget,
+            late_continuation_prompt(
+                hint_for(problem, arm), str(scratch_path), branch_budget
+            ),
+            PHASE_REVISE,
+            allow_self_convergence=True,
+        )
+        raw_prefix_spent = source.provenance.get("prefix_output_tokens_spent")
+        if isinstance(raw_prefix_spent, bool) or not isinstance(
+            raw_prefix_spent, int
+        ):
+            raise ValueError("Retained prefix token count is malformed")
+        prefix_spent = raw_prefix_spent
+        phases = [
+            *source.phases,
+            *_offset_phases(branch_phases, prefix_spent),
+        ]
+        budget_tokens = config.budget_tokens(arm)
+        expected_output_dir = seed_output_dir(
+            config, arm, problem.problem_id, seed
+        )
+        checkpoint.prepare_completion(
+            (expected_output_dir / META_FILENAME).relative_to(RESULTS_ROOT).as_posix()
+        )
+        output_dir = write_seed_outputs(
+            config,
+            arm,
+            problem,
+            seed,
+            budget_tokens,
+            phases,
+            scratch_path,
+            termination_reason=termination_reason,
+            provider_session_ids=checkpoint.session_ids(),
+            meta_extra={
+                **source.provenance,
+                "intervention": "oracle_h2_after_native_unaided_3x",
+                "continuation_budget_units": 1,
+                "continuation_output_tokens_spent": tracker.spent,
+                "nominal_cumulative_budget_units": arm.budget_units,
+                "hint_fork_session_id": branch_session_id,
+                "late_intervention_protocol": (
+                    "matched_native_3x_sibling_forks_v1"
+                ),
+            },
+        )
+        log.info(
+            "%s/%s seed %d done -> %s",
+            arm.name,
+            problem.problem_id,
+            seed,
+            output_dir,
+        )
+        checkpoint.complete()
+    finally:
+        checkpoint.close()
+
+
 async def solve_seed(
     config: ExperimentConfig,
     arm: ArmConfig,
@@ -1247,7 +1611,8 @@ async def solve_seed(
     worker_model: str | None = None,
     all_problems: list[Problem] | None = None,
     selection_record: dict[str, object] | None = None,
-    late_replay_source: LateReplaySource | None = None,
+    late_problem_eligibility: LateProblemEligibility | None = None,
+    late_prefix_source: LatePrefixSource | None = None,
 ) -> None:
     """Run one attempt (one seed) of one problem under one arm; write outputs.
 
@@ -1256,10 +1621,22 @@ async def solve_seed(
     wrap-up phase tells the model how many tokens remain and to write down
     what it has; only that phase may spend into the hard budget.
     """
-    if arm.name in LATE_REPLAY_ARMS and late_replay_source is None:
-        raise ValueError("Late continuation requires its audited 3x source")
-    if arm.name not in LATE_REPLAY_ARMS and late_replay_source is not None:
-        raise ValueError("A late replay source is valid only for late replay arms")
+    if arm.name == LATE_BASELINE_ARM_NAME:
+        if late_problem_eligibility is None or late_prefix_source is not None:
+            raise ValueError("Late baseline requires its problem eligibility only")
+        await solve_late_baseline_seed(
+            config, arm, problem, seed, pool, late_problem_eligibility
+        )
+        return
+    if arm.name == LATE_HINT_ARM_NAME:
+        if late_prefix_source is None or late_problem_eligibility is not None:
+            raise ValueError("Late hint requires its retained native 3x source only")
+        await solve_late_hint_seed(
+            config, arm, problem, seed, pool, late_prefix_source
+        )
+        return
+    if late_problem_eligibility is not None or late_prefix_source is not None:
+        raise ValueError("Late intervention inputs are valid only for late arms")
 
     if arm.mode == MODE_PARALLEL:
         await solve_parallel_bank(config, arm, problem, seed, pool)
@@ -1288,8 +1665,6 @@ async def solve_seed(
         return
 
     checkpoint_identity = run_checkpoint_identity(config, arm, problem, seed)
-    if late_replay_source is not None:
-        checkpoint_identity["late_replay_source"] = late_replay_source.provenance
     checkpoint = AttemptCheckpoint(checkpoint_identity)
     try:
         if arm.mode in {MODE_UNIFORM_STRATEGY, MODE_UNIFORM_STRATEGY_ONLY}:
@@ -1322,20 +1697,12 @@ async def solve_seed(
         ) as client:
             checkpoint.save_session("main", client.session_id, client.reconnect_events)
             if not phases:
-                if late_replay_source is None:
-                    initial_prompt = task_prompt(
-                        problem,
-                        hint_for(problem, arm),
-                        str(scratch_path),
-                        budget_tokens,
-                    )
-                else:
-                    initial_prompt = late_replay_prompt(
-                        late_replay_source.prior_work,
-                        hint_for(problem, arm),
-                        str(scratch_path),
-                        budget_tokens,
-                    )
+                initial_prompt = task_prompt(
+                    problem,
+                    hint_for(problem, arm),
+                    str(scratch_path),
+                    budget_tokens,
+                )
                 solve = await _checkpointed_phase(
                     checkpoint,
                     "main",
@@ -1499,25 +1866,6 @@ async def solve_seed(
             scratch_path,
             termination_reason=termination_reason,
             provider_session_ids=checkpoint.session_ids(),
-            meta_extra=(
-                {
-                    **late_replay_source.provenance,
-                    "intervention": (
-                        "oracle_h2_after_unaided_3x"
-                        if arm.name == LATE_HINT_ARM_NAME
-                        else "no_hint_replay_after_unaided_3x"
-                    ),
-                    "intervention_budget_units": arm.budget_units,
-                    "intervention_budget_output_tokens": budget_tokens,
-                    "nominal_cumulative_budget_units": (
-                        SOURCE_CUTOFF_UNITS + arm.budget_units
-                    ),
-                    "source_3x_solution_replayed_in_prompt": True,
-                    "source_scratch_reused": False,
-                }
-                if late_replay_source is not None
-                else None
-            ),
         )
         log.info(
             "%s/%s seed %d done -> %s",
@@ -1626,6 +1974,32 @@ async def main() -> None:
     if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
         selection_records = load_selection_candidates(config.model)
 
+    late_problem_eligibilities: dict[str, LateProblemEligibility] = {}
+    if arm.name == LATE_BASELINE_ARM_NAME:
+        included: list[Problem] = []
+        excluded: list[str] = []
+        for problem in problems:
+            eligibility, reason = problem_eligibility(config, problem)
+            if eligibility is None:
+                excluded.append(f"{problem.problem_id} ({reason})")
+                continue
+            late_problem_eligibilities[problem.problem_id] = eligibility
+            included.append(problem)
+        problems = included
+        if excluded:
+            log.warning(
+                "Late intervention excluded %d problem(s) under the frozen "
+                "problem-level 3x rule: %s",
+                len(excluded),
+                ", ".join(excluded),
+            )
+    if arm.name in LATE_INTERVENTION_ARMS:
+        if os.environ.get(DELETE_STAGED_SOURCES_ENV) != "1":
+            raise RuntimeError(
+                "Late intervention arms require the isolated run.sh staging boundary"
+            )
+        remove_staged_result_sources(config, BASELINE_SOURCE_ARM)
+
     def generation_done(selected_arm: ArmConfig, output_dir: Path) -> bool:
         if selected_arm.mode == MODE_PARALLEL:
             return parallel_bank_done(output_dir)
@@ -1644,29 +2018,27 @@ async def main() -> None:
         )
     ]
     skipped_count = 0
-    late_replay_sources: dict[tuple[str, int], LateReplaySource] = {}
-    if arm.name in LATE_REPLAY_ARMS:
+    late_prefix_sources: dict[tuple[str, int], LatePrefixSource] = {}
+    if arm.name == LATE_HINT_ARM_NAME:
         pending = []
         skipped = []
         for problem, seed in candidate_pairs:
-            source, reason = load_late_replay_source(config, problem, seed)
+            source, reason = load_prefix_source(config, problem, seed)
             if source is None:
                 skipped.append(f"{problem.problem_id}/seed_{seed} ({reason})")
                 continue
-            late_replay_sources[(problem.problem_id, seed)] = source
+            late_prefix_sources[(problem.problem_id, seed)] = source
             pending.append((problem, seed))
         if skipped:
             skipped_count = len(skipped)
             log.warning(
-                "Late replay excluded %d source trajectory/trajectories: %s",
+                "Late hint skipped %d trajectory/trajectories without a retained "
+                "native 3x prefix: %s",
                 len(skipped),
                 ", ".join(skipped),
             )
-        if os.environ.get(DELETE_LATE_REPLAY_SOURCES_ENV) != "1":
-            raise RuntimeError(
-                "Late replay arms require the isolated run.sh staging boundary"
-            )
-        remove_staged_sources(config)
+    elif arm.name == LATE_BASELINE_ARM_NAME:
+        pending = candidate_pairs
     elif arm.mode == MODE_UNIFORM_COMPRESS:
         pending = []
         skipped: list[str] = []
@@ -1732,7 +2104,12 @@ async def main() -> None:
             worker_model=worker_model,
             all_problems=all_problems,
             selection_record=selection_records.get(p.problem_id),
-            late_replay_source=late_replay_sources.get((p.problem_id, s)),
+            late_problem_eligibility=(
+                late_problem_eligibilities.get(p.problem_id)
+                if arm.name == LATE_BASELINE_ARM_NAME
+                else None
+            ),
+            late_prefix_source=late_prefix_sources.get((p.problem_id, s)),
         )
         for problem, seed in pending
     ]

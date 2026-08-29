@@ -18,8 +18,12 @@ AUXILIARY_PROMPTS = {
     "selection_wrap.md",
 }
 _SELECTION_ARMS = {"selection", "selection-no-problem"}
-_LATE_REPLAY_ARMS = {"late-baseline-sequential", "late-hint-sequential"}
-_LATE_REPLAY_PROMPT = "late_replay.md"
+_LATE_INTERVENTION_ARMS = {
+    "late-baseline-sequential",
+    "late-hint-sequential",
+    "late-intervention",
+}
+_LATE_CONTINUATION_PROMPT = "late_continuation.md"
 _LEGACY_SELECTION_CONFIG = (
     b'  "selection_output_tokens": { "selection": 40000, '
     b'"selection-no-problem": 40000 },\n'
@@ -44,11 +48,17 @@ def namespace(arguments: list[str], settings_path: Path) -> str:
     digest = hashlib.sha256("\0".join(arguments).encode())
 
     config_bytes = Path("config.json").read_bytes()
-    if arm not in _LATE_REPLAY_ARMS:
+    if arm not in _LATE_INTERVENTION_ARMS:
         config_bytes = b"".join(
             line
             for line in config_bytes.splitlines(keepends=True)
-            if not any(f'"{name}"'.encode() in line for name in _LATE_REPLAY_ARMS)
+            if not any(
+                f'"{name}"'.encode() in line
+                for name in {
+                    "late-baseline-sequential",
+                    "late-hint-sequential",
+                }
+            )
         )
     # Bank seeds are independent repetitions of the unchanged Parallel-8
     # protocol.  Expanding the orchestration whitelist must not strand paid
@@ -85,7 +95,10 @@ def namespace(arguments: list[str], settings_path: Path) -> str:
     for prompt in prompts:
         if prompt.name == "state_audit.md":
             continue
-        if prompt.name == _LATE_REPLAY_PROMPT and arm not in _LATE_REPLAY_ARMS:
+        if (
+            prompt.name == _LATE_CONTINUATION_PROMPT
+            and arm not in _LATE_INTERVENTION_ARMS
+        ):
             continue
         if not auxiliary and prompt.name in AUXILIARY_PROMPTS:
             continue

@@ -11,7 +11,7 @@ from src.constants import (
     AUDIT_PROMPT_FILE,
     CRITIQUE_PROMPT_FILE,
     HINT_PROMPT_FILE,
-    LATE_REPLAY_PROMPT_FILE,
+    LATE_CONTINUATION_PROMPT_FILE,
     PROMPTS_DIR,
     REVISE_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
@@ -97,24 +97,21 @@ def wrap_up_prompt(tokens_left: int) -> str:
     return _render(_load(WRAP_UP_PROMPT_FILE), {"tokens_left": f"{tokens_left:,}"})
 
 
-def late_replay_prompt(
-    prior_work: str, hint_text: str | None, scratch_dir: str, budget_tokens: int
+def late_continuation_prompt(
+    hint_text: str | None, scratch_dir: str, budget_tokens: int
 ) -> str:
-    """Continue an audited failed unaided 3x draft, optionally injecting h2."""
-    if not prior_work.strip():
-        raise ValueError("Late continuation requires a prior attempted solution")
+    """Continue a retained native 3x session, optionally injecting h2."""
     hint_block = (
         ""
         if hint_text is None
         else _render(_load(HINT_PROMPT_FILE), {"hint": hint_text.strip()})
     )
     return _render(
-        _load(LATE_REPLAY_PROMPT_FILE),
+        _load(LATE_CONTINUATION_PROMPT_FILE),
         {
             "budget_tokens": f"{budget_tokens:,}",
             "scratch_dir": scratch_dir,
             "hint_block": hint_block,
-            "prior_work": prior_work.strip(),
         },
     )
 

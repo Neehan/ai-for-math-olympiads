@@ -20,7 +20,7 @@ from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
 from src.constants import (
     CHECKPOINT_ROOT_ENV,
     DEFER_CHECKPOINT_CLEANUP_ENV,
-    LATE_REPLAY_PROMPT_FILE,
+    LATE_CONTINUATION_PROMPT_FILE,
     SELECTION_PROMPT_FILE,
     SELECTION_WRAP_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
@@ -96,8 +96,8 @@ class CheckpointTests(unittest.TestCase):
             (prompts / SELECTION_WRAP_PROMPT_FILE).write_text(
                 "selection-wrap-v1", encoding="utf-8"
             )
-            (prompts / LATE_REPLAY_PROMPT_FILE).write_text(
-                "late-replay-v1", encoding="utf-8"
+            (prompts / LATE_CONTINUATION_PROMPT_FILE).write_text(
+                "late-continuation-v1", encoding="utf-8"
             )
             protocol_fingerprint.cache_clear()
             self.assertEqual(protocol_fingerprint(settings), baseline)
@@ -108,7 +108,7 @@ class CheckpointTests(unittest.TestCase):
             )
             protocol_fingerprint.cache_clear()
             self.assertNotEqual(
-                protocol_fingerprint(settings, (LATE_REPLAY_PROMPT_FILE,)),
+                protocol_fingerprint(settings, (LATE_CONTINUATION_PROMPT_FILE,)),
                 baseline,
             )
         protocol_fingerprint.cache_clear()
@@ -163,6 +163,21 @@ class CheckpointTests(unittest.TestCase):
         )
         self.assertEqual(active["discarded_message_ids"], ["message-1", "message-2"])
         second.clear()
+
+    def test_retained_prefix_restores_exact_opaque_workspace_name(self) -> None:
+        snapshot = Path(self.temp.name) / "snapshot"
+        snapshot.mkdir()
+        (snapshot / "proof.txt").write_text("work", encoding="utf-8")
+        checkpoint = AttemptCheckpoint(self.identity)
+
+        restored = checkpoint.restore_scratch_dir("main", "1234abcd", snapshot)
+
+        self.assertEqual(restored.name, "1234abcd")
+        self.assertEqual(
+            (restored / "proof.txt").read_text(encoding="utf-8"), "work"
+        )
+        self.assertEqual(checkpoint.scratch_dir("main"), restored)
+        checkpoint.clear()
 
     def test_phase_first_commit_reconciles_controller_crash(self) -> None:
         first = AttemptCheckpoint(self.identity)

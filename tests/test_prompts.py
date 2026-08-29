@@ -4,7 +4,7 @@ import unittest
 
 from src.models import Problem
 from src.prompts import (
-    late_replay_prompt,
+    late_continuation_prompt,
     task_prompt,
     uniform_strategy_execute_prompt,
     uniform_strategy_plan_prompt,
@@ -13,23 +13,16 @@ from src.prompts import (
 
 
 class UniformStrategyPromptTests(unittest.TestCase):
-    def test_late_replay_prompts_differ_only_by_hint_block(self) -> None:
-        prior_work = "Old attempted proof."
-        control = late_replay_prompt(prior_work, None, "/tmp/scratch", 200_000)
-        prompt = late_replay_prompt(
-            prior_work,
+    def test_late_continuation_prompts_differ_only_by_hint_block(self) -> None:
+        control = late_continuation_prompt(None, "/tmp/scratch", 200_000)
+        prompt = late_continuation_prompt(
             "Use the key lemma.",
             "/tmp/scratch",
             200_000,
         )
 
-        self.assertIn("## Prior attempted solution", prompt)
         self.assertIn("200,000 output tokens", prompt)
         self.assertIn("Use the key lemma.", prompt)
-        self.assertIn("Old attempted proof.", prompt)
-        self.assertLess(
-            prompt.index("Old attempted proof."), prompt.index("Use the key lemma.")
-        )
         self.assertEqual(control.count("Continue solving the problem."), 1)
         self.assertEqual(prompt.count("Continue solving the problem."), 1)
         self.assertEqual(

@@ -203,12 +203,12 @@ def load_config(path: Path) -> ExperimentConfig:
     if (
         late_baseline.hint != "none"
         or late_baseline.mode != "sequential"
-        or late_baseline.budget_units != 1
+        or late_baseline.budget_units != 4
         or late_baseline.seeds != [1, 2, 3]
     ):
         raise ValueError(
             f"{path}: late-baseline-sequential must use no hint, sequential "
-            "mode, one new budget unit, and seeds [1, 2, 3]"
+            "mode, four total budget units, and seeds [1, 2, 3]"
         )
     late_hint = config.arms.get("late-hint-sequential")
     if late_hint is None:
@@ -216,12 +216,12 @@ def load_config(path: Path) -> ExperimentConfig:
     if (
         late_hint.hint != "h2"
         or late_hint.mode != "sequential"
-        or late_hint.budget_units != 1
+        or late_hint.budget_units != 4
         or late_hint.seeds != [1, 2, 3]
     ):
         raise ValueError(
             f"{path}: late-hint-sequential must use the h2 oracle strategy, "
-            "sequential mode, one new budget unit, and seeds [1, 2, 3]"
+            "sequential mode, four total budget units, and seeds [1, 2, 3]"
         )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")

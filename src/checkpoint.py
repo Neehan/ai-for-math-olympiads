@@ -27,7 +27,7 @@ from src.constants import (
     CHECKPOINT_ROOT_ENV,
     DEFER_CHECKPOINT_CLEANUP_ENV,
     PROMPTS_DIR,
-    LATE_REPLAY_PROMPT_FILE,
+    LATE_CONTINUATION_PROMPT_FILE,
     SELECTION_PROMPT_FILE,
     SELECTION_WRAP_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
@@ -47,7 +47,7 @@ _POSTHOC_PROMPT_FILES = frozenset(
         UNIFORM_COMPRESS_PROMPT_FILE,
         SELECTION_PROMPT_FILE,
         SELECTION_WRAP_PROMPT_FILE,
-        LATE_REPLAY_PROMPT_FILE,
+        LATE_CONTINUATION_PROMPT_FILE,
     }
 )
 
@@ -289,6 +289,49 @@ class AttemptCheckpoint:
             os.chmod(path, 0o700)
         elif not path.is_dir():
             raise NotADirectoryError(path)
+        return path
+
+    def restore_scratch_dir(
+        self, role: str, scratch_name: str, snapshot: Path
+    ) -> Path:
+        """Restore an immutable native-session snapshot into this namespace.
+
+        The late intervention restores the same opaque cwd name in its shared
+        namespace so Claude's copied transcript resolves to the identical
+        project path. Once paid state exists, disappearance is fatal rather
+        than silently resetting the conversation.
+        """
+        if not _SCRATCH_RE.fullmatch(scratch_name):
+            raise ValueError("Source scratch name is invalid")
+        if not snapshot.is_dir():
+            raise FileNotFoundError(snapshot)
+        state = self._role(role)
+        previous = state.get("scratch_name")
+        if previous not in (None, scratch_name):
+            raise ValueError("Checkpoint scratch name changed")
+        path = self.root / "w" / scratch_name
+        has_paid_state = bool(
+            state.get("session_id")
+            or state.get("active") is not None
+            or int(state.get("next_sequence", 0)) > 0
+        )
+        if previous is None and path.exists():
+            raise FileExistsError(
+                f"Retained-prefix workspace collides with another attempt: {path}"
+            )
+        if path.exists():
+            if not path.is_dir():
+                raise NotADirectoryError(path)
+        elif has_paid_state:
+            raise FileNotFoundError(
+                f"Checkpoint workspace disappeared; refusing transcript reset: {path}"
+            )
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(snapshot, path)
+            os.chmod(path, 0o700)
+        state["scratch_name"] = scratch_name
+        self._save()
         return path
 
     def _role(self, role: str) -> dict[str, Any]:
