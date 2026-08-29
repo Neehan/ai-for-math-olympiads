@@ -4,6 +4,7 @@ import unittest
 
 from src.models import Problem
 from src.prompts import (
+    late_replay_prompt,
     task_prompt,
     uniform_strategy_execute_prompt,
     uniform_strategy_plan_prompt,
@@ -12,6 +13,34 @@ from src.prompts import (
 
 
 class UniformStrategyPromptTests(unittest.TestCase):
+    def test_late_replay_prompts_differ_only_by_hint_block(self) -> None:
+        history = '[{"assistant_response":"old attempt"}]'
+        control = late_replay_prompt(history, None, "/tmp/scratch", 200_000)
+        prompt = late_replay_prompt(
+            history,
+            "Use the key lemma.",
+            "/tmp/scratch",
+            200_000,
+        )
+
+        self.assertIn("## Prior work", prompt)
+        self.assertIn("200,000 output tokens", prompt)
+        self.assertIn("Use the key lemma.", prompt)
+        self.assertIn("old attempt", prompt)
+        self.assertLess(prompt.index("old attempt"), prompt.index("Use the key lemma."))
+        self.assertEqual(control.count("Continue solving the problem."), 1)
+        self.assertEqual(prompt.count("Continue solving the problem."), 1)
+        self.assertEqual(
+            prompt.replace(
+                "Use the following proposed strategy as the basis of your solution. "
+                "Check it carefully and repair any issues you find; you remain "
+                "responsible for proving every step.\n\nProposed strategy:\n"
+                "Use the key lemma.\n",
+                "",
+            ),
+            control,
+        )
+
     def test_planner_budget_split_comes_from_arguments(self) -> None:
         problem = Problem("test", "Prove the claim.", "algebra", None, None, None)
 

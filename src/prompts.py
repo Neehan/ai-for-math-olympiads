@@ -11,6 +11,7 @@ from src.constants import (
     AUDIT_PROMPT_FILE,
     CRITIQUE_PROMPT_FILE,
     HINT_PROMPT_FILE,
+    LATE_REPLAY_PROMPT_FILE,
     PROMPTS_DIR,
     REVISE_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
@@ -94,6 +95,28 @@ def revise_prompt() -> str:
 def wrap_up_prompt(tokens_left: int) -> str:
     """Final wrap-up prompt: stop working, write down the solution now."""
     return _render(_load(WRAP_UP_PROMPT_FILE), {"tokens_left": f"{tokens_left:,}"})
+
+
+def late_replay_prompt(
+    history: str, hint_text: str | None, scratch_dir: str, budget_tokens: int
+) -> str:
+    """Continue a canonical unaided 3x replay, optionally injecting h2."""
+    if not history.strip():
+        raise ValueError("Late continuation requires prior history")
+    hint_block = (
+        ""
+        if hint_text is None
+        else _render(_load(HINT_PROMPT_FILE), {"hint": hint_text.strip()})
+    )
+    return _render(
+        _load(LATE_REPLAY_PROMPT_FILE),
+        {
+            "budget_tokens": f"{budget_tokens:,}",
+            "scratch_dir": scratch_dir,
+            "hint_block": hint_block,
+            "history": history.strip(),
+        },
+    )
 
 
 def uniform_strategy_plan_prompt(

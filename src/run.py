@@ -15,6 +15,7 @@ interrupted run resumes cleanly.
 import argparse
 import hashlib
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from src.constants import (
     HINT_H2,
     HINT_H3,
     HINT_NONE,
+    LATE_REPLAY_PROMPT_FILE,
     LOG_FORMAT,
     LOG_LEVEL,
     META_FILENAME,
@@ -69,9 +71,16 @@ from src.models import (
     Problem,
     arm_checkpoint_identity,
 )
+from src.late_replay import (
+    LateReplaySource,
+    SOURCE_CUTOFF_UNITS,
+    load_late_replay_source,
+    remove_staged_sources,
+)
 from src.openrouter_routing import route_for
 from src.prompts import (
     critique_prompt,
+    late_replay_prompt,
     revise_prompt,
     selection_no_problem_prompt,
     selection_prompt,
@@ -122,6 +131,11 @@ from src.strategy_experiments import (
 from src.token_pool import TokenPool
 
 log = logging.getLogger("run")
+
+LATE_HINT_ARM_NAME = "late-hint-sequential"
+LATE_BASELINE_ARM_NAME = "late-baseline-sequential"
+LATE_REPLAY_ARMS = frozenset({LATE_BASELINE_ARM_NAME, LATE_HINT_ARM_NAME})
+DELETE_LATE_REPLAY_SOURCES_ENV = "HARNESS_DELETE_LATE_REPLAY_SOURCES_AFTER_LOAD"
 
 
 async def _checkpointed_phase(
@@ -1196,7 +1210,8 @@ def run_checkpoint_identity(
         "uniform_strategy_branches": config.uniform_strategy_branches,
         "max_turns_per_phase": config.max_turns_per_phase,
         "protocol_fingerprint": protocol_fingerprint(
-            agent_settings_path(config.model)
+            agent_settings_path(config.model),
+            (LATE_REPLAY_PROMPT_FILE,) if arm.name in LATE_REPLAY_ARMS else (),
         ),
     }
     # Local proxy/server routes, Meta, and frozen OpenRouter aliases have
@@ -1232,6 +1247,7 @@ async def solve_seed(
     worker_model: str | None = None,
     all_problems: list[Problem] | None = None,
     selection_record: dict[str, object] | None = None,
+    late_replay_source: LateReplaySource | None = None,
 ) -> None:
     """Run one attempt (one seed) of one problem under one arm; write outputs.
 
@@ -1240,6 +1256,11 @@ async def solve_seed(
     wrap-up phase tells the model how many tokens remain and to write down
     what it has; only that phase may spend into the hard budget.
     """
+    if arm.name in LATE_REPLAY_ARMS and late_replay_source is None:
+        raise ValueError("Late continuation requires its audited 3x source")
+    if arm.name not in LATE_REPLAY_ARMS and late_replay_source is not None:
+        raise ValueError("A late replay source is valid only for late replay arms")
+
     if arm.mode == MODE_PARALLEL:
         await solve_parallel_bank(config, arm, problem, seed, pool)
         return
@@ -1266,7 +1287,10 @@ async def solve_seed(
         )
         return
 
-    checkpoint = AttemptCheckpoint(run_checkpoint_identity(config, arm, problem, seed))
+    checkpoint_identity = run_checkpoint_identity(config, arm, problem, seed)
+    if late_replay_source is not None:
+        checkpoint_identity["late_replay_source"] = late_replay_source.provenance
+    checkpoint = AttemptCheckpoint(checkpoint_identity)
     try:
         if arm.mode in {MODE_UNIFORM_STRATEGY, MODE_UNIFORM_STRATEGY_ONLY}:
             await solve_uniform_strategy_bank(
@@ -1298,17 +1322,26 @@ async def solve_seed(
         ) as client:
             checkpoint.save_session("main", client.session_id, client.reconnect_events)
             if not phases:
+                if late_replay_source is None:
+                    initial_prompt = task_prompt(
+                        problem,
+                        hint_for(problem, arm),
+                        str(scratch_path),
+                        budget_tokens,
+                    )
+                else:
+                    initial_prompt = late_replay_prompt(
+                        late_replay_source.history,
+                        hint_for(problem, arm),
+                        str(scratch_path),
+                        budget_tokens,
+                    )
                 solve = await _checkpointed_phase(
                     checkpoint,
                     "main",
                     client,
                     tracker,
-                    task_prompt(
-                        problem,
-                        hint_for(problem, arm),
-                        str(scratch_path),
-                        budget_tokens,
-                    ),
+                    initial_prompt,
                     PHASE_SOLVE,
                     tracker.soft_limit_tokens,
                 )
@@ -1466,6 +1499,25 @@ async def solve_seed(
             scratch_path,
             termination_reason=termination_reason,
             provider_session_ids=checkpoint.session_ids(),
+            meta_extra=(
+                {
+                    **late_replay_source.provenance,
+                    "intervention": (
+                        "oracle_h2_after_unaided_3x"
+                        if arm.name == LATE_HINT_ARM_NAME
+                        else "no_hint_replay_after_unaided_3x"
+                    ),
+                    "intervention_budget_units": arm.budget_units,
+                    "intervention_budget_output_tokens": budget_tokens,
+                    "nominal_cumulative_budget_units": (
+                        SOURCE_CUTOFF_UNITS + arm.budget_units
+                    ),
+                    "source_history_replayed_in_prompt": True,
+                    "source_scratch_reused": False,
+                }
+                if late_replay_source is not None
+                else None
+            ),
         )
         log.info(
             "%s/%s seed %d done -> %s",
@@ -1592,7 +1644,30 @@ async def main() -> None:
         )
     ]
     skipped_count = 0
-    if arm.mode == MODE_UNIFORM_COMPRESS:
+    late_replay_sources: dict[tuple[str, int], LateReplaySource] = {}
+    if arm.name in LATE_REPLAY_ARMS:
+        pending = []
+        skipped = []
+        for problem, seed in candidate_pairs:
+            source, reason = load_late_replay_source(config, problem, seed)
+            if source is None:
+                skipped.append(f"{problem.problem_id}/seed_{seed} ({reason})")
+                continue
+            late_replay_sources[(problem.problem_id, seed)] = source
+            pending.append((problem, seed))
+        if skipped:
+            skipped_count = len(skipped)
+            log.warning(
+                "Late replay excluded %d source trajectory/trajectories: %s",
+                len(skipped),
+                ", ".join(skipped),
+            )
+        if os.environ.get(DELETE_LATE_REPLAY_SOURCES_ENV) != "1":
+            raise RuntimeError(
+                "Late replay arms require the isolated run.sh staging boundary"
+            )
+        remove_staged_sources(config)
+    elif arm.mode == MODE_UNIFORM_COMPRESS:
         pending = []
         skipped: list[str] = []
         for problem, seed in candidate_pairs:
@@ -1657,6 +1732,7 @@ async def main() -> None:
             worker_model=worker_model,
             all_problems=all_problems,
             selection_record=selection_records.get(p.problem_id),
+            late_replay_source=late_replay_sources.get((p.problem_id, s)),
         )
         for problem, seed in pending
     ]

@@ -20,6 +20,7 @@ from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
 from src.constants import (
     CHECKPOINT_ROOT_ENV,
     DEFER_CHECKPOINT_CLEANUP_ENV,
+    LATE_REPLAY_PROMPT_FILE,
     SELECTION_PROMPT_FILE,
     SELECTION_WRAP_PROMPT_FILE,
     STATE_AUDIT_PROMPT_FILE,
@@ -95,11 +96,19 @@ class CheckpointTests(unittest.TestCase):
             (prompts / SELECTION_WRAP_PROMPT_FILE).write_text(
                 "selection-wrap-v1", encoding="utf-8"
             )
+            (prompts / LATE_REPLAY_PROMPT_FILE).write_text(
+                "late-replay-v1", encoding="utf-8"
+            )
             protocol_fingerprint.cache_clear()
             self.assertEqual(protocol_fingerprint(settings), baseline)
             protocol_fingerprint.cache_clear()
             self.assertNotEqual(
                 protocol_fingerprint(settings, (UNIFORM_COMPRESS_PROMPT_FILE,)),
+                baseline,
+            )
+            protocol_fingerprint.cache_clear()
+            self.assertNotEqual(
+                protocol_fingerprint(settings, (LATE_REPLAY_PROMPT_FILE,)),
                 baseline,
             )
         protocol_fingerprint.cache_clear()

@@ -197,6 +197,32 @@ def load_config(path: Path) -> ExperimentConfig:
         raise ValueError(
             f"{path}: hint must be a single 1x arm with seeds [1, 2, 3]"
         )
+    late_baseline = config.arms.get("late-baseline-sequential")
+    if late_baseline is None:
+        raise ValueError(f"{path}: late-baseline-sequential arm is required")
+    if (
+        late_baseline.hint != "none"
+        or late_baseline.mode != "sequential"
+        or late_baseline.budget_units != 1
+        or late_baseline.seeds != [1, 2, 3]
+    ):
+        raise ValueError(
+            f"{path}: late-baseline-sequential must use no hint, sequential "
+            "mode, one new budget unit, and seeds [1, 2, 3]"
+        )
+    late_hint = config.arms.get("late-hint-sequential")
+    if late_hint is None:
+        raise ValueError(f"{path}: late-hint-sequential arm is required")
+    if (
+        late_hint.hint != "h2"
+        or late_hint.mode != "sequential"
+        or late_hint.budget_units != 1
+        or late_hint.seeds != [1, 2, 3]
+    ):
+        raise ValueError(
+            f"{path}: late-hint-sequential must use the h2 oracle strategy, "
+            "sequential mode, one new budget unit, and seeds [1, 2, 3]"
+        )
     if config.max_concurrency < 1:
         raise ValueError(f"{path}: max_concurrency must be >= 1")
     _check_judge_differs(config, str(path))

@@ -12,11 +12,11 @@
 # entrypoint (never stored in the image); prompts/, config.json, and
 # agent settings profiles are mounted read-only so editing them needs no rebuild.
 #
-# The run stage mounts a staging dir holding only meta.json resume markers
-# (never prior proof solutions/logs). Compression additionally receives only
-# the planner-only strategies and their non-proof manifest. On exit, only newly completed attempts are
-# merged into results/; the audit stage mounts the full tree (the judge reads
-# solutions).
+# The run stage normally mounts only meta.json resume markers. Compression
+# additionally receives planner artifacts; each matched late intervention
+# receives its audited baseline prefix, loaded and erased before a solver starts.
+# On exit, only newly completed attempts are merged into results/; the audit
+# stage mounts the full tree because the judge must read solutions.
 #
 # Usage:
 #   cp .env.example .env             # set CLAUDE_CODE_OAUTH_TOKEN in it
@@ -351,12 +351,29 @@ if [ "$1" = "run" ]; then
                 "$SOURCE_STRATEGY_ROOT"/ "$STAGED_STRATEGY_ROOT"/
         fi
     fi
+    if [ "$ARM_NAME" = "late-hint-sequential" ] || [ "$ARM_NAME" = "late-baseline-sequential" ]; then
+        # This arm mechanically replays audited baseline history through 3x.
+        # Stage only the three required source artifacts; src.run loads them
+        # into memory and deletes this staged tree before any solver starts.
+        MODEL_DIR_NAME=${MODEL_NAME//\//-}
+        SOURCE_BASELINE_ROOT="$RESULTS_HOST_ROOT/$MODEL_DIR_NAME/baseline-sequential"
+        STAGED_BASELINE_ROOT="$STAGING/$MODEL_DIR_NAME/baseline-sequential"
+        if [ -d "$SOURCE_BASELINE_ROOT" ]; then
+            mkdir -p "$STAGED_BASELINE_ROOT"
+            rsync -a --include='*/' --include='meta.json' --include='logs.jsonl.zst' \
+                --include='audit.json' --exclude='*' \
+                "$SOURCE_BASELINE_ROOT"/ "$STAGED_BASELINE_ROOT"/
+        fi
+    fi
     RESULTS_MOUNT="$STAGING"
 fi
 
 checkpoint_args=()
 if [ "$1" = "run" ]; then
     checkpoint_args=(-e HARNESS_DEFER_CHECKPOINT_CLEANUP=1)
+    if [ "$ARM_NAME" = "late-hint-sequential" ] || [ "$ARM_NAME" = "late-baseline-sequential" ]; then
+        checkpoint_args+=(-e HARNESS_DELETE_LATE_REPLAY_SOURCES_AFTER_LOAD=1)
+    fi
 fi
 
 # Bash 3.2 + nounset rejects "${empty_array[@]}"; the guarded form emits zero
@@ -395,7 +412,7 @@ fi
 # Standalone fixed-compute arms stop after correctness grading.
 RUN_STATE_AUDIT=0
 case "$ARM_NAME" in
-    baseline-sequential|hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only)
+    baseline-sequential|hint-sequential|late-baseline-sequential|late-hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only)
         RUN_STATE_AUDIT=1
         ;;
 esac
