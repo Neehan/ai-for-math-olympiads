@@ -14,20 +14,22 @@ from src.prompts import (
 
 class UniformStrategyPromptTests(unittest.TestCase):
     def test_late_replay_prompts_differ_only_by_hint_block(self) -> None:
-        history = '[{"assistant_response":"old attempt"}]'
-        control = late_replay_prompt(history, None, "/tmp/scratch", 200_000)
+        prior_work = "Old attempted proof."
+        control = late_replay_prompt(prior_work, None, "/tmp/scratch", 200_000)
         prompt = late_replay_prompt(
-            history,
+            prior_work,
             "Use the key lemma.",
             "/tmp/scratch",
             200_000,
         )
 
-        self.assertIn("## Prior work", prompt)
+        self.assertIn("## Prior attempted solution", prompt)
         self.assertIn("200,000 output tokens", prompt)
         self.assertIn("Use the key lemma.", prompt)
-        self.assertIn("old attempt", prompt)
-        self.assertLess(prompt.index("old attempt"), prompt.index("Use the key lemma."))
+        self.assertIn("Old attempted proof.", prompt)
+        self.assertLess(
+            prompt.index("Old attempted proof."), prompt.index("Use the key lemma.")
+        )
         self.assertEqual(control.count("Continue solving the problem."), 1)
         self.assertEqual(prompt.count("Continue solving the problem."), 1)
         self.assertEqual(

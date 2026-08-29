@@ -14,7 +14,7 @@
 #
 # The run stage normally mounts only meta.json resume markers. Compression
 # additionally receives planner artifacts; each matched late intervention
-# receives its audited baseline prefix, loaded and erased before a solver starts.
+# receives its audited failed 3x draft, loaded and erased before a solver starts.
 # On exit, only newly completed attempts are merged into results/; the audit
 # stage mounts the full tree because the judge must read solutions.
 #
@@ -352,7 +352,7 @@ if [ "$1" = "run" ]; then
         fi
     fi
     if [ "$ARM_NAME" = "late-hint-sequential" ] || [ "$ARM_NAME" = "late-baseline-sequential" ]; then
-        # This arm mechanically replays audited baseline history through 3x.
+        # This arm mechanically extracts the audited failed baseline 3x draft.
         # Stage only the three required source artifacts; src.run loads them
         # into memory and deletes this staged tree before any solver starts.
         MODEL_DIR_NAME=${MODEL_NAME//\//-}

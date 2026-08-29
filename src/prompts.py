@@ -98,11 +98,11 @@ def wrap_up_prompt(tokens_left: int) -> str:
 
 
 def late_replay_prompt(
-    history: str, hint_text: str | None, scratch_dir: str, budget_tokens: int
+    prior_work: str, hint_text: str | None, scratch_dir: str, budget_tokens: int
 ) -> str:
-    """Continue a canonical unaided 3x replay, optionally injecting h2."""
-    if not history.strip():
-        raise ValueError("Late continuation requires prior history")
+    """Continue an audited failed unaided 3x draft, optionally injecting h2."""
+    if not prior_work.strip():
+        raise ValueError("Late continuation requires a prior attempted solution")
     hint_block = (
         ""
         if hint_text is None
@@ -114,7 +114,7 @@ def late_replay_prompt(
             "budget_tokens": f"{budget_tokens:,}",
             "scratch_dir": scratch_dir,
             "hint_block": hint_block,
-            "history": history.strip(),
+            "prior_work": prior_work.strip(),
         },
     )
 

@@ -1331,7 +1331,7 @@ async def solve_seed(
                     )
                 else:
                     initial_prompt = late_replay_prompt(
-                        late_replay_source.history,
+                        late_replay_source.prior_work,
                         hint_for(problem, arm),
                         str(scratch_path),
                         budget_tokens,
@@ -1512,7 +1512,7 @@ async def solve_seed(
                     "nominal_cumulative_budget_units": (
                         SOURCE_CUTOFF_UNITS + arm.budget_units
                     ),
-                    "source_history_replayed_in_prompt": True,
+                    "source_3x_solution_replayed_in_prompt": True,
                     "source_scratch_reused": False,
                 }
                 if late_replay_source is not None

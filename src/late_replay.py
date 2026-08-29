@@ -1,4 +1,4 @@
-"""Canonical 3x baseline replay used by matched late interventions."""
+"""Audited failed 3x draft used by matched late interventions."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ SOURCE_CUTOFF_UNITS = 3
 
 @dataclass(frozen=True)
 class LateReplaySource:
-    """One audited, unsolved baseline prefix and its deterministic replay."""
+    """One audited, unsolved baseline draft and its provenance."""
 
-    history: str
+    prior_work: str
     provenance: dict[str, object]
 
 
@@ -89,35 +89,6 @@ def _proof_at_cut(prefix: list[dict[str, Any]]) -> str | None:
         if record.get("label") not in excluded and text.strip():
             return text
     return None
-
-
-def _canonical_history(prefix: list[dict[str, Any]]) -> str:
-    """Serialize every logged conversational field, omitting operations metadata."""
-    phases: list[dict[str, object]] = []
-    for index, record in enumerate(prefix, start=1):
-        tool_calls: list[dict[str, object]] = []
-        for raw_call in record.get("tool_calls", []):
-            if not isinstance(raw_call, dict):
-                raise ValueError("source tool call is malformed")
-            tool_calls.append(
-                {
-                    "name": str(raw_call.get("name", "")),
-                    "input": raw_call.get("input", {}),
-                    "result": str(raw_call.get("result", "")),
-                    "is_error": bool(raw_call.get("is_error", False)),
-                }
-            )
-        phases.append(
-            {
-                "phase": index,
-                "label": str(record.get("label", "")),
-                "cumulative_output_tokens": int(record["cumulative_output_tokens"]),
-                "user_prompt": str(record["prompt"]),
-                "assistant_response": str(record["text"]),
-                "tool_interactions": tool_calls,
-            }
-        )
-    return json.dumps(phases, ensure_ascii=False, separators=(",", ":"))
 
 
 def load_late_replay_source(
@@ -183,7 +154,7 @@ def load_late_replay_source(
     if score >= 5:
         return None, f"baseline source already solved by 3x (score {score})"
 
-    history = _canonical_history(prefix)
+    prior_work = proof_text.strip()
     source_path = output_dir.relative_to(RESULTS_ROOT).as_posix()
     provenance: dict[str, object] = {
         "source_arm": BASELINE_SOURCE_ARM,
@@ -200,13 +171,15 @@ def load_late_replay_source(
             < cutoff_tokens
         ),
         "source_log_sha256": hashlib.sha256(compressed_log).hexdigest(),
-        "source_replay_sha256": hashlib.sha256(history.encode("utf-8")).hexdigest(),
+        "source_replay_sha256": hashlib.sha256(
+            prior_work.encode("utf-8")
+        ).hexdigest(),
         "source_3x_solution_sha256": proof_digest,
         "source_3x_audit_score": score,
         "source_3x_audit_model": cut.get("audit_model", audit.get("audit_model")),
-        "replay_protocol": "completed_phase_log_through_3x_v1",
+        "replay_protocol": "audited_failed_3x_draft_v1",
     }
-    return LateReplaySource(history=history, provenance=provenance), "eligible"
+    return LateReplaySource(prior_work=prior_work, provenance=provenance), "eligible"
 
 
 def remove_staged_sources(config: ExperimentConfig) -> None:

@@ -114,7 +114,7 @@ class LateReplaySourceTests(unittest.TestCase):
             json.dumps(audit), encoding="utf-8"
         )
 
-    def test_replays_only_complete_phases_through_3x(self) -> None:
+    def test_replays_only_audited_failed_draft_at_3x(self) -> None:
         self._write_source()
 
         source, reason = load_late_replay_source(self.config, self.problem, 1)
@@ -122,10 +122,7 @@ class LateReplaySourceTests(unittest.TestCase):
         self.assertEqual(reason, "eligible")
         self.assertIsNotNone(source)
         assert source is not None
-        self.assertIn("First attempted proof.", source.history)
-        self.assertIn("checked", source.history)
-        self.assertIn("Second attempted proof.", source.history)
-        self.assertNotIn("Post-cut information.", source.history)
+        self.assertEqual(source.prior_work, "Second attempted proof.")
         self.assertEqual(source.provenance["source_completed_phase_count"], 3)
         self.assertEqual(source.provenance["source_last_completed_phase_tokens"], 250_000)
         self.assertEqual(source.provenance["source_3x_audit_score"], 0)
