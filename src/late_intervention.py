@@ -77,11 +77,15 @@ def prefix_source_dir(
     return _checkpoint_root() / "late-prefixes" / digest[:24]
 
 
-def _proof_at_prefix(phases: list[PhaseResult]) -> str:
+def _proof_at_prefix(phases: list[PhaseResult]) -> str | None:
     for phase in reversed(phases):
-        if phase.label != "critique" and not phase.budget_exhausted and phase.text.strip():
+        if (
+            phase.label != "critique"
+            and not phase.budget_exhausted
+            and phase.text.strip()
+        ):
             return phase.text.strip() + "\n"
-    raise ValueError("The completed 3x prefix has no gradeable proof")
+    return None
 
 
 def save_prefix_source(
@@ -106,7 +110,12 @@ def save_prefix_source(
         "prefix_budget_output_tokens": PREFIX_UNITS * config.unit_output_tokens,
         "prefix_output_tokens_spent": output_tokens_spent,
         "prefix_phase_count": len(phases),
-        "prefix_solution_sha256": hashlib.sha256(proof.encode("utf-8")).hexdigest(),
+        "prefix_has_gradeable_proof": proof is not None,
+        "prefix_solution_sha256": (
+            hashlib.sha256(proof.encode("utf-8")).hexdigest()
+            if proof is not None
+            else None
+        ),
         "fork_protocol": "native_transcript_and_scratch_snapshot_v1",
     }
     temp = source_dir.with_name(f"{source_dir.name}.tmp-{uuid.uuid4().hex[:8]}")
@@ -151,6 +160,16 @@ def load_prefix_source(
     ):
         return None, "matching retained late-baseline 3x session is absent"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if "prefix_has_gradeable_proof" not in manifest:
+        manifest["prefix_has_gradeable_proof"] = isinstance(
+            manifest.get("prefix_solution_sha256"), str
+        )
+    has_gradeable_proof = manifest.get("prefix_has_gradeable_proof")
+    proof_sha256 = manifest.get("prefix_solution_sha256")
+    if not isinstance(has_gradeable_proof, bool) or has_gradeable_proof != isinstance(
+        proof_sha256, str
+    ):
+        raise ValueError("Retained prefix proof metadata is malformed")
     expected = _source_identity(config, problem, seed)
     mismatches = {
         key: {"expected": value, "actual": manifest.get(key)}

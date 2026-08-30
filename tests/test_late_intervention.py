@@ -1,5 +1,6 @@
 """Retained native-prefix tests."""
 
+import json
 import os
 import tempfile
 import unittest
@@ -18,7 +19,9 @@ from src.late_intervention import (
 from src.models import PhaseResult, Problem
 
 
-def _phase(text: str = "Attempted proof.") -> PhaseResult:
+def _phase(
+    text: str = "Attempted proof.", *, budget_exhausted: bool = False
+) -> PhaseResult:
     return PhaseResult(
         label="wrap_up",
         prompt="Write the proof.",
@@ -30,7 +33,7 @@ def _phase(text: str = "Attempted proof.") -> PhaseResult:
         total_cost_usd=0.0,
         is_error=False,
         stop_reason="end_turn",
-        budget_exhausted=False,
+        budget_exhausted=budget_exhausted,
         tool_calls=[],
         reconnects=[],
     )
@@ -75,10 +78,62 @@ class LateInterventionTests(unittest.TestCase):
         assert loaded is not None
         self.assertEqual(loaded.session_id, source.session_id)
         self.assertEqual(loaded.scratch_name, "1234abcd")
+        self.assertIs(loaded.provenance["prefix_has_gradeable_proof"], True)
+        self.assertIsInstance(loaded.provenance["prefix_solution_sha256"], str)
         self.assertEqual(
             (loaded.workspace / "work.txt").read_text(encoding="utf-8"),
             "lemma",
         )
+
+    def test_over_budget_prefix_is_retained_without_gradeable_proof(self) -> None:
+        scratch = self.root / "1234abcd"
+        (scratch / ".claude-runtime").mkdir(parents=True)
+        source = save_prefix_source(
+            self.config,
+            self.problem,
+            1,
+            scratch,
+            "11111111-1111-4111-8111-111111111111",
+            [_phase("## Final Solution\nToo late.", budget_exhausted=True)],
+            611_780,
+        )
+
+        loaded, reason = load_prefix_source(self.config, self.problem, 1)
+
+        self.assertEqual(reason, "eligible")
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded.session_id, source.session_id)
+        self.assertIs(loaded.provenance["prefix_has_gradeable_proof"], False)
+        self.assertIsNone(loaded.provenance["prefix_solution_sha256"])
+        self.assertEqual(loaded.phases[0].text, "## Final Solution\nToo late.")
+
+    def test_legacy_prefix_derives_gradeable_proof_flag(self) -> None:
+        scratch = self.root / "1234abcd"
+        (scratch / ".claude-runtime").mkdir(parents=True)
+        source = save_prefix_source(
+            self.config,
+            self.problem,
+            1,
+            scratch,
+            "11111111-1111-4111-8111-111111111111",
+            [_phase()],
+            590_000,
+        )
+        manifest_path = source.workspace.parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("prefix_has_gradeable_proof")
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        loaded, reason = load_prefix_source(self.config, self.problem, 1)
+
+        self.assertEqual(reason, "eligible")
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertIs(loaded.provenance["prefix_has_gradeable_proof"], True)
 
     def test_native_fork_uses_the_snapshot_config_and_restores_environment(self) -> None:
         scratch = self.root / "1234abcd"
