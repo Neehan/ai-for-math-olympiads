@@ -343,7 +343,8 @@ class ResumableClaudeSession:
             to_credential=new_label,
         )
         self._reconnects.append(event)
-        log.warning(
+        resume_log = log.debug if reason == "transport" else log.warning
+        resume_log(
             "Session %s resumed after %s (%s -> %s); preserving accumulated "
             "output-token accounting",
             self._session_id,
@@ -388,7 +389,8 @@ class ResumableClaudeSession:
                 to_credential=new_label,
             )
         )
-        log.warning(
+        resume_log = log.debug if reason == "transport" else log.warning
+        resume_log(
             "Session %s resumed after deferred %s (%s -> %s); preserving "
             "accumulated output-token accounting",
             self._session_id,
