@@ -70,7 +70,22 @@ Run the complete study on the 35 fresh 2026 non-geometry problems. The primary G
 
 ## Results backup
 
-Set `HF_TOKEN` in `.env`, then upload only the active `results/` and `results-imobench/` trees:
+Set `HF_TOKEN` in `.env`. Pull and safely merge the remote active result trees
+before uploading new work:
+
+```bash
+./scripts/download_results_from_hf.sh
+./scripts/upload_results_to_hf.sh
+```
+
+The downloader uses a packed Git clone plus batched Git LFS transfer instead of
+per-file Hub downloads, checks generation artifacts at whole-seed granularity,
+and aborts before writing if the same seed contains conflicting trajectories.
+Use `./scripts/download_results_from_hf.sh --dry-run` to compare without merging.
+Existing local files remain authoritative; remote-only files and compiled audit
+records are added without mixing conflicting generations.
+
+To upload only the active `results/` and `results-imobench/` trees directly:
 
 ```bash
 ./scripts/upload_results_to_hf.sh
