@@ -24,7 +24,7 @@ from src.solver import agent_settings_path
 
 LATE_BASELINE_ARM = "late-baseline-sequential"
 PREFIX_UNITS = 3
-PREFIX_SCHEMA_VERSION = 2
+PREFIX_SCHEMA_VERSION = 3
 
 _FORK_LOCK = threading.Lock()
 

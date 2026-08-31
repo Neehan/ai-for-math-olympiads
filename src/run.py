@@ -138,6 +138,7 @@ log = logging.getLogger("run")
 LATE_HINT_ARM_NAME = "late-hint-sequential"
 LATE_BASELINE_ARM_NAME = LATE_BASELINE_ARM
 LATE_INTERVENTION_ARMS = frozenset({LATE_BASELINE_ARM_NAME, LATE_HINT_ARM_NAME})
+LATE_INTERVENTION_PROTOCOL_VERSION = 2
 
 
 async def _checkpointed_phase(
@@ -1232,6 +1233,10 @@ def run_checkpoint_identity(
         identity["provider_transport_policy"] = provider_transport_policy(config.model)
     if uses_vllm(config.model):
         identity["agent_runtime_policy"] = agent_runtime_policy(config.model)
+    if arm.name in LATE_INTERVENTION_ARMS:
+        identity["late_intervention_protocol_version"] = (
+            LATE_INTERVENTION_PROTOCOL_VERSION
+        )
     return identity
 
 
@@ -1409,7 +1414,7 @@ async def solve_late_baseline_seed(
             prefix_budget,
             task_prompt(problem, None, str(prefix_scratch), prefix_budget),
             PHASE_SOLVE,
-            allow_self_convergence=False,
+            allow_self_convergence=True,
         )
         prefix_session_id = checkpoint.session_id("prefix")
         if prefix_session_id is None:
