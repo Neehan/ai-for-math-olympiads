@@ -138,7 +138,6 @@ log = logging.getLogger("run")
 LATE_HINT_ARM_NAME = "late-hint-sequential"
 LATE_BASELINE_ARM_NAME = LATE_BASELINE_ARM
 LATE_INTERVENTION_ARMS = frozenset({LATE_BASELINE_ARM_NAME, LATE_HINT_ARM_NAME})
-LATE_INTERVENTION_PROTOCOL_VERSION = 2
 
 
 async def _checkpointed_phase(
@@ -1233,10 +1232,6 @@ def run_checkpoint_identity(
         identity["provider_transport_policy"] = provider_transport_policy(config.model)
     if uses_vllm(config.model):
         identity["agent_runtime_policy"] = agent_runtime_policy(config.model)
-    if arm.name in LATE_INTERVENTION_ARMS:
-        identity["late_intervention_protocol_version"] = (
-            LATE_INTERVENTION_PROTOCOL_VERSION
-        )
     return identity
 
 
@@ -1248,7 +1243,7 @@ def _sequential_self_converged(round_num: int, no_gap_streak: int) -> bool:
     )
 
 
-async def _run_late_sequential_role(
+async def _run_sequential_role(
     config: ExperimentConfig,
     checkpoint: AttemptCheckpoint,
     role: str,
@@ -1257,10 +1252,11 @@ async def _run_late_sequential_role(
     budget_tokens: int,
     initial_prompt: str,
     initial_label: str,
-    *,
-    allow_self_convergence: bool,
+    arm_name: str,
+    problem_id: str,
+    seed: int,
 ) -> tuple[list[PhaseResult], BudgetTracker, str]:
-    """Run one resumable sequential leg of the matched late experiment."""
+    """Run the shared resumable Self-Refine protocol for one session role."""
     phases = checkpoint.phases(role)
     tracker = checkpoint.tracker(
         role, budget_tokens, config.wrap_up_reserve_tokens
@@ -1293,6 +1289,15 @@ async def _run_late_sequential_role(
                 tracker.soft_limit_tokens,
             )
             phases.append(phase)
+            log.info(
+                "%s/%s seed %d: %s done (%d/%d tokens)",
+                arm_name,
+                problem_id,
+                seed,
+                initial_label,
+                tracker.spent,
+                budget_tokens,
+            )
 
         active = checkpoint.active(role)
         if active is not None and active.get("label") in {
@@ -1319,10 +1324,12 @@ async def _run_late_sequential_role(
                 else:
                     no_gap_streak = 0
         round_num = sum(phase.label == PHASE_CRITIQUE for phase in phases)
+        has_wrap_up = any(phase.label == PHASE_WRAP_UP for phase in phases)
 
-        while not tracker.soft_exhausted and not (
-            allow_self_convergence
-            and _sequential_self_converged(round_num, no_gap_streak)
+        while (
+            not has_wrap_up
+            and not tracker.soft_exhausted
+            and not _sequential_self_converged(round_num, no_gap_streak)
         ):
             if phases[-1].label in {PHASE_SOLVE, PHASE_REVISE}:
                 round_num += 1
@@ -1342,10 +1349,20 @@ async def _run_late_sequential_role(
                     no_gap_streak += 1
                 else:
                     no_gap_streak = 0
-                if (
-                    allow_self_convergence
-                    and _sequential_self_converged(round_num, no_gap_streak)
-                ) or tracker.soft_exhausted:
+                if _sequential_self_converged(round_num, no_gap_streak):
+                    log.info(
+                        "%s/%s seed %d: stopping after round %d and %d "
+                        "consecutive no-gap critiques (%d/%d tokens)",
+                        arm_name,
+                        problem_id,
+                        seed,
+                        round_num,
+                        no_gap_streak,
+                        tracker.spent,
+                        budget_tokens,
+                    )
+                    break
+                if tracker.soft_exhausted:
                     break
 
             if phases[-1].label == PHASE_CRITIQUE:
@@ -1359,11 +1376,19 @@ async def _run_late_sequential_role(
                     tracker.soft_limit_tokens,
                 )
                 phases.append(revise)
+                log.info(
+                    "%s/%s seed %d: round %d done (%d/%d tokens)",
+                    arm_name,
+                    problem_id,
+                    seed,
+                    round_num,
+                    tracker.spent,
+                    budget_tokens,
+                )
 
         termination_reason = (
             "self_converged"
-            if allow_self_convergence
-            and _sequential_self_converged(round_num, no_gap_streak)
+            if _sequential_self_converged(round_num, no_gap_streak)
             else "token_limit"
         )
 
@@ -1405,7 +1430,7 @@ async def solve_late_baseline_seed(
     try:
         prefix_scratch = checkpoint.scratch_dir("prefix")
         prefix_budget = PREFIX_UNITS * config.unit_output_tokens
-        prefix_phases, prefix_tracker, _ = await _run_late_sequential_role(
+        prefix_phases, prefix_tracker, _ = await _run_sequential_role(
             config,
             checkpoint,
             "prefix",
@@ -1414,7 +1439,9 @@ async def solve_late_baseline_seed(
             prefix_budget,
             task_prompt(problem, None, str(prefix_scratch), prefix_budget),
             PHASE_SOLVE,
-            allow_self_convergence=True,
+            arm.name,
+            problem.problem_id,
+            seed,
         )
         prefix_session_id = checkpoint.session_id("prefix")
         if prefix_session_id is None:
@@ -1444,7 +1471,7 @@ async def solve_late_baseline_seed(
             checkpoint.save_session("control", control_session_id, [])
         branch_budget = config.unit_output_tokens
         control_phases, control_tracker, termination_reason = (
-            await _run_late_sequential_role(
+            await _run_sequential_role(
                 config,
                 checkpoint,
                 "control",
@@ -1455,7 +1482,9 @@ async def solve_late_baseline_seed(
                     None, str(prefix_scratch), branch_budget
                 ),
                 PHASE_REVISE,
-                allow_self_convergence=True,
+                arm.name,
+                problem.problem_id,
+                seed,
             )
         )
         phases = [
@@ -1525,7 +1554,7 @@ async def solve_late_hint_seed(
             branch_session_id = fork_native_session(scratch_path, source.session_id)
             checkpoint.save_session("main", branch_session_id, [])
         branch_budget = config.unit_output_tokens
-        branch_phases, tracker, termination_reason = await _run_late_sequential_role(
+        branch_phases, tracker, termination_reason = await _run_sequential_role(
             config,
             checkpoint,
             "main",
@@ -1536,7 +1565,9 @@ async def solve_late_hint_seed(
                 hint_for(problem, arm), str(scratch_path), branch_budget
             ),
             PHASE_REVISE,
-            allow_self_convergence=True,
+            arm.name,
+            problem.problem_id,
+            seed,
         )
         raw_prefix_spent = source.provenance.get("prefix_output_tokens_spent")
         if isinstance(raw_prefix_spent, bool) or not isinstance(
@@ -1660,181 +1691,100 @@ async def solve_seed(
 
         scratch_path = checkpoint.scratch_dir("main")
         budget_tokens = config.budget_tokens(arm)
-        phases = checkpoint.phases("main")
-        tracker = checkpoint.tracker(
-            "main", budget_tokens, config.wrap_up_reserve_tokens
-        )
-        termination_reason: str | None = None
-
-        async with ResumableClaudeSession(
-            pool,
-            lambda token, session_id, resume_id, stderr: build_options(
+        if arm.mode == MODE_SEQUENTIAL:
+            phases, tracker, termination_reason = await _run_sequential_role(
                 config,
-                str(scratch_path),
-                max(1, tracker.remaining),
-                token,
-                stderr,
-                session_id=session_id,
-                resume_session_id=resume_id,
-            ),
-            session_id=checkpoint.session_id("main"),
-            reconnects=checkpoint.reconnects("main"),
-        ) as client:
-            checkpoint.save_session("main", client.session_id, client.reconnect_events)
-            if not phases:
-                initial_prompt = task_prompt(
+                checkpoint,
+                "main",
+                scratch_path,
+                pool,
+                budget_tokens,
+                task_prompt(
                     problem,
                     hint_for(problem, arm),
                     str(scratch_path),
                     budget_tokens,
+                ),
+                PHASE_SOLVE,
+                arm.name,
+                problem.problem_id,
+                seed,
+            )
+        else:
+            phases = checkpoint.phases("main")
+            tracker = checkpoint.tracker(
+                "main", budget_tokens, config.wrap_up_reserve_tokens
+            )
+            termination_reason = None
+            async with ResumableClaudeSession(
+                pool,
+                lambda token, session_id, resume_id, stderr: build_options(
+                    config,
+                    str(scratch_path),
+                    max(1, tracker.remaining),
+                    token,
+                    stderr,
+                    session_id=session_id,
+                    resume_session_id=resume_id,
+                ),
+                session_id=checkpoint.session_id("main"),
+                reconnects=checkpoint.reconnects("main"),
+            ) as client:
+                checkpoint.save_session(
+                    "main", client.session_id, client.reconnect_events
                 )
-                solve = await _checkpointed_phase(
-                    checkpoint,
-                    "main",
-                    client,
-                    tracker,
-                    initial_prompt,
-                    PHASE_SOLVE,
-                    tracker.soft_limit_tokens,
-                )
-                phases.append(solve)
-                log.info(
-                    "%s/%s seed %d: solve done (%d/%d tokens)",
-                    arm.name,
-                    problem.problem_id,
-                    seed,
-                    tracker.spent,
-                    budget_tokens,
-                )
-
-            active_main = checkpoint.active("main")
-            if active_main is not None and active_main.get("label") in {
-                PHASE_CRITIQUE,
-                PHASE_REVISE,
-            }:
-                recovered_phase = await _checkpointed_phase(
-                    checkpoint,
-                    "main",
-                    client,
-                    tracker,
-                    str(active_main["prompt"]),
-                    str(active_main["label"]),
-                    int(active_main["stop_at_tokens"]),
-                )
-                phases.append(recovered_phase)
-
-            if arm.mode == MODE_SEQUENTIAL and not any(
-                phase.label == PHASE_WRAP_UP for phase in phases
-            ):
-                no_gap_streak = 0
-                for phase in phases:
-                    if phase.label == PHASE_CRITIQUE:
-                        if not phase.budget_exhausted and _critique_reports_no_gap(
-                            phase.text
-                        ):
-                            no_gap_streak += 1
-                        else:
-                            no_gap_streak = 0
-                round_num = sum(phase.label == PHASE_CRITIQUE for phase in phases)
-
-                while (
-                    not tracker.soft_exhausted
-                    and not _sequential_self_converged(round_num, no_gap_streak)
-                ):
-                    last_label = phases[-1].label
-                    if last_label in {PHASE_SOLVE, PHASE_REVISE}:
-                        round_num += 1
-                        critique = await _checkpointed_phase(
-                            checkpoint,
-                            "main",
-                            client,
-                            tracker,
-                            critique_prompt(),
-                            PHASE_CRITIQUE,
-                            tracker.soft_limit_tokens,
-                        )
-                        phases.append(critique)
-                        if not critique.budget_exhausted and _critique_reports_no_gap(
-                            critique.text
-                        ):
-                            no_gap_streak += 1
-                        else:
-                            no_gap_streak = 0
-                        if _sequential_self_converged(round_num, no_gap_streak):
-                            log.info(
-                                "%s/%s seed %d: stopping after round %d and %d "
-                                "consecutive no-gap critiques (%d/%d tokens)",
-                                arm.name,
-                                problem.problem_id,
-                                seed,
-                                round_num,
-                                no_gap_streak,
-                                tracker.spent,
-                                budget_tokens,
-                            )
-                            break
-                        if tracker.soft_exhausted:
-                            break
-
-                    if phases[-1].label == PHASE_CRITIQUE:
-                        revise = await _checkpointed_phase(
-                            checkpoint,
-                            "main",
-                            client,
-                            tracker,
-                            revise_prompt(),
-                            PHASE_REVISE,
-                            tracker.soft_limit_tokens,
-                        )
-                        phases.append(revise)
-                        log.info(
-                            "%s/%s seed %d: round %d done (%d/%d tokens)",
-                            arm.name,
-                            problem.problem_id,
-                            seed,
-                            round_num,
-                            tracker.spent,
+                if not phases:
+                    solve = await _checkpointed_phase(
+                        checkpoint,
+                        "main",
+                        client,
+                        tracker,
+                        task_prompt(
+                            problem,
+                            hint_for(problem, arm),
+                            str(scratch_path),
                             budget_tokens,
-                        )
+                        ),
+                        PHASE_SOLVE,
+                        tracker.soft_limit_tokens,
+                    )
+                    phases.append(solve)
+                    log.info(
+                        "%s/%s seed %d: solve done (%d/%d tokens)",
+                        arm.name,
+                        problem.problem_id,
+                        seed,
+                        tracker.spent,
+                        budget_tokens,
+                    )
 
-                termination_reason = (
-                    "self_converged"
-                    if _sequential_self_converged(round_num, no_gap_streak)
-                    else "token_limit"
-                )
+                active_main = checkpoint.active("main")
+                if active_main is not None and active_main.get("label") in {
+                    PHASE_CRITIQUE,
+                    PHASE_REVISE,
+                }:
+                    recovered_phase = await _checkpointed_phase(
+                        checkpoint,
+                        "main",
+                        client,
+                        tracker,
+                        str(active_main["prompt"]),
+                        str(active_main["label"]),
+                        int(active_main["stop_at_tokens"]),
+                    )
+                    phases.append(recovered_phase)
 
-        await _run_strict_wrap_phase(
-            config,
-            checkpoint,
-            "main",
-            tracker,
-            phases,
-            scratch_path,
-            pool,
-            PHASE_WRAP_UP,
-            wrap_up_prompt(tracker.remaining),
-            config.wrap_up_reserve_tokens,
-        )
-
-        # If the process died after committing wrap-up but before writing the
-        # final result, reconstruct the non-token controller field as well.
-        if arm.mode == MODE_SEQUENTIAL and termination_reason is None:
-            recovered_no_gap_streak = 0
-            for phase in phases:
-                if phase.label == PHASE_CRITIQUE:
-                    if not phase.budget_exhausted and _critique_reports_no_gap(
-                        phase.text
-                    ):
-                        recovered_no_gap_streak += 1
-                    else:
-                        recovered_no_gap_streak = 0
-            termination_reason = (
-                "self_converged"
-                if _sequential_self_converged(
-                    sum(phase.label == PHASE_CRITIQUE for phase in phases),
-                    recovered_no_gap_streak,
-                )
-                else "token_limit"
+            await _run_strict_wrap_phase(
+                config,
+                checkpoint,
+                "main",
+                tracker,
+                phases,
+                scratch_path,
+                pool,
+                PHASE_WRAP_UP,
+                wrap_up_prompt(tracker.remaining),
+                config.wrap_up_reserve_tokens,
             )
 
         expected_output_dir = seed_output_dir(config, arm, problem.problem_id, seed)
