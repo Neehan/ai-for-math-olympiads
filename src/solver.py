@@ -558,7 +558,7 @@ class ResumableClaudeSession:
                 # benchmark attempts from retrying the proxy in lockstep.
                 jitter = int(self._session_id.replace("-", "")[:4], 16) / 65_535
                 delay += jitter
-                log.warning(
+                log.debug(
                     "Session %s hit transient transport failure; retrying same "
                     "transcript in %.1f s (%d/%d): %s",
                     self._session_id,
