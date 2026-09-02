@@ -44,3 +44,16 @@ async def run_all(tasks: Sequence[Callable[[], Awaitable[T]]], limit: int) -> No
     async with anyio.create_task_group() as group:
         for factory in tasks:
             group.start_soon(_guarded, factory)
+
+
+def nested_controller_limit(max_concurrency: int, child_width: int) -> int:
+    """Number of child fan-out controllers that may run concurrently.
+
+    Each controller can launch at most ``child_width`` sessions. Using the
+    integer quotient keeps their combined peak at or below the configured
+    global capacity. A single controller remains runnable when its fixed bank
+    is wider than that capacity; its own limiter enforces the actual cap.
+    """
+    if max_concurrency < 1 or child_width < 1:
+        raise ValueError("concurrency limits must be positive")
+    return max(1, max_concurrency // child_width)

@@ -1149,7 +1149,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         config = load_config(CONFIG_PATH)
         baseline = config.arms["baseline"].seeds
         banks = config.arms["baseline-parallel"].seeds
-        self.assertEqual(config.max_concurrency, 8)
+        self.assertEqual(config.max_concurrency, 16)
         self.assertEqual(baseline, [1, 2, 3])
         self.assertEqual(banks, [1, 2, 3])
 

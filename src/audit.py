@@ -34,7 +34,7 @@ from claude_agent_sdk import (
 )
 
 from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
-from src.concurrency import run_all
+from src.concurrency import nested_controller_limit, run_all
 from src.config import load_config, override_models
 from src.constants import (
     ALLOWED_TOOLS,
@@ -1085,12 +1085,14 @@ async def main() -> None:
         for problem, seed in pending
     ]
     # Parallel and Uniform Strategy banks audit their candidates internally.
-    # One bank controller at a time preserves the global concurrency cap.
-    outer_limit = (
-        1
-        if arm.mode in {MODE_PARALLEL, MODE_UNIFORM_STRATEGY}
-        else config.max_concurrency
-    )
+    # Only Parallel-8 opts into concurrent bank controllers.
+    if arm.mode == MODE_PARALLEL:
+        outer_limit = nested_controller_limit(config.max_concurrency, 8)
+    elif arm.mode == MODE_UNIFORM_STRATEGY:
+        # Preserve the existing Uniform-C scheduling protocol.
+        outer_limit = 1
+    else:
+        outer_limit = config.max_concurrency
     await run_all(tasks, outer_limit)
 
     path, count = compile_arm_audit(config, arm)

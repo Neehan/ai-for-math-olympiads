@@ -30,7 +30,7 @@ from src.checkpoint import (
     protocol_fingerprint,
     tool_calls_from_records,
 )
-from src.concurrency import run_all
+from src.concurrency import nested_controller_limit, run_all
 from src.config import load_config, override_models
 from src.constants import (
     CONFIG_PATH,
@@ -2017,17 +2017,15 @@ async def main() -> None:
         )
         for problem, seed in pending
     ]
-    # Parallel and Uniform Strategy banks launch their own executor calls.
-    # Running one bank controller at a time preserves the global cap of eight.
-    outer_limit = (
-        1
-        if arm.mode in {
-            MODE_PARALLEL,
-            MODE_UNIFORM_STRATEGY,
-            MODE_UNIFORM_STRATEGY_ONLY,
-        }
-        else config.max_concurrency
-    )
+    # Parallel banks launch their own bounded eight-way fan-outs. Admit only
+    # as many full banks as fit within the configured global session capacity.
+    if arm.mode == MODE_PARALLEL:
+        outer_limit = nested_controller_limit(config.max_concurrency, 8)
+    elif arm.mode in {MODE_UNIFORM_STRATEGY, MODE_UNIFORM_STRATEGY_ONLY}:
+        # Preserve the existing Uniform-C scheduling protocol.
+        outer_limit = 1
+    else:
+        outer_limit = config.max_concurrency
     await run_all(tasks, outer_limit)
 
 
