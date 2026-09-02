@@ -25,7 +25,7 @@ import anyio
 from src.audit import _judge
 from src.checkpoint import AttemptCheckpoint
 from src.concurrency import run_all
-from src.config import load_config, override_models
+from src.config import load_config, override_max_concurrency, override_models
 from src.constants import (
     CONFIG_PATH,
     LOG_FORMAT,
@@ -597,10 +597,17 @@ async def main() -> None:
         action="store_true",
         help="For sequential arms, annotate every integer 1x,...,8x checkpoint",
     )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=None,
+        help="Operational session-concurrency override (default: config.json)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     config = override_models(load_config(CONFIG_PATH), args.model, args.audit_model)
+    config = override_max_concurrency(config, args.max_concurrency)
     if args.arm not in config.arms:
         raise SystemExit(f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}")
     arm = config.arms[args.arm]

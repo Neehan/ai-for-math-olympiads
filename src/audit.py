@@ -35,7 +35,7 @@ from claude_agent_sdk import (
 
 from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
 from src.concurrency import nested_controller_limit, run_all
-from src.config import load_config, override_models
+from src.config import load_config, override_max_concurrency, override_models
 from src.constants import (
     ALLOWED_TOOLS,
     AUDIT_SCORE_INVALID,
@@ -995,10 +995,17 @@ async def main() -> None:
         action="store_true",
         help="For sequential arms, audit every integer 1x,...,8x checkpoint",
     )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=None,
+        help="Operational session-concurrency override (default: config.json)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     config = override_models(load_config(CONFIG_PATH), args.model, args.audit_model)
+    config = override_max_concurrency(config, args.max_concurrency)
     log.info("Solver model: %s; judge model: %s", config.model, config.audit_model)
     if args.arm not in config.arms:
         raise SystemExit(

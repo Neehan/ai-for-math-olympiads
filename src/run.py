@@ -31,7 +31,7 @@ from src.checkpoint import (
     tool_calls_from_records,
 )
 from src.concurrency import nested_controller_limit, run_all
-from src.config import load_config, override_models
+from src.config import load_config, override_max_concurrency, override_models
 from src.constants import (
     CONFIG_PATH,
     DEFAULT_UNIFORM_COMPRESS_MODEL,
@@ -1877,10 +1877,17 @@ async def main() -> None:
             "Selection arms always use the source model."
         ),
     )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=None,
+        help="Operational session-concurrency override (default: config.json)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
     config = override_models(load_config(CONFIG_PATH), args.model, args.audit_model)
+    config = override_max_concurrency(config, args.max_concurrency)
     log.info("Solver model: %s", config.model)
     if args.arm not in config.arms:
         raise SystemExit(

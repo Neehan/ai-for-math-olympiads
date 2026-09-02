@@ -253,3 +253,18 @@ def override_models(
     )
     _check_judge_differs(effective, "--model/--audit-model")
     return effective
+
+
+def override_max_concurrency(
+    config: ExperimentConfig, max_concurrency: int | None
+) -> ExperimentConfig:
+    """Apply the operational CLI concurrency override.
+
+    Concurrency controls scheduling only and is deliberately absent from run
+    and audit checkpoint identities.
+    """
+    if max_concurrency is None:
+        return config
+    if max_concurrency < 1:
+        raise ValueError("--max-concurrency must be >= 1")
+    return dataclasses.replace(config, max_concurrency=max_concurrency)
