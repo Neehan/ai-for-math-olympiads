@@ -18,6 +18,11 @@ DERIVED_SEED_FILES = frozenset({"audit.json", "state_audit.json"})
 COMPILED_FILES = frozenset({"audit.jsonl", "state_audit.jsonl"})
 
 
+def _is_python_cache(path: Path) -> bool:
+    """Whether a result-tree path is disposable interpreter output."""
+    return "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+
+
 def _seed_dirs(base: Path) -> dict[str, Path]:
     seeds: dict[str, Path] = {}
     for root_name in RESULT_ROOTS:
@@ -45,7 +50,11 @@ def _generation_manifest(seed_dir: Path) -> dict[str, str]:
         if not path.is_file() or path.name in DERIVED_SEED_FILES:
             continue
         relative = path.relative_to(seed_dir)
-        if "audit_scratch" in relative.parts or path.name == ".DS_Store":
+        if (
+            "audit_scratch" in relative.parts
+            or path.name == ".DS_Store"
+            or _is_python_cache(relative)
+        ):
             continue
         manifest[relative.as_posix()] = _sha256(path)
     return manifest
@@ -172,6 +181,8 @@ def merge_snapshot(source: Path, destination: Path, *, dry_run: bool) -> int:
             if not remote_path.is_file() or remote_path.name == ".DS_Store":
                 continue
             relative = remote_path.relative_to(source)
+            if _is_python_cache(relative):
+                continue
             local_path = destination / relative
             if remote_path.name in COMPILED_FILES:
                 compiled_sources.append((remote_path, local_path))
