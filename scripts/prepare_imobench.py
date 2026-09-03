@@ -27,6 +27,30 @@ CATEGORY_TO_DOMAIN = {
     "Combinatorics": "combinatorics",
     "Number theory": "number_theory",
 }
+TASKS = {
+    "PB-Advanced-001": "proof_only",
+    "PB-Advanced-002": "proof_only",
+    "PB-Advanced-004": "proof_only",
+    "PB-Advanced-006": "compute_and_prove",
+    "PB-Advanced-007": "proof_only",
+    "PB-Advanced-008": "proof_only",
+    "PB-Advanced-011": "compute_and_prove",
+    "PB-Advanced-012": "proof_only",
+    "PB-Advanced-013": "proof_only",
+    "PB-Advanced-014": "compute_and_prove",
+    "PB-Advanced-017": "compute_and_prove",
+    "PB-Advanced-018": "compute_and_prove",
+    "PB-Advanced-019": "compute_and_prove",
+    "PB-Advanced-020": "compute_and_prove",
+    "PB-Advanced-021": "proof_only",
+    "PB-Advanced-023": "compute_and_prove",
+    "PB-Advanced-024": "compute_and_prove",
+    "PB-Advanced-025": "proof_only",
+    "PB-Advanced-026": "proof_only",
+    "PB-Advanced-027": "compute_and_prove",
+    "PB-Advanced-029": "compute_and_prove",
+    "PB-Advanced-030": "proof_only",
+}
 HINTS = {
     "PB-Advanced-001": (
         "Shift to $x_m=A_{m-2024}$; bound $A_N=O(\\sqrt{N}\\log N)$, then use "
@@ -284,6 +308,10 @@ def main() -> None:
         missing = sorted(selected_ids - OUTLINES.keys())
         extra = sorted(OUTLINES.keys() - selected_ids)
         raise RuntimeError(f"outline ID mismatch: missing={missing}, extra={extra}")
+    if selected_ids != TASKS.keys():
+        missing = sorted(selected_ids - TASKS.keys())
+        extra = sorted(TASKS.keys() - selected_ids)
+        raise RuntimeError(f"task ID mismatch: missing={missing}, extra={extra}")
 
     problems: list[dict[str, object]] = []
     solutions: list[dict[str, object]] = []
@@ -321,6 +349,7 @@ def main() -> None:
                 "problem_id": problem_id,
                 "statement": statement,
                 "domain": domain,
+                "task": TASKS[problem_id],
             }
         )
         solutions.append(
