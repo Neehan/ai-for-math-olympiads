@@ -31,7 +31,12 @@ from src.checkpoint import (
     tool_calls_from_records,
 )
 from src.concurrency import nested_controller_limit, run_all
-from src.config import load_config, override_max_concurrency, override_models
+from src.config import (
+    load_config,
+    override_max_concurrency,
+    override_models,
+    require_supported_arm,
+)
 from src.constants import (
     CONFIG_PATH,
     DEFAULT_UNIFORM_COMPRESS_MODEL,
@@ -1894,6 +1899,7 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
+    require_supported_arm(arm)
     seeds = select_seeds(arm, args.seeds)
     all_problems = load_problems()
     problems = select_problems(all_problems, args.problems, args.domain)

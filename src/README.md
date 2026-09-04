@@ -11,7 +11,7 @@ One harness implementing the paper's arms (top-level README): every top-level at
 
 ## Configuration — `config.json`
 
-Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), the standard 20k wrap-up reserve, the Uniform Strategy planner/reserve/branch settings, `max_turns_per_phase` / `audit_max_turns` (per-phase guards; the token budget is the sequential stop), `max_concurrency` (operationally overridable with `--max-concurrency`), and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`), OpenRouter `vendor/model` ids (`openai/gpt-5.5`, `deepseek/deepseek-v4-flash-0731`), local Codex-subscription aliases (`litellm/gpt-5.4`, `litellm/gpt-5.4-mini`, `litellm/gpt-5.5`, `litellm/gpt-5.6-luna`, `litellm/gpt-5.6-sol`), or native Anthropic-compatible vLLM ids (`vllm/qed-nano`, `vllm/muse-glimmer`). DeepSeek V4 Flash is restricted to Relace, Baidu Qianfan, StreamLake, and DeepInfra, sorted by live throughput and capped at $0.08/M input and $0.18/M output. Local routes use their `*_BASE_URL*` values as the round-robin/cooldown pool and a shared `*_API_KEY`; setup is in `docs/codex-subscription-via-litellm.md` and `docs/qed-nano-vllm.md`. Results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. Single, Sequential, and Parallel reliability arms use seeds 1–3; Uniform-C remains one top-level planner bank with eight dependent executors.
+Single source of experiment knobs: `model` (solver), `audit_model` (judge; must differ from the solver) — both overridable per invocation with `--model` / `--audit-model` (config values are the defaults; the solver≠judge check applies to the effective pair, and audit's `--model` selects whose results tree to grade), `effort` (fixed `high` per the paper), `unit_output_tokens` (1× = 200k), the standard 20k wrap-up reserve, the Uniform Strategy planner/reserve/branch settings, `max_turns_per_phase` / `audit_max_turns` (per-phase guards; the token budget is the sequential stop), `max_concurrency` (operationally overridable with `--max-concurrency`), and the arm table (`hint`: none/h1/h2/h3, `mode`, `budget_units`, `seeds`). Models are Anthropic ids (`claude-opus-4-8`), OpenRouter `vendor/model` ids (`openai/gpt-5.5`, `deepseek/deepseek-v4-flash-0731`), local Codex-subscription aliases (`litellm/gpt-5.4`, `litellm/gpt-5.4-mini`, `litellm/gpt-5.5`, `litellm/gpt-5.6-luna`, `litellm/gpt-5.6-sol`), or native Anthropic-compatible vLLM ids (`vllm/qed-nano`, `vllm/muse-glimmer`, `vllm/qwen3-8b`). DeepSeek V4 Flash is restricted to Relace, Baidu Qianfan, StreamLake, and DeepInfra, sorted by live throughput and capped at $0.08/M input and $0.18/M output. Local routes use their `*_BASE_URL*` values as the round-robin/cooldown pool and a shared `*_API_KEY`; setup is in `docs/codex-subscription-via-litellm.md`, `docs/qed-nano-vllm.md`, and `docs/qwen3-8b-vllm.md`. Results paths use the model id with `/` replaced by `-`. Arm names are the slugs used everywhere — CLI, `results/` paths, and the top-level README arm table. Single, Sequential, and Parallel reliability arms use seeds 1–3; Uniform-C remains one top-level planner bank with eight dependent executors.
 
 Meta's contributor-tier `muse-spark-1.2-contributor` model uses its native Anthropic-compatible endpoint and `META_API_KEY`; setup and invocation are in `docs/meta-muse-spark.md`.
 
@@ -27,18 +27,38 @@ Meta's contributor-tier `muse-spark-1.2-contributor` model uses its native Anthr
 Compute = the attempt's total output-token budget. Three layers:
 
 1. `task_budget` (API-side, where supported): the model is told its remaining token budget so it paces itself. Meta's Anthropic-compatible adapter rejects this Claude extension, so Muse receives the same allocation in the task prompt while the local cutoff below remains authoritative.
-2. Harness cutoff: streamed `message_delta` events carry each API message's real output-token count (partial messages enabled; the per-message `usage` on assistant events is only an initial snapshot) and feed a per-attempt `BudgetTracker` that interrupts after the response crossing the soft threshold; each phase's total is then trued-up from the ResultMessage's exact per-query usage. Working responses are capped at 64k via `CLAUDE_CODE_MAX_OUTPUT_TOKENS` — in Docker the CLI is pinned to npm `2.1.222` via `HARNESS_CLI_PATH`, because the SDK-bundled CLI ignores that cap on Opus and errors long thinking turns at 32k. Anthropic, LiteLLM, and OpenRouter routes use `--autocompact 900k`; `vllm/*` uses `200k` to leave roughly 62k headroom in a 262k context.
+2. Harness cutoff: streamed `message_delta` events carry each API message's real output-token count (partial messages enabled; the per-message `usage` on assistant events is only an initial snapshot) and feed a per-attempt `BudgetTracker` that interrupts after the response crossing the soft threshold; each phase's total is then trued-up from the ResultMessage's exact per-query usage. Working responses are capped at 64k via `CLAUDE_CODE_MAX_OUTPUT_TOKENS` — in Docker the CLI is pinned to npm `2.1.222` via `HARNESS_CLI_PATH`, because the SDK-bundled CLI ignores that cap on Opus and errors long thinking turns at 32k. Anthropic, LiteLLM, and OpenRouter routes use `--autocompact 900k`; `vllm/*` uses `200k` to leave roughly 62k headroom in a 262k context, except locally served models with a smaller context — `vllm/qwen3-8b` compacts at `100k` inside its YaRN-extended 131k window (`docs/qwen3-8b-vllm.md`).
 3. Strict wrap-up and eligibility: ordinary working phases stop around budget − 20k (180k for a 200k attempt and 170k for a 190k executor). The 80k Uniform planner uses a larger 40k consolidation reserve, so exploration stops around 40k. If still below the hard allocation, the same transcript is resumed for one tool-free turn capped at the configured reserve; the harness, not the model, writes that response to `solution.md`. A phase ending beyond its hard allocation remains fully logged but is ineligible for grading or strategy extraction. Thus accepted artifacts respect the exact 200k/1.6M tiers even though provider billing may include one response-boundary overrun; allocated, realized, and overrun tokens are recorded separately.
 
 ## Problem data (never committed)
 
 Problems and hints are NOT in this repo — committing them would leak contest identity. They are fetched at runtime from the `notadib/math-contests-2026` Hugging Face repository with stdlib `urllib`, straight into memory (no `hf_hub`, no disk cache). The default `--dataset math-contests-2026` uses the four `hard_*` files below; `--dataset imobench` selects the corresponding `imobench_problems.jsonl`, `imobench_hints.jsonl`, `imobench_outlines.jsonl`, and `imobench_solutions.jsonl` files.
 
+`--dataset aime26` is the one **answer-graded** dataset (see below) and publishes only `aime26_problems.jsonl` and `aime26_solutions.jsonl`. Regenerate both from the pinned `math-ai/aime26` source with `python scripts/prepare_aime26.py` (writes `local_data/`, git-ignored) and upload them to the same Hugging Face repository, exactly as `scripts/prepare_imobench.py` works.
+
+### Running a dataset from local files — `--dataset-dir`
+
+`./run.sh <stage> --dataset-dir <host dir>` replaces the HuggingFace fetch with files already on disk, so a dataset can be run before (or without) being uploaded. `scripts/dataset_files.py` decides which of the dataset's published files this stage may see, `run.sh` copies exactly those into a private temp dir under the fixed container names, and they are handed to the container as a **tar stream on stdin**. Nothing extra is bind-mounted, so the copies the loader deletes before any agent spawns remain the only ones that ever exist inside the container — the same contamination invariant the prefetch path has. Reference solutions are staged for audit stages only; `selection.jsonl` only for the selection arms. A missing file fails the stage before the container starts.
+
+```bash
+python scripts/prepare_aime26.py          # writes local_data/
+./run.sh run   --dataset aime26 --dataset-dir local_data --arm baseline --model vllm/qwen3-8b
+./run.sh audit --dataset aime26 --dataset-dir local_data --arm baseline --model vllm/qwen3-8b
+```
+
+Do NOT bind-mount a dataset directory into the container instead: the mount would outlive the loader's delete-on-read and let a solver read every problem's answers or hints.
+
 - `hard_problems.jsonl` — statements. Only `problem_id`, `statement`, and `domain` (for `--domain` filtering) are kept; contest-identifying metadata is dropped at load and the prompt carries the statement alone.
 - `hard_hints.jsonl` — hint ladder source: scalar `hint` field → **h2** (the frozen ≤25-word oracle strategy hint, inserted verbatim). The loader derives **h1** deterministically: within each domain, sort `problem_id` lexicographically and give each problem the next problem's h2 hint, wrapping cyclically. This preserves the within-domain hint multiset while preventing self-assignment. The retired five-tag development file is archived on HuggingFace as `hard_hints-v1.jsonl` and is never fetched by the harness.
 - `hard_outlines.jsonl` — audited strategy outlines → **h3** (numbered steps; the `outline` and `outline-sequential` arms).
 - `hard_solutions.jsonl` — frozen human-verified references used by correctness and state annotation. Both receive the fixed outline-matching `reference_solutions[0]`, which alone carries `route_id: "hard_hint"`; correctness grading must still accept valid alternative routes.
 - `hard_hint_selection.jsonl` — one frozen proposal-seed-1 candidate set per `source_model` and `problem_id`. Each record contains the exact frozen oracle sketch and exactly three compressed generated strategies with a boolean `oracle_strategy_match` label. The harness rejects any proposal seed other than 1, oracle drift, missing labels, duplicate identities, or any count other than three.
+
+### Answer-graded datasets
+
+AIME publishes one integer answer per problem and no proof, so `--dataset aime26` grades by final-answer equivalence rather than by proof review. `aime26_solutions.jsonl` carries a scalar `answer` field in place of `reference_solutions`, and `prompts/audit_answer.md` replaces `prompts/audit.md` for the judge: it grades only the final answer, returns **7** for a value mathematically equal to the published answer and **0** otherwise, and never returns 5 or 6. The scale, the `score >= 5` success rule, and every downstream analysis path are therefore unchanged.
+
+Because the dataset publishes no oracle hints, outlines, reference proofs, or frozen sketches, its problems carry no hint tier at all, and the arms that need one are refused before any token is spent, naming the missing artifact. Runnable arms are the no-hint ones — `baseline`, `baseline-sequential`, `baseline-parallel`, `baseline-uniform-strategy`, `baseline-uniform-strategy-only`; refused are `hint`, `placebo-hint`, `outline`, both `*-sequential` hint arms, both late hint arms, both selection arms, and `baseline-uniform-compress`. State annotation is skipped for the whole dataset, since it scores submissions against reference outlines that do not exist. Results land in `results-aime26/`.
 
 In Docker, the entrypoint prefetches data BEFORE the egress firewall closes (HuggingFace stays blocked while agents run). Generation never receives reference solutions. Audit containers receive the frozen full-solution file; each loader consumes and deletes its temp copy before any agent spawns.
 
@@ -131,11 +151,14 @@ python scripts/build_selection_dataset.py
 ./run.sh run --arm baseline --problems id1,id2       # explicit subset
 ./run.sh run --arm baseline --seeds 1                # pilot: seed subset (run stage only)
 ./run.sh run --dataset imobench --arm baseline       # writes results-imobench/
+./run.sh run --dataset aime26 --arm baseline        # answer-graded; writes results-aime26/
+./run.sh run --dataset aime26 --dataset-dir local_data --arm baseline  # local files, no upload
 
 # model overrides (default: config.json; solver and judge must differ)
 ./run.sh run --arm baseline --model claude-fable-5 --audit-model claude-opus-4-8
 ./run.sh run --arm baseline --model litellm/gpt-5.4 --audit-model claude-opus-4-8
 ./run.sh run --arm baseline --model vllm/qed-nano --domain combinatorics --seeds 1
+./run.sh run --dataset aime26 --arm baseline --model vllm/qwen3-8b --seeds 1,2,3
 ./run.sh audit --arm baseline --model claude-fable-5 --audit-model openai/gpt-5.6-sol
 
 # audit (same container, same filters); compiles audit.jsonl
@@ -148,6 +171,7 @@ python scripts/build_selection_dataset.py
 ./run.sh audit --arm late-baseline-sequential --model litellm/gpt-5.4 --all-checkpoints  # includes 3x
 ./run.sh audit --arm late-hint-sequential --model litellm/gpt-5.4      # ordinary 1x/2x/4x schedule
 ./run.sh audit --dataset imobench --arm baseline     # correctness in results-imobench/
+./run.sh audit --dataset aime26 --arm baseline       # answer equivalence in results-aime26/
 
 # dev only — NO firewall, never for canonical data
 python -m src.run --arm baseline

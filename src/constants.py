@@ -52,6 +52,8 @@ ARM_AUDIT_FILENAME: str = "audit.jsonl"
 SEED_STATE_AUDIT_FILENAME: str = "state_audit.json"
 ARM_STATE_AUDIT_FILENAME: str = "state_audit.jsonl"
 # Grading scale (prompts/audit.md): 7 complete, 6/5 small fixable gap, 0 else.
+# Answer-graded datasets (prompts/audit_answer.md) use only 7 and 0, so the
+# same score >= 5 success rule reads identically across datasets.
 AUDIT_SCORES: tuple[int, ...] = (0, 5, 6, 7)
 AUDIT_SCORE_INVALID: int = 0
 # Judge scratch copies are archived beside the attempt they graded.
@@ -68,6 +70,8 @@ LATE_CONTINUATION_PROMPT_FILE: str = "late_continuation.md"
 UNIFORM_STRATEGY_PLAN_PROMPT_FILE: str = "uniform_strategy_plan.md"
 UNIFORM_STRATEGY_PLAN_WRAP_UP_PROMPT_FILE: str = "uniform_strategy_plan_wrap_up.md"
 AUDIT_PROMPT_FILE: str = "audit.md"
+# Answer-graded datasets replace proof review with final-answer equivalence.
+AUDIT_ANSWER_PROMPT_FILE: str = "audit_answer.md"
 STATE_AUDIT_PROMPT_FILE: str = "state_audit.md"
 STRATEGY_STATE_AUDIT_PROMPT_FILE: str = "strategy_state_audit.md"
 UNIFORM_COMPRESS_PROMPT_FILE: str = "uniform_compress.md"
@@ -80,8 +84,9 @@ SELECTION_WRAP_PROMPT_FILE: str = "selection_wrap.md"
 DATASET_ENV: str = "HARNESS_DATASET"
 DATASET_MATH_CONTESTS_2026: str = "math-contests-2026"
 DATASET_IMOBENCH: str = "imobench"
+DATASET_AIME26: str = "aime26"
 DATASET_NAMES: frozenset[str] = frozenset(
-    {DATASET_MATH_CONTESTS_2026, DATASET_IMOBENCH}
+    {DATASET_MATH_CONTESTS_2026, DATASET_IMOBENCH, DATASET_AIME26}
 )
 DATASET_NAME: str = os.environ.get(DATASET_ENV, DATASET_MATH_CONTESTS_2026)
 if DATASET_NAME not in DATASET_NAMES:
@@ -91,7 +96,9 @@ if DATASET_NAME not in DATASET_NAMES:
 _DATASET_BASE: str = (
     "https://huggingface.co/datasets/notadib/math-contests-2026/resolve/main"
 )
-_DATASET_FILES: dict[str, dict[str, str]] = {
+# A dataset without published proofs has no hint/outline/selection artifacts;
+# those entries are None and every strategy-dependent arm is refused up front.
+_DATASET_FILES: dict[str, dict[str, str | None]] = {
     DATASET_MATH_CONTESTS_2026: {
         "problems": "hard_problems.jsonl",
         "hints": "hard_hints.jsonl",
@@ -106,13 +113,34 @@ _DATASET_FILES: dict[str, dict[str, str]] = {
         "solutions": "imobench_solutions.jsonl",
         "selection": "imobench_hint_selection.jsonl",
     },
+    DATASET_AIME26: {
+        "problems": "aime26_problems.jsonl",
+        "hints": None,
+        "outlines": None,
+        "solutions": "aime26_solutions.jsonl",
+        "selection": None,
+    },
 }
 _ACTIVE_DATASET_FILES = _DATASET_FILES[DATASET_NAME]
+
+
+def _dataset_url(kind: str) -> str | None:
+    """Resolve one dataset file to its URL, or None when it does not exist."""
+    filename = _ACTIVE_DATASET_FILES[kind]
+    return None if filename is None else f"{_DATASET_BASE}/{filename}"
+
+
 PROBLEMS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['problems']}"
-HINTS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['hints']}"
-OUTLINES_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['outlines']}"
+HINTS_URL: str | None = _dataset_url("hints")
+OUTLINES_URL: str | None = _dataset_url("outlines")
 SOLUTIONS_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['solutions']}"
-SELECTION_URL: str = f"{_DATASET_BASE}/{_ACTIVE_DATASET_FILES['selection']}"
+SELECTION_URL: str | None = _dataset_url("selection")
+# AIME publishes a single integer answer and no proof, so its attempts are
+# graded by final-answer equivalence instead of reference-assisted proof review.
+DATASET_ANSWER_GRADED: bool = DATASET_NAME == DATASET_AIME26
+# The oracle hint, placebo, outline, selection, and compression arms all read
+# frozen strategy artifacts that only a proof dataset has.
+DATASET_HAS_STRATEGY_ARTIFACTS: bool = HINTS_URL is not None
 PROBLEMS_FILE_ENV: str = "PROBLEMS_FILE"
 HINTS_FILE_ENV: str = "HINTS_FILE"
 OUTLINES_FILE_ENV: str = "OUTLINES_FILE"
@@ -170,6 +198,7 @@ UNIFORM_COMPRESS_EXAMPLE_IDS: tuple[str, ...] = {
         "PB-Advanced-008",
         "PB-Advanced-012",
     ),
+    DATASET_AIME26: (),
 }[DATASET_NAME]
 
 # --- Phase labels ---------------------------------------------------------
@@ -269,6 +298,14 @@ GPT_5_4_MINI_AUTO_COMPACT_WINDOW: str = "300k"
 # The local proof models expose a 262k context. Compact at 200k, leaving about
 # 62k for the summary, current prompt, tools, and the next response.
 VLLM_AUTO_COMPACT_WINDOW: str = "200k"
+# Qwen3-8B is trained to 40,960 positions and is served with YaRN at 131,072
+# (scripts/serve_qwen.sbatch). Compact at 100k so the summary, prompt, tools,
+# and the next response still fit inside the extended window.
+QWEN3_8B_AUTO_COMPACT_WINDOW: str = "100k"
+# Served-model names whose context is smaller than VLLM_AUTO_COMPACT_WINDOW.
+VLLM_AUTO_COMPACT_WINDOW_OVERRIDES: dict[str, str] = {
+    "qwen3-8b": QWEN3_8B_AUTO_COMPACT_WINDOW,
+}
 # Claude's task-budget API rejects smaller values for current frontier models.
 # A late wrap-up may have fewer experiment tokens remaining; in that case the
 # provider receives this minimum while BudgetTracker still enforces the exact

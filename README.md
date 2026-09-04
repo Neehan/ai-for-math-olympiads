@@ -56,6 +56,16 @@ On the 23 problems that fail Baseline reliability:
 
 Thus current evidence strongly supports an access–execution separation: breadth recovers additional strategies, while externally supplying a verified strategy makes depth productive on nearly every failure. Selection remains unresolved until the 1× three-seed study and candidate-viability review are complete. The archived 20k and 40k runs are pilot data, not the primary selection result.
 
+## Datasets
+
+| Dataset | `--dataset` | Grading | Results tree |
+|---|---|---|---|
+| 35 fresh 2026 non-geometry problems | `math-contests-2026` (default) | Reference-assisted proof review | `results/` |
+| 22 non-geometry Advanced IMO-ProofBench problems | `imobench` | Reference-assisted proof review | `results-imobench/` |
+| 30 AIME 2026 problems | `aime26` | Final-answer equivalence | `results-aime26/` |
+
+AIME publishes a single integer answer per problem and no proof, so `aime26` is graded by final-answer equivalence (`prompts/audit_answer.md`, 7 for a matching answer and 0 otherwise) on the same ≥5 success rule. It therefore has no oracle hints, outlines, or reference proofs: only the no-hint arms run, every strategy-conditioned arm is refused up front, and state annotation is skipped. Rebuild its files with `python scripts/prepare_aime26.py`; `./run.sh ... --dataset-dir local_data` runs straight from those files without uploading them. Details are in `src/README.md`.
+
 ## Auditing
 
 - Proof success is audit score ≥5/7; report ≥6 and expert adjudication as sensitivities.

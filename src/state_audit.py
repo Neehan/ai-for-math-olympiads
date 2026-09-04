@@ -28,6 +28,8 @@ from src.concurrency import run_all
 from src.config import load_config, override_max_concurrency, override_models
 from src.constants import (
     CONFIG_PATH,
+    DATASET_HAS_STRATEGY_ARTIFACTS,
+    DATASET_NAME,
     LOG_FORMAT,
     LOG_LEVEL,
     MODE_PARALLEL,
@@ -611,6 +613,11 @@ async def main() -> None:
     if args.arm not in config.arms:
         raise SystemExit(f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}")
     arm = config.arms[args.arm]
+    if not DATASET_HAS_STRATEGY_ARTIFACTS:
+        raise SystemExit(
+            f"Dataset '{DATASET_NAME}' publishes no reference outlines or "
+            "proofs, which every state annotation is scored against."
+        )
     if arm.mode == MODE_UNIFORM_COMPRESS:
         raise SystemExit(
             "baseline-uniform-compress has no state-audit stage; audit the "

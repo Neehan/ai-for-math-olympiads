@@ -72,6 +72,7 @@ from src.constants import (
     VLLM_AGENT_SETTINGS_PATH,
     VLLM_API_KEY_ENV,
     VLLM_AUTO_COMPACT_WINDOW,
+    VLLM_AUTO_COMPACT_WINDOW_OVERRIDES,
     VLLM_BASE_URL_ENV,
     VLLM_MODEL_PREFIX,
 )
@@ -800,7 +801,12 @@ def agent_settings_path(model: str) -> Path:
 def auto_compact_window(model: str) -> str:
     """Return the transcript threshold appropriate to the model context."""
     if uses_vllm(model):
-        return VLLM_AUTO_COMPACT_WINDOW
+        # Locally served models do not all share the 262k proof-model context;
+        # compacting past a smaller one would overflow it instead of avoiding it.
+        served_name = provider_model_name(model)
+        return VLLM_AUTO_COMPACT_WINDOW_OVERRIDES.get(
+            served_name, VLLM_AUTO_COMPACT_WINDOW
+        )
     if provider_model_name(model).rsplit("/", 1)[-1] == "gpt-5.4-mini":
         return GPT_5_4_MINI_AUTO_COMPACT_WINDOW
     return AUTO_COMPACT_WINDOW

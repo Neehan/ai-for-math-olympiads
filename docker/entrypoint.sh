@@ -27,6 +27,13 @@ esac
 # file would be contaminated). The harness loader reads these files once and
 # deletes them before any agent spawns, so no trace remains.
 mkdir -p /run/contest
+if [ "${HARNESS_LOCAL_DATASET:-0}" = "1" ]; then
+    # run.sh --dataset-dir: the files arrive as a tar stream on stdin, already
+    # under the fixed names below. Nothing is bind-mounted, so the copies the
+    # loader deletes on read are the only ones that ever exist here.
+    tar -xf - -C /run/contest
+    echo "datasets received from the local stream"
+else
 python - <<'PY'
 import urllib.request
 from src.constants import HINTS_URL, OUTLINES_URL, PROBLEMS_URL
@@ -36,17 +43,29 @@ for url, name in [
     (HINTS_URL, "hints.jsonl"),
     (OUTLINES_URL, "outlines.jsonl"),
 ]:
+    # An answer-graded dataset publishes no hints or outlines to fetch.
+    if url is None:
+        continue
     with urllib.request.urlopen(url, timeout=60) as response:
         data = response.read()
     with open(f"/run/contest/{name}", "wb") as handle:
         handle.write(data)
 print("datasets prefetched")
 PY
+fi
 export PROBLEMS_FILE=/run/contest/problems.jsonl
-export HINTS_FILE=/run/contest/hints.jsonl
-export OUTLINES_FILE=/run/contest/outlines.jsonl
+# Point the loader at a prefetched file only when this dataset published one;
+# otherwise the env var would send it to a path that does not exist. Plain
+# `[ -f x ] && export y` would abort the whole script under `set -e`.
+if [ -f /run/contest/hints.jsonl ]; then
+    export HINTS_FILE=/run/contest/hints.jsonl
+fi
+if [ -f /run/contest/outlines.jsonl ]; then
+    export OUTLINES_FILE=/run/contest/outlines.jsonl
+fi
 case "${HARNESS_ARM:-}" in
     selection|selection-no-problem)
+        if [ "${HARNESS_LOCAL_DATASET:-0}" != "1" ]; then
         python - <<'PY'
 import urllib.request
 from src.constants import SELECTION_URL
@@ -57,10 +76,12 @@ with open("/run/contest/selection.jsonl", "wb") as handle:
     handle.write(data)
 print("selection candidates prefetched")
 PY
+        fi
         export SELECTION_FILE=/run/contest/selection.jsonl
         ;;
 esac
 if [ "$STAGE" = "audit" ] || [ "$STAGE" = "state-audit" ]; then
+    if [ "${HARNESS_LOCAL_DATASET:-0}" != "1" ]; then
     python - <<'PY'
 import urllib.request
 from src.constants import SOLUTIONS_URL
@@ -71,6 +92,7 @@ with open("/run/contest/solutions.jsonl", "wb") as handle:
     handle.write(data)
 print("reference solutions prefetched")
 PY
+    fi
     export SOLUTIONS_FILE=/run/contest/solutions.jsonl
 fi
 

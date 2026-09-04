@@ -35,7 +35,12 @@ from claude_agent_sdk import (
 
 from src.checkpoint import AttemptCheckpoint, protocol_fingerprint
 from src.concurrency import nested_controller_limit, run_all
-from src.config import load_config, override_max_concurrency, override_models
+from src.config import (
+    load_config,
+    override_max_concurrency,
+    override_models,
+    require_supported_arm,
+)
 from src.constants import (
     ALLOWED_TOOLS,
     AUDIT_SCORE_INVALID,
@@ -1012,6 +1017,7 @@ async def main() -> None:
             f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}"
         )
     arm = config.arms[args.arm]
+    require_supported_arm(arm)
     if arm.mode == MODE_UNIFORM_COMPRESS:
         raise SystemExit(
             "baseline-uniform-compress has no audit stage; audit the matching "

@@ -24,7 +24,7 @@ exec hf upload-large-folder \
     "$REPO_ID" . \
     --repo-type dataset \
     --private \
-    --include 'results/**' 'results-imobench/**' \
+    --include 'results/**' 'results-imobench/**' 'results-aime26/**' \
     --exclude '.DS_Store' '**/.DS_Store' \
     --num-workers "$WORKERS" \
     --no-bars

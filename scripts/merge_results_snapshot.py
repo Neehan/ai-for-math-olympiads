@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 
-RESULT_ROOTS = ("results", "results-imobench")
+RESULT_ROOTS = ("results", "results-imobench", "results-aime26")
 DERIVED_SEED_FILES = frozenset({"audit.json", "state_audit.json"})
 COMPILED_FILES = frozenset({"audit.jsonl", "state_audit.jsonl"})
 

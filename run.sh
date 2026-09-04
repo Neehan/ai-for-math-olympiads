@@ -29,7 +29,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ $# -lt 3 ] || { [ "$1" != "run" ] && [ "$1" != "audit" ]; }; then
-    echo "Usage: ./run.sh <run|audit> --arm <ARM> [--dataset math-contests-2026|imobench] [--problems id1,id2] [--domain d]" >&2
+    echo "Usage: ./run.sh <run|audit> --arm <ARM> [--dataset math-contests-2026|imobench|aime26] [--dataset-dir DIR] [--problems id1,id2] [--domain d]" >&2
     exit 2
 fi
 
@@ -37,6 +37,12 @@ fi
 # protected URLs fetched inside Docker and the host result tree. Strip the
 # public flag before forwarding the remaining arguments to Python.
 DATASET_NAME=math-contests-2026
+# Optional host directory holding this dataset's published jsonl files. Set, it
+# replaces the entrypoint's HuggingFace prefetch: the files are streamed into
+# the container on stdin instead. Nothing is bind-mounted, so the extracted
+# copies the loader deletes before any agent spawns remain the only ones that
+# ever exist inside the container.
+DATASET_DIR=""
 STAGE=$1
 shift
 FORWARD_ARGS=("$STAGE")
@@ -58,6 +64,22 @@ while [ $# -gt 0 ]; do
             fi
             shift
             ;;
+        --dataset-dir)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "ERROR: --dataset-dir requires a value" >&2
+                exit 2
+            fi
+            DATASET_DIR=$2
+            shift 2
+            ;;
+        --dataset-dir=*)
+            DATASET_DIR=${1#--dataset-dir=}
+            if [ -z "$DATASET_DIR" ]; then
+                echo "ERROR: --dataset-dir requires a value" >&2
+                exit 2
+            fi
+            shift
+            ;;
         *)
             FORWARD_ARGS+=("$1")
             shift
@@ -66,11 +88,18 @@ while [ $# -gt 0 ]; do
 done
 set -- "${FORWARD_ARGS[@]}"
 
+# aime26 is answer-graded: it publishes an integer answer per problem and no
+# proof, so it runs the no-hint arms only and skips state annotation entirely.
+DATASET_HAS_STRATEGY_ARTIFACTS=1
 case "$DATASET_NAME" in
     math-contests-2026) RESULTS_DIR_NAME=results ;;
     imobench) RESULTS_DIR_NAME=results-imobench ;;
+    aime26)
+        RESULTS_DIR_NAME=results-aime26
+        DATASET_HAS_STRATEGY_ARTIFACTS=0
+        ;;
     *)
-        echo "ERROR: unknown dataset '$DATASET_NAME' (expected math-contests-2026 or imobench)" >&2
+        echo "ERROR: unknown dataset '$DATASET_NAME' (expected math-contests-2026, imobench, or aime26)" >&2
         exit 2
         ;;
 esac
@@ -298,6 +327,7 @@ done < <(compgen -v | grep -E "$TOKEN_PATTERN")
 
 RESULTS_MOUNT="$RESULTS_HOST_ROOT"
 STAGING=""
+LOCAL_DATASET_STAGE=""
 cleanup_completed_checkpoints() {
     if [ ! -d "$CHECKPOINT_MOUNT/attempts" ]; then
         return
@@ -318,6 +348,9 @@ merge_staging() {
 finish_stage() {
     merge_staging
     cleanup_completed_checkpoints
+    if [ -n "$LOCAL_DATASET_STAGE" ] && [ -d "$LOCAL_DATASET_STAGE" ]; then
+        rm -rf "$LOCAL_DATASET_STAGE"
+    fi
 }
 trap finish_stage EXIT
 
@@ -366,24 +399,69 @@ if [ "$1" = "run" ]; then
     checkpoint_args=(-e HARNESS_DEFER_CHECKPOINT_CLEANUP=1)
 fi
 
+# --dataset-dir: stage exactly the files this stage may see under the fixed
+# names the entrypoint writes, then hand them to the container as a tar stream
+# on stdin. Reference solutions are staged for audit stages only, exactly as
+# the HuggingFace prefetch path decides.
+local_dataset_args=()
+stage_local_dataset() {
+    if [ -z "$DATASET_DIR" ]; then
+        return
+    fi
+    if [ ! -d "$DATASET_DIR" ]; then
+        echo "ERROR: --dataset-dir '$DATASET_DIR' is not a directory" >&2
+        exit 2
+    fi
+    LOCAL_DATASET_STAGE=$(mktemp -d)
+    chmod 700 "$LOCAL_DATASET_STAGE"
+    selection_flag=()
+    if [ "$IS_SELECTION_ARM" -eq 1 ]; then
+        selection_flag=(--selection-arm)
+    fi
+    if ! dataset_file_list=$(HARNESS_DATASET="$DATASET_NAME" \
+        python scripts/dataset_files.py "$1" \
+        ${selection_flag[@]+"${selection_flag[@]}"}); then
+        echo "ERROR: could not list files for dataset '$DATASET_NAME'" >&2
+        exit 2
+    fi
+    while read -r container_name published_name; do
+        if [ ! -f "$DATASET_DIR/$published_name" ]; then
+            echo "ERROR: --dataset-dir '$DATASET_DIR' is missing $published_name" >&2
+            exit 2
+        fi
+        cp "$DATASET_DIR/$published_name" "$LOCAL_DATASET_STAGE/$container_name"
+    done <<< "$dataset_file_list"
+    local_dataset_args=(-i -e HARNESS_LOCAL_DATASET=1)
+    echo "local dataset: streaming $(ls "$LOCAL_DATASET_STAGE" | tr '\n' ' ')from $DATASET_DIR"
+}
+stage_local_dataset "$1"
+
 # Bash 3.2 + nounset rejects "${empty_array[@]}"; the guarded form emits zero
 # arguments when an optional array is empty.
-docker run --rm --cap-add=NET_ADMIN \
-    ${token_args[@]+"${token_args[@]}"} \
-    ${checkpoint_args[@]+"${checkpoint_args[@]}"} \
-    ${network_args[@]+"${network_args[@]}"} \
-    -v "$PWD/prompts:/app/prompts:ro" \
-    -v "$PWD/config.json:/app/config.json:ro" \
-    -v "$PWD/agent_settings.json:/app/agent_settings.json:ro" \
-    -v "$PWD/agent_settings_small.json:/app/agent_settings_small.json:ro" \
-    -v "$RESULTS_MOUNT:/app/results" \
-    -v "$CHECKPOINT_MOUNT:/c" \
-    -e HARNESS_CHECKPOINT_ROOT=/c \
-    -e "HARNESS_DATASET=$DATASET_NAME" \
-    -e "HARNESS_ARM=$ARM_NAME" \
-    -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND" \
-    -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL" \
-    "$IMAGE" "$@"
+harness_container=(docker run --rm --cap-add=NET_ADMIN
+    ${token_args[@]+"${token_args[@]}"}
+    ${checkpoint_args[@]+"${checkpoint_args[@]}"}
+    ${network_args[@]+"${network_args[@]}"}
+    ${local_dataset_args[@]+"${local_dataset_args[@]}"}
+    -v "$PWD/prompts:/app/prompts:ro"
+    -v "$PWD/config.json:/app/config.json:ro"
+    -v "$PWD/agent_settings.json:/app/agent_settings.json:ro"
+    -v "$PWD/agent_settings_small.json:/app/agent_settings_small.json:ro"
+    -v "$RESULTS_MOUNT:/app/results"
+    -v "$CHECKPOINT_MOUNT:/c"
+    -e HARNESS_CHECKPOINT_ROOT=/c
+    -e "HARNESS_DATASET=$DATASET_NAME"
+    -e "HARNESS_ARM=$ARM_NAME"
+    -e "HARNESS_PROVIDER_KIND=$PROVIDER_KIND"
+    -e "HARNESS_OPENROUTER_ALLOWED_MODEL=$ACTIVE_MODEL"
+    "$IMAGE" "$@")
+
+if [ -n "$LOCAL_DATASET_STAGE" ]; then
+    # pipefail is set, so a failure in either half still fails the stage.
+    tar -C "$LOCAL_DATASET_STAGE" -cf - . | "${harness_container[@]}"
+else
+    "${harness_container[@]}"
+fi
 
 if [ "$1" = "run" ] && [ "$IS_SELECTION_ARM" -eq 1 ]; then
     # Merge the isolated per-attempt outputs before compiling the complete arm.
@@ -409,7 +487,10 @@ esac
 
 # State annotation runs in a fresh reference-bearing container. Keep the
 # existing checkpoint namespace for the primary dataset and isolate IMO-Bench.
-if [ "$1" = "audit" ] && [ "$RUN_STATE_AUDIT" -eq 1 ]; then
+if [ "$1" = "audit" ] && [ "$RUN_STATE_AUDIT" -eq 1 ] && \
+   [ "$DATASET_HAS_STRATEGY_ARTIFACTS" -eq 0 ]; then
+    echo "state audit skipped for dataset '$DATASET_NAME' (no reference outlines)"
+elif [ "$1" = "audit" ] && [ "$RUN_STATE_AUDIT" -eq 1 ]; then
     if [ "$DATASET_NAME" = "math-contests-2026" ]; then
         STATE_CHECKPOINT_MOUNT="$PWD/.session-checkpoints/state-audit"
     else

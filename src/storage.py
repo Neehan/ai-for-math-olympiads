@@ -25,6 +25,9 @@ from src.constants import (
     ARM_AUDIT_FILENAME,
     ARM_STATE_AUDIT_FILENAME,
     AUDIT_SCRATCH_SUBDIR,
+    DATASET_ANSWER_GRADED,
+    DATASET_HAS_STRATEGY_ARTIFACTS,
+    DATASET_NAME,
     FETCH_TIMEOUT_SECONDS,
     HINTS_FILE_ENV,
     HINTS_URL,
@@ -113,7 +116,7 @@ def _token_accounting_status(
     return "provider_reported_complete"
 
 
-def _fetch_jsonl(env_name: str, url: str) -> list[dict[str, Any]]:
+def _fetch_jsonl(env_name: str, url: str | None) -> list[dict[str, Any]]:
     """Load one jsonl data source into memory, leaving no trace on disk.
 
     If the env var points at a prefetched file (Docker: downloaded by the
@@ -126,6 +129,8 @@ def _fetch_jsonl(env_name: str, url: str) -> list[dict[str, Any]]:
         path = Path(path_value)
         text = path.read_text(encoding="utf-8")
         path.unlink()
+    elif url is None:
+        raise ValueError(f"Dataset {DATASET_NAME!r} publishes no {env_name} source")
     else:
         with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_SECONDS) as response:
             text = response.read().decode("utf-8")
@@ -173,6 +178,25 @@ def _domain_shifted_placebos(
     return placebos
 
 
+def _load_problems_without_hints() -> list[Problem]:
+    """Load an answer-graded dataset, which publishes no strategy artifacts.
+
+    Every hint tier is absent rather than empty, so the arms that need one are
+    refused by their entrypoint instead of silently running unhinted.
+    """
+    return [
+        Problem(
+            problem_id=record["problem_id"],
+            statement=record["statement"],
+            domain=record["domain"],
+            hint_h1=None,
+            hint_h2=None,
+            hint_h3=None,
+        )
+        for record in _fetch_jsonl(PROBLEMS_FILE_ENV, PROBLEMS_URL)
+    ]
+
+
 def load_problems() -> list[Problem]:
     """Fetch problems + hints + outlines and join them by problem_id.
 
@@ -181,7 +205,10 @@ def load_problems() -> list[Problem]:
     h1 = deterministic within-domain cyclic shift of the frozen h2 hints,
     h2 = the frozen one-sentence strategy hint from the hints file's scalar
     'hint' field, h3 = strategy outline (numbered steps; used by outline arms).
+    A dataset that publishes no proofs has none of these tiers.
     """
+    if not DATASET_HAS_STRATEGY_ARTIFACTS:
+        return _load_problems_without_hints()
     hints_by_id = {r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)}
     steps_by_id = {
         r["problem_id"]: r["steps"]
@@ -339,6 +366,22 @@ def _outline_reference(record: dict[str, Any]) -> str:
     return solution.strip()
 
 
+def _answer_reference(record: dict[str, Any]) -> str:
+    """Read the published answer an answer-graded dataset grades against."""
+    problem_id = record.get("problem_id")
+    answer = record.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        raise ValueError(f"{problem_id}: no published answer")
+    return answer.strip()
+
+
+def _correctness_reference(record: dict[str, Any]) -> str:
+    """Return whichever ground truth this dataset's judge grades against."""
+    if DATASET_ANSWER_GRADED:
+        return _answer_reference(record)
+    return _outline_reference(record)
+
+
 def load_audit_references() -> dict[str, tuple[str, str]]:
     """Load problem statements and the fixed index-0 correctness reference."""
     references: dict[str, tuple[str, str]] = {}
@@ -349,7 +392,7 @@ def load_audit_references() -> dict[str, tuple[str, str]]:
             raise ValueError("Malformed hard-solutions identity")
         if problem_id in references:
             raise ValueError(f"Duplicate hard-solutions problem_id: {problem_id}")
-        references[problem_id] = (statement.strip(), _outline_reference(record))
+        references[problem_id] = (statement.strip(), _correctness_reference(record))
     return references
 
 

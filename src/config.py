@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 
 from src.constants import (
+    DATASET_HAS_STRATEGY_ARTIFACTS,
+    DATASET_NAME,
     HINT_KINDS,
     HINT_NONE,
     MODE_PARALLEL,
@@ -227,6 +229,34 @@ def load_config(path: Path) -> ExperimentConfig:
         raise ValueError(f"{path}: max_concurrency must be >= 1")
     _check_judge_differs(config, str(path))
     return config
+
+
+def unsupported_arm_reason(arm: ArmConfig) -> str | None:
+    """Explain why the active dataset cannot run this arm, else None.
+
+    config.json defines the full arm vocabulary for every dataset, but a
+    dataset that publishes no proofs also publishes no oracle hints, outlines,
+    or frozen sketches. Naming the missing artifact keeps the refusal
+    actionable instead of surfacing as a per-problem join failure.
+    """
+    if DATASET_HAS_STRATEGY_ARTIFACTS:
+        return None
+    if arm.hint != HINT_NONE:
+        return f"it needs the frozen '{arm.hint}' strategy hint"
+    if arm.mode in {MODE_SELECTION, MODE_SELECTION_NO_PROBLEM}:
+        return "it needs the frozen selection candidate set"
+    if arm.mode == MODE_UNIFORM_COMPRESS:
+        return "it needs frozen oracle sketches as compression examples"
+    return None
+
+
+def require_supported_arm(arm: ArmConfig) -> None:
+    """Refuse an arm the active dataset has no artifacts for."""
+    reason = unsupported_arm_reason(arm)
+    if reason is not None:
+        raise SystemExit(
+            f"Arm '{arm.name}' cannot run on dataset '{DATASET_NAME}': {reason}."
+        )
 
 
 def _check_judge_differs(config: ExperimentConfig, where: str) -> None:

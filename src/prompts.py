@@ -8,7 +8,9 @@ statements or templates can never break substitution.
 import re
 
 from src.constants import (
+    AUDIT_ANSWER_PROMPT_FILE,
     AUDIT_PROMPT_FILE,
+    DATASET_ANSWER_GRADED,
     CRITIQUE_PROMPT_FILE,
     HINT_PROMPT_FILE,
     LATE_CONTINUATION_PROMPT_FILE,
@@ -168,9 +170,24 @@ def uniform_strategy_execute_prompt(
 def audit_prompt(
     problem: Problem, reference_solution: str, solution_text: str
 ) -> str:
-    """Reference-assisted correctness prompt for one standalone solution."""
+    """Correctness prompt for one standalone solution.
+
+    On a proof dataset the reference is a verified solution and the judge
+    grades the proof. On an answer-graded dataset it is the published answer
+    and the judge only checks final-answer equivalence, so both paths return
+    the same {0, 5, 6, 7} scale and the same score >= 5 success rule.
+    """
     if not reference_solution.strip():
         raise ValueError(f"{problem.problem_id}: no verified reference solution")
+    if DATASET_ANSWER_GRADED:
+        return _render(
+            _load(AUDIT_ANSWER_PROMPT_FILE),
+            {
+                "statement": problem.statement.strip(),
+                "reference_answer": reference_solution.strip(),
+                "solution": solution_text.strip(),
+            },
+        )
     return _render(
         _load(AUDIT_PROMPT_FILE),
         {
