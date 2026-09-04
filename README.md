@@ -68,6 +68,31 @@ Thus current evidence strongly supports an access–execution separation: breadt
 
 Run the complete study on the 35 fresh 2026 non-geometry problems. The primary GPT-5.4 depth-versus-breadth comparison uses three 8× Self-Refine trajectories and three Parallel-8 banks on every problem. Replicate the core unaided-versus-oracle comparison on the 22 non-geometry Advanced IMO-ProofBench problems. Claims are bounded to the tested finite budgets and search procedures.
 
+## Allocation-model report
+
+Recompute the observed and predicted curves in the paper directly from the
+compiled Parallel, oracle-plan, and unaided audit files:
+
+```bash
+uv run python scripts/report_allocation_model.py
+```
+
+The report implements the unbiased finite-bank estimator in Equation 7. It
+uses exact enumeration over ordered observations without replacement; it does
+not use Monte Carlo sampling or the biased plug-in transformation
+`1 - (1 - s_hat)^N`. Each run first checks the compressed calculation against
+a literal permutation enumeration on small examples, then prints the observed
+counts, predicted counts, MAE, RMSE, and TeX coordinates for every populated
+allocation panel. Use `--profile gpt54-n2` to select one panel or `--json` for
+machine-readable output.
+
+The observed two-arm curves pair `baseline-sequential` and
+`late-baseline-sequential` only when both have the same problem ID and seed.
+The prediction never reads their proof outcomes: it uses only
+`baseline-parallel/state_audit.jsonl` for plan acquisition and
+`hint-sequential/audit.jsonl` for conditional execution. Proof success is an
+audit score of at least 5 by default.
+
 ## Results backup
 
 Set `HF_TOKEN` in `.env`. Pull and safely merge the remote active result trees
