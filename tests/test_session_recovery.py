@@ -1149,9 +1149,13 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         config = load_config(CONFIG_PATH)
         baseline = config.arms["baseline"].seeds
         banks = config.arms["baseline-parallel"].seeds
+        baseline_2x = config.arms["baseline-sequential-2x"]
         self.assertEqual(config.max_concurrency, 8)
         self.assertEqual(baseline, [1, 2, 3])
         self.assertEqual(banks, [1, 2, 3])
+        self.assertEqual(baseline_2x.mode, "sequential")
+        self.assertEqual(baseline_2x.budget_units, 2)
+        self.assertEqual(baseline_2x.seeds, list(range(1, 13)))
 
     def test_uniform_strategy_bank_is_exactly_budget_matched(self) -> None:
         config = load_config(CONFIG_PATH)
@@ -1237,6 +1241,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "gpt-5.4-mini",
             "gpt-5.5",
             "gpt-5.6-luna",
+            "gpt-5.6-terra",
             "gpt-5.6-sol",
         ):
             with self.subTest(provider_name=provider_name):

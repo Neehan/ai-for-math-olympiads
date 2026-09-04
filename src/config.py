@@ -8,6 +8,7 @@ from src.constants import (
     HINT_KINDS,
     HINT_NONE,
     MODE_PARALLEL,
+    MODE_SEQUENTIAL,
     MODE_SINGLE,
     MODE_UNIFORM_STRATEGY,
     MODE_UNIFORM_STRATEGY_ONLY,
@@ -189,6 +190,19 @@ def load_config(path: Path) -> ExperimentConfig:
         raise ValueError(
             f"{path}: baseline-parallel must use fresh 8x no-hint banks "
             "with seeds [1, 2, 3]"
+        )
+    baseline_2x = config.arms.get("baseline-sequential-2x")
+    if baseline_2x is None:
+        raise ValueError(f"{path}: baseline-sequential-2x arm is required")
+    if (
+        baseline_2x.hint != HINT_NONE
+        or baseline_2x.mode != MODE_SEQUENTIAL
+        or baseline_2x.budget_units != 2
+        or baseline_2x.seeds != list(range(1, 13))
+    ):
+        raise ValueError(
+            f"{path}: baseline-sequential-2x must use no hint, sequential "
+            "mode, two total budget units, and seeds 1 through 12"
         )
     hint = config.arms.get("hint")
     if hint is None:

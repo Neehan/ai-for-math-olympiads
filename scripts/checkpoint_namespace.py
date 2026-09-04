@@ -24,6 +24,7 @@ _LATE_INTERVENTION_ARMS = {
     "late-intervention",
 }
 _LATE_CONTINUATION_PROMPT = "late_continuation.md"
+_TWO_BLOCK_SEQUENTIAL_ARM = "baseline-sequential-2x"
 _LEGACY_SELECTION_CONFIG = (
     b'  "selection_output_tokens": { "selection": 40000, '
     b'"selection-no-problem": 40000 },\n'
@@ -48,6 +49,14 @@ def namespace(arguments: list[str], settings_path: Path) -> str:
     digest = hashlib.sha256("\0".join(arguments).encode())
 
     config_bytes = Path("config.json").read_bytes()
+    # Adding this independent replication arm must not move paid checkpoints
+    # for any existing arm. The new arm remains fully bound in its namespace.
+    if arm != _TWO_BLOCK_SEQUENTIAL_ARM:
+        config_bytes = b"".join(
+            line
+            for line in config_bytes.splitlines(keepends=True)
+            if f'"{_TWO_BLOCK_SEQUENTIAL_ARM}"'.encode() not in line
+        )
     if arm not in _LATE_INTERVENTION_ARMS:
         config_bytes = b"".join(
             line
