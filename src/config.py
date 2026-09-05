@@ -204,6 +204,19 @@ def load_config(path: Path) -> ExperimentConfig:
             f"{path}: baseline-sequential-2x must use no hint, sequential "
             "mode, two total budget units, and seeds 1 through 12"
         )
+    baseline_4x = config.arms.get("baseline-sequential-4x")
+    if baseline_4x is None:
+        raise ValueError(f"{path}: baseline-sequential-4x arm is required")
+    if (
+        baseline_4x.hint != HINT_NONE
+        or baseline_4x.mode != MODE_SEQUENTIAL
+        or baseline_4x.budget_units != 4
+        or baseline_4x.seeds != list(range(1, 7))
+    ):
+        raise ValueError(
+            f"{path}: baseline-sequential-4x must use no hint, sequential "
+            "mode, four total budget units, and seeds 1 through 6"
+        )
     hint = config.arms.get("hint")
     if hint is None:
         raise ValueError(f"{path}: hint arm is required")

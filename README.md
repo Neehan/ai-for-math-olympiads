@@ -24,6 +24,7 @@ One compute unit is at most 200k eligible output tokens.
 | `baseline` | Three independent 1× proofs | Initial end-to-end capability; cohort screen for secondary analyses |
 | `baseline-sequential` | Three Self-Refine trajectories through 8× | End-to-end depth; proposal and execution remain mixed |
 | `baseline-sequential-2x` | Twelve independent Self-Refine trajectories through 2× | Three homogeneous observed trials of the $N=4,K=2$ allocation |
+| `baseline-sequential-4x` | Six independent Self-Refine trajectories through 4× | Three homogeneous observed trials of the $N=2,K=4$ allocation |
 | `baseline-parallel` | Three bank seeds, each with eight independent 1× proofs | End-to-end breadth and eventual strategy access, not proposal alone |
 | `baseline-uniform-strategy` | One 80k extractor and eight 190k executors | Explicit plans followed by balanced execution; cross-plan selection is bypassed |
 | `baseline-uniform-strategy-only` | The frozen seed-1 planner artifacts without executors | Explicit proposal coverage for the realized Uniform-C bank |

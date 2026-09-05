@@ -402,7 +402,7 @@ fi
 # Standalone fixed-compute arms stop after correctness grading.
 RUN_STATE_AUDIT=0
 case "$ARM_NAME" in
-    baseline-sequential|baseline-sequential-2x|hint-sequential|late-baseline-sequential|late-hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only)
+    baseline-sequential|baseline-sequential-2x|baseline-sequential-4x|hint-sequential|late-baseline-sequential|late-hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only)
         RUN_STATE_AUDIT=1
         ;;
 esac
