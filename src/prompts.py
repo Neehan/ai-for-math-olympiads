@@ -187,7 +187,7 @@ def state_audit_prompt(
     reference_solution: str,
     solution_text: str,
 ) -> str:
-    """Reference-guided outline annotation for one unsolved solution artifact."""
+    """Reference-guided outline annotation for one solution artifact."""
     return _render(
         _load(STATE_AUDIT_PROMPT_FILE),
         {

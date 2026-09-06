@@ -28,8 +28,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-if [ $# -lt 3 ] || { [ "$1" != "run" ] && [ "$1" != "audit" ]; }; then
-    echo "Usage: ./run.sh <run|audit> --arm <ARM> [--dataset math-contests-2026|imobench] [--problems id1,id2] [--domain d]" >&2
+if [ $# -lt 3 ] || { [ "$1" != "run" ] && [ "$1" != "audit" ] && [ "$1" != "state-audit" ]; }; then
+    echo "Usage: ./run.sh <run|audit|state-audit> --arm <ARM> [--dataset math-contests-2026|imobench] [--problems id1,id2] [--domain d]" >&2
     exit 2
 fi
 

@@ -1,14 +1,14 @@
 """Annotate observable route-progress states for every audited proof artifact.
 
-Correctness remains owned by ``audit.json``.  For proof trajectories, this stage
-reuses those immutable scores: a passing checkpoint or complete 3/3 strategy recognition enters S;
-missing solution text remains unobserved; only nonempty score-below-5 artifacts
-receive a reference-guided three-step outline annotation.  Before acquisition,
-an increased but incomplete recognized-step count is P and a flat or decreasing
-incomplete count is U.  S is carried forward after first complete strategy
-acquisition.  The first artifact is compared with zero recognized steps.  The
-final state is derived by code, not selected by the annotator. Raw planner
-proposals use a separate binary frozen-oracle-strategy match audit.
+Correctness remains owned by ``audit.json``.  Every nonempty proof artifact is
+independently annotated against the frozen three-step oracle outline, regardless
+of its correctness score.  Missing solution text remains unobserved.  Before
+acquisition, an increased but incomplete recognized-step count is P and a flat
+or decreasing incomplete count is U.  S is carried forward after first complete
+oracle-strategy acquisition, while the per-artifact ``steps`` always describe
+the current written proof.  The first artifact is compared with zero recognized
+steps.  The final state is derived by code, not selected by the annotator. Raw
+planner proposals use a separate binary frozen-oracle-strategy match audit.
 """
 
 from __future__ import annotations
@@ -157,34 +157,33 @@ def _solution_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _proof_acquired_checkpoint(text: str, audit_model: str) -> dict[str, object]:
-    return {
-        "state": "S",
-        "steps": [],
-        "note": (
-            "Correctness audit passed; complete strategy acquisition assigned "
-            "mechanically."
-        ),
-        "solution_sha256": _solution_sha256(text),
-        "audit_model": audit_model,
-    }
+def _steps_complete(record: object) -> bool:
+    """Return whether a nonempty artifact has a complete three-step annotation."""
+    if not isinstance(record, dict):
+        return False
+    steps = record.get("steps")
+    return isinstance(steps, list) and len(steps) == 3
 
 
-def _carried_acquired_checkpoint(
-    text: str | None, audit_model: str
-) -> dict[str, object]:
-    record: dict[str, object] = {
-        "state": "S",
-        "steps": [],
-        "note": (
-            "A complete strategy was observed earlier; acquired state is carried "
-            "forward."
-        ),
-        "audit_model": audit_model,
-    }
-    if text is not None and text.strip():
-        record["solution_sha256"] = _solution_sha256(text)
-    return record
+def _state_record_current(
+    record: object, expected_cut_labels: set[str]
+) -> bool:
+    """Reject legacy records that skipped annotation for nonempty proofs."""
+    if not isinstance(record, dict):
+        return False
+    cuts = record.get("budget_cuts", {})
+    if not isinstance(cuts, dict) or not expected_cut_labels.issubset(cuts):
+        return False
+    records = [record, *(cuts[label] for label in expected_cut_labels)]
+    for item in records:
+        if not isinstance(item, dict):
+            return False
+        if (
+            isinstance(item.get("solution_sha256"), str)
+            and not _steps_complete(item)
+        ):
+            return False
+    return True
 
 
 def _proof_artifacts(
@@ -273,14 +272,8 @@ async def state_audit_seed(
         if not isinstance(loaded_state, dict):
             raise ValueError("Existing state audit is malformed")
         existing_state = loaded_state
-        existing_cuts = loaded_state.get("budget_cuts", {})
-        complete = isinstance(existing_cuts, dict) and expected_cut_labels.issubset(
-            existing_cuts
-        )
-        if complete:
+        if _state_record_current(loaded_state, expected_cut_labels):
             return
-    if state_path.exists() and not all_checkpoints:
-        return
     checkpoint = AttemptCheckpoint(
         {
             "stage": "state_audit",
@@ -324,26 +317,14 @@ async def state_audit_seed(
                     verdict_cache[digest] = ({"steps": steps}, record_model)
         previous_recognized_steps = 0
         acquired_seen = False
-        acquired_audit_model: str | None = None
-        for label, text, proof_score, proof_audit_model in artifacts:
+        for label, text, proof_score, _proof_audit_model in artifacts:
             if (text is None or not text.strip()) and proof_score >= 5:
                 raise ValueError(
                     f"{problem.problem_id} {label}: passing proof audit has "
                     "no solution text"
                 )
-            if acquired_seen:
-                assert acquired_audit_model is not None
-                records[label] = _carried_acquired_checkpoint(
-                    text, acquired_audit_model
-                )
-                continue
             if text is None or not text.strip():
                 records[label] = _missing_checkpoint()
-                continue
-            if proof_score >= 5:
-                records[label] = _proof_acquired_checkpoint(text, proof_audit_model)
-                acquired_seen = True
-                acquired_audit_model = proof_audit_model
                 continue
 
             digest = _solution_sha256(text)
@@ -368,9 +349,10 @@ async def state_audit_seed(
             else:
                 verdict, audit_model = cached
 
-            state, current_recognized_steps = derive_state(
+            instantaneous_state, current_recognized_steps = derive_state(
                 verdict, previous_recognized_steps
             )
+            state = "S" if acquired_seen else instantaneous_state
             raw_steps = verdict["steps"]
             if not isinstance(raw_steps, list):
                 raise TypeError("State-audit steps are not a list")
@@ -380,7 +362,10 @@ async def state_audit_seed(
                 "note": (
                     "All three outline steps are recognized; complete strategy "
                     "acquired."
-                    if state == "S"
+                    if current_recognized_steps == 3
+                    else "A complete strategy was observed earlier; current "
+                    f"artifact recognizes {current_recognized_steps}/3 outline steps."
+                    if acquired_seen
                     else "Recognized outline-step count increased from "
                     f"{previous_recognized_steps}/3 to "
                     f"{current_recognized_steps}/3."
@@ -394,9 +379,8 @@ async def state_audit_seed(
             }
             records[label] = record
             previous_recognized_steps = current_recognized_steps
-            if state == "S":
+            if instantaneous_state == "S":
                 acquired_seen = True
-                acquired_audit_model = audit_model
 
         final_label = f"{arm.budget_units}x"
         final_checkpoint = records.pop(final_label)
@@ -606,7 +590,12 @@ async def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
-    config = override_models(load_config(CONFIG_PATH), args.model, args.audit_model)
+    config = override_models(
+        load_config(CONFIG_PATH),
+        args.model,
+        args.audit_model,
+        allow_same_model=True,
+    )
     config = override_max_concurrency(config, args.max_concurrency)
     if args.arm not in config.arms:
         raise SystemExit(f"Unknown arm '{args.arm}'; config defines {sorted(config.arms)}")
@@ -741,17 +730,21 @@ async def main() -> None:
         path = output_dir / SEED_STATE_AUDIT_FILENAME
         if not path.exists():
             return False
-        if not args.all_checkpoints:
-            return True
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return False
-        cuts = record.get("budget_cuts")
-        return isinstance(cuts, dict) and all(
-            f"{multiplier}x" in cuts
-            for multiplier in all_budget_cut_multipliers(arm.budget_units)
+        cut_multipliers = (
+            all_budget_cut_multipliers(arm.budget_units)
+            if args.all_checkpoints
+            else budget_cut_multipliers(arm.budget_units)
+            if arm.mode == MODE_SEQUENTIAL
+            else []
         )
+        expected_cut_labels = {
+            f"{multiplier}x" for multiplier in cut_multipliers
+        }
+        return _state_record_current(record, expected_cut_labels)
 
     pending = [target for target in targets if not state_done(target[2])]
 

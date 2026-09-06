@@ -10,9 +10,11 @@ from unittest.mock import AsyncMock, patch
 import anyio
 import zstandard
 
+from src.config import override_models
 from src.models import ArmConfig, ExperimentConfig, Problem
 from src.state_audit import (
     _bank_targets,
+    _state_record_current,
     derive_state,
     recognized_step_count,
     state_audit_seed,
@@ -63,6 +65,29 @@ def _config(arm: ArmConfig) -> ExperimentConfig:
 
 
 class StateDerivationTests(unittest.TestCase):
+    def test_state_audit_may_use_the_solver_model_as_annotator(self) -> None:
+        arm = ArmConfig("baseline", "none", "single", 1, [1])
+        config = _config(arm)
+        effective = override_models(
+            config, "same-model", "same-model", allow_same_model=True
+        )
+        self.assertEqual(effective.model, effective.audit_model)
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            override_models(config, "same-model", "same-model")
+
+    def test_legacy_empty_steps_are_stale_only_for_nonempty_artifacts(self) -> None:
+        self.assertFalse(
+            _state_record_current(
+                {"solution_sha256": "digest", "steps": [], "budget_cuts": {}},
+                set(),
+            )
+        )
+        self.assertTrue(
+            _state_record_current(
+                {"state": None, "steps": [], "budget_cuts": {}}, set()
+            )
+        )
+
     def test_complete_step_count_is_acquired(self) -> None:
         self.assertEqual(
             derive_state(
@@ -639,14 +664,17 @@ class StateAuditSeedTests(unittest.TestCase):
                     "A full outline-matching reference proof.",
                 )
 
-            self.assertEqual(judge.await_count, 1)
-            call = judge.await_args
-            self.assertIsNotNone(call)
-            assert call is not None
-            rendered_prompt = call.args[1]
-            self.assertIn("A full outline-matching reference proof.", rendered_prompt)
-            self.assertIn("1. First route step.", rendered_prompt)
-            self.assertIn(unsolved.strip(), rendered_prompt)
+            self.assertEqual(judge.await_count, 2)
+            rendered_prompts = [call.args[1] for call in judge.await_args_list]
+            for rendered_prompt in rendered_prompts:
+                self.assertIn(
+                    "A full outline-matching reference proof.", rendered_prompt
+                )
+                self.assertIn("1. First route step.", rendered_prompt)
+            self.assertTrue(
+                any(unsolved.strip() in prompt for prompt in rendered_prompts)
+            )
+            self.assertTrue(any(solved.strip() in prompt for prompt in rendered_prompts))
             record = json.loads(
                 (output / "state_audit.json").read_text(encoding="utf-8")
             )
@@ -673,14 +701,14 @@ class StateAuditSeedTests(unittest.TestCase):
             self.assertEqual(record["budget_cuts"]["4x"]["state"], "S")
             self.assertEqual(
                 record["budget_cuts"]["4x"]["note"],
-                "A complete strategy was observed earlier; acquired state is carried forward.",
+                "All three outline steps are recognized; complete strategy acquired.",
             )
             self.assertEqual(
                 record["budget_cuts"]["2x"]["solution_sha256"],
                 hashlib.sha256(unsolved.encode("utf-8")).hexdigest(),
             )
             self.assertEqual(record["state"], "S")
-            self.assertEqual(record["steps"], [])
+            self.assertEqual(len(record["steps"]), 3)
             self.assertEqual(
                 record["solution_sha256"],
                 hashlib.sha256(solved.encode("utf-8")).hexdigest(),
@@ -729,7 +757,23 @@ class StateAuditSeedTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            judge = AsyncMock()
+            complete_steps = {
+                "steps": [
+                    {"present": True, "reason": "Step 1 is explicit."},
+                    {"present": True, "reason": "Step 2 is explicit."},
+                    {"present": True, "reason": "Step 3 is explicit."},
+                ]
+            }
+            regressed_steps = {
+                "steps": [
+                    {"present": True, "reason": "Step 1 remains explicit."},
+                    {"present": False, "reason": "Step 2 is absent."},
+                    {"present": False, "reason": "Step 3 is absent."},
+                ]
+            }
+            judge = AsyncMock(
+                side_effect=[(complete_steps, []), (regressed_steps, [])]
+            )
 
             def checkpoint_factory(identity: object) -> _FakeCheckpoint:
                 return _FakeCheckpoint(identity, root / "checkpoint")
@@ -756,11 +800,14 @@ class StateAuditSeedTests(unittest.TestCase):
             record = json.loads(
                 (output / "state_audit.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(judge.await_count, 0)
+            self.assertEqual(judge.await_count, 2)
             self.assertEqual(record["budget_cuts"]["1x"]["state"], "S")
             self.assertEqual(record["budget_cuts"]["2x"]["state"], "S")
-            self.assertEqual(record["budget_cuts"]["4x"]["state"], "S")
+            self.assertIsNone(record["budget_cuts"]["4x"]["state"])
             self.assertEqual(record["state"], "S")
+            self.assertEqual(len(record["budget_cuts"]["1x"]["steps"]), 3)
+            self.assertEqual(len(record["budget_cuts"]["2x"]["steps"]), 3)
+            self.assertFalse(record["steps"][1]["present"])
             self.assertNotIn(
                 "solution_sha256", record["budget_cuts"]["4x"]
             )

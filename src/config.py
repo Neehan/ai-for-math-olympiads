@@ -263,13 +263,17 @@ def _check_judge_differs(config: ExperimentConfig, where: str) -> None:
 
 
 def override_models(
-    config: ExperimentConfig, model: str | None, audit_model: str | None
+    config: ExperimentConfig,
+    model: str | None,
+    audit_model: str | None,
+    *,
+    allow_same_model: bool = False,
 ) -> ExperimentConfig:
     """Apply CLI --model/--audit-model overrides on top of config.json.
 
-    Re-validates the judge-differs invariant on the effective pair, so an
-    override that collides with the config default fails loud with the fix
-    (pass the other flag too).
+    By default, re-validates the judge-differs invariant on the effective pair.
+    State annotation may explicitly allow the same model because it measures
+    reference-route recognition rather than correctness.
     """
     if model is None and audit_model is None:
         return config
@@ -278,7 +282,8 @@ def override_models(
         model=model if model is not None else config.model,
         audit_model=audit_model if audit_model is not None else config.audit_model,
     )
-    _check_judge_differs(effective, "--model/--audit-model")
+    if not allow_same_model:
+        _check_judge_differs(effective, "--model/--audit-model")
     return effective
 
 
