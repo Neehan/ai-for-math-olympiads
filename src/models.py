@@ -36,19 +36,25 @@ class ArmConfig:
 
 
 def arm_checkpoint_identity(arm: ArmConfig) -> dict[str, object]:
-    """Return the attempt protocol without Parallel's replication count.
+    """Return the attempt protocol without operational replication counts.
 
-    Parallel's configured seed list controls which independent banks the host
-    launches; it does not change the protocol inside any bank. Canonicalizing
-    that field preserves paid seed-1 checkpoints created before the study
-    expanded from one bank to three.
+    A configured seed list controls which independent attempts the host
+    launches; the selected seed is recorded separately in each attempt
+    identity.  Historical placeholders preserve paid checkpoints created
+    before Parallel and the primary sequential arms gained more replications.
     """
+    if arm.mode == "parallel":
+        checkpoint_seeds = [1]
+    elif arm.name in {"baseline-sequential", "hint-sequential"}:
+        checkpoint_seeds = [1, 2, 3]
+    else:
+        checkpoint_seeds = list(arm.seeds)
     return {
         "name": arm.name,
         "hint": arm.hint,
         "mode": arm.mode,
         "budget_units": arm.budget_units,
-        "seeds": [1] if arm.mode == "parallel" else list(arm.seeds),
+        "seeds": checkpoint_seeds,
     }
 
 

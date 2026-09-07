@@ -1,6 +1,7 @@
 """Compute checkpoint namespaces while preserving legacy-arm identities."""
 
 import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -40,6 +41,35 @@ _LEGACY_ONE_PARALLEL_BANK = (
     b'    "baseline-parallel": { "hint": "none", "mode": "parallel", '
     b'"budget_units": 8, "seeds": [1] },\n'
 )
+_EXPANDABLE_SEQUENTIAL_ARMS = {
+    "baseline-sequential",
+    "hint-sequential",
+}
+_LEGACY_SEQUENTIAL_SEEDS = b'"seeds": [1, 2, 3]'
+
+
+def _canonicalize_seed_roster(config_bytes: bytes) -> bytes:
+    """Keep launch replication counts out of checkpoint namespaces.
+
+    The seed itself is already part of each attempt identity.  Retaining the
+    historical three-seed spelling here preserves every existing namespace
+    while allowing additional independent sequential seeds to be scheduled
+    without moving paid checkpoints.
+    """
+    for arm in sorted(_EXPANDABLE_SEQUENTIAL_ARMS):
+        pattern = re.compile(
+            rb'(^\s*"' + re.escape(arm.encode()) + rb'"\s*:\s*\{[^\n]*?)'
+            rb'"seeds"\s*:\s*\[[^\]]*\]',
+            re.MULTILINE,
+        )
+        config_bytes, count = pattern.subn(
+            rb'\1' + _LEGACY_SEQUENTIAL_SEEDS,
+            config_bytes,
+            count=1,
+        )
+        if count != 1:
+            raise ValueError(f"config.json has no canonical {arm} entry")
+    return config_bytes
 
 
 def namespace(arguments: list[str], settings_path: Path) -> str:
@@ -52,6 +82,7 @@ def namespace(arguments: list[str], settings_path: Path) -> str:
     digest = hashlib.sha256("\0".join(arguments).encode())
 
     config_bytes = Path("config.json").read_bytes()
+    config_bytes = _canonicalize_seed_roster(config_bytes)
     # Adding independent replication arms must not move paid checkpoints for
     # existing arms or one another. Each replication arm remains fully bound
     # to its own config entry while ignoring the other replication entries.

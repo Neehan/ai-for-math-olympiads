@@ -22,7 +22,7 @@ One compute unit is at most 200k eligible output tokens.
 | Arm | Allocation | Interpretation |
 |---|---|---|
 | `baseline` | Three independent 1× proofs | Initial end-to-end capability; cohort screen for secondary analyses |
-| `baseline-sequential` | Three Self-Refine trajectories through 8× | End-to-end depth; proposal and execution remain mixed |
+| `baseline-sequential` | Five Self-Refine trajectories through 8× | End-to-end depth; proposal and execution remain mixed |
 | `baseline-sequential-2x` | Twelve independent Self-Refine trajectories through 2× | Three homogeneous observed trials of the $N=4,K=2$ allocation |
 | `baseline-sequential-4x` | Six independent Self-Refine trajectories through 4× | Three homogeneous observed trials of the $N=2,K=4$ allocation |
 | `baseline-parallel` | Three bank seeds, each with eight independent 1× proofs | End-to-end breadth and eventual strategy access, not proposal alone |
@@ -30,7 +30,7 @@ One compute unit is at most 200k eligible output tokens.
 | `baseline-uniform-strategy-only` | The frozen seed-1 planner artifacts without executors | Explicit proposal coverage for the realized Uniform-C bank |
 | `selection` | Rank three compressed proposals plus the oracle with the problem, three independent 1× attempts | Exploratory fixed-pool strategy selection |
 | `selection-no-problem` | Identical pool, order, model, and 1× protocol without the problem | Exploratory provenance/style-leakage control |
-| `hint-sequential` | One frozen ≤25-word oracle strategy followed by Self-Refine through 8× | Conditional execution after proposal and comparative selection are bypassed |
+| `hint-sequential` | Five trajectories, each given one frozen ≤25-word oracle strategy and Self-Refine through 8× | Conditional execution after proposal and comparative selection are bypassed |
 | `late-baseline-sequential` / `late-hint-sequential` | On an explicitly supplied problem set, fork the same fresh native 3× trajectory and continue for 1× without or with the oracle strategy | Matched estimate of whether accumulated reasoning history attenuates oracle guidance |
 | `hint` / `placebo-hint` | Correct or within-domain shifted sketch at 1× | Immediate semantic-information effect and prompt-form control |
 
