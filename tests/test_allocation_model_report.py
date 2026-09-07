@@ -4,61 +4,12 @@ import unittest
 from scripts.report_allocation_model import (
     RootData,
     _matched_observations,
-    _oracle_aligned_proof_curve,
-    _oracle_plan_acquired,
     brute_force_allocation_probability,
     exact_allocation_probability,
 )
 
 
 class AllocationModelEstimatorTests(unittest.TestCase):
-    def test_oracle_acquisition_requires_three_explicit_step_labels(self) -> None:
-        complete = {
-            "solution_sha256": "digest",
-            "steps": [{"present": True}] * 3,
-        }
-        partial = {
-            "solution_sha256": "digest",
-            "steps": [{"present": True}, {"present": False}, {"present": True}],
-        }
-        self.assertTrue(_oracle_plan_acquired(complete))
-        self.assertFalse(_oracle_plan_acquired(partial))
-        self.assertFalse(_oracle_plan_acquired({"steps": []}))
-        with self.assertRaisesRegex(ValueError, "lacks a complete three-step"):
-            _oracle_plan_acquired({"solution_sha256": "digest", "steps": []})
-
-    def test_observed_success_requires_correctness_and_oracle_alignment(self) -> None:
-        proof = {
-            "arm": "baseline-sequential",
-            "problem_id": "p",
-            "seed": 1,
-            "audit_score": 7,
-            "budget_cuts": {"1x": {"audit_score": 7}},
-        }
-        state = {
-            "arm": "baseline-sequential",
-            "problem_id": "p",
-            "seed": 1,
-            "solution_sha256": "final",
-            "steps": [{"present": True}] * 3,
-            "budget_cuts": {
-                "1x": {
-                    "solution_sha256": "cut",
-                    "steps": [
-                        {"present": True},
-                        {"present": False},
-                        {"present": True},
-                    ],
-                }
-            },
-        }
-        self.assertEqual(
-            _oracle_aligned_proof_curve(
-                proof, state, final_block=2, threshold=5
-            ),
-            {1: False, 2: True},
-        )
-
     def test_compressed_estimator_matches_literal_equation_7(self) -> None:
         proposals = [True, False, True, False]
         executions = [{1: False, 2: True}, {1: True, 2: True}]

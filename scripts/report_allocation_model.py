@@ -143,26 +143,6 @@ def _passing(value: object, *, threshold: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= threshold
 
 
-def _oracle_plan_acquired(record: Mapping[str, object]) -> bool:
-    """Read oracle-plan acquisition from a complete per-artifact step audit."""
-    steps = record.get("steps")
-    has_artifact = isinstance(record.get("solution_sha256"), str)
-    if not has_artifact:
-        if steps not in (None, []):
-            raise ValueError("Missing proposal artifact has unexpected step annotations")
-        return False
-    if not isinstance(steps, list) or len(steps) != 3:
-        raise ValueError(
-            "Nonempty proposal artifact lacks a complete three-step state audit"
-        )
-    present: list[bool] = []
-    for step in steps:
-        if not isinstance(step, dict) or not isinstance(step.get("present"), bool):
-            raise ValueError("Malformed proposal step annotation")
-        present.append(bool(step["present"]))
-    return all(present)
-
-
 def _proof_curve(
     record: Mapping[str, object],
     *,
@@ -189,55 +169,6 @@ def _proof_curve(
     return curve
 
 
-def _oracle_alignment_curve(
-    record: Mapping[str, object], *, final_block: int
-) -> dict[int, bool]:
-    raw_cuts = record.get("budget_cuts", {})
-    if not isinstance(raw_cuts, dict):
-        raise ValueError("state-audit budget_cuts must be an object")
-    curve: dict[int, bool] = {}
-    for label, raw_cut in raw_cuts.items():
-        if not isinstance(label, str) or not label.endswith("x"):
-            continue
-        if not isinstance(raw_cut, dict):
-            raise ValueError(f"state-audit budget cut {label!r} must be an object")
-        curve[int(label[:-1])] = _oracle_plan_acquired(raw_cut)
-    curve[final_block] = _oracle_plan_acquired(record)
-    missing = [block for block in range(1, final_block + 1) if block not in curve]
-    if missing:
-        raise ValueError(
-            f"Missing state-audit cuts {missing} for {record.get('arm')}/"
-            f"{record.get('problem_id')} seed {record.get('seed')}"
-        )
-    return curve
-
-
-def _oracle_aligned_proof_curve(
-    proof_record: Mapping[str, object],
-    state_record: Mapping[str, object],
-    *,
-    final_block: int,
-    threshold: int,
-) -> dict[int, bool]:
-    proof = _proof_curve(
-        proof_record, final_block=final_block, threshold=threshold
-    )
-    alignment = _oracle_alignment_curve(state_record, final_block=final_block)
-    return {block: proof[block] and alignment[block] for block in proof}
-
-
-def _records_by_problem_seed(
-    path: Path,
-) -> dict[tuple[str, int], dict[str, object]]:
-    records: dict[tuple[str, int], dict[str, object]] = {}
-    for record in _read_jsonl(path):
-        key = (str(record["problem_id"]), int(record["seed"]))
-        if key in records:
-            raise ValueError(f"Duplicate record in {path}: {key}")
-        records[key] = record
-    return records
-
-
 def _load_root(
     root: Path,
     model: str,
@@ -248,58 +179,45 @@ def _load_root(
     model_root = root / model
     proposals: dict[str, list[bool]] = defaultdict(list)
     proposal_keys: set[tuple[str, int, int]] = set()
-    for record in _read_jsonl(model_root / "baseline-parallel/state_audit.jsonl"):
+    for record in _read_jsonl(model_root / "baseline-parallel/audit.jsonl"):
         problem = str(record["problem_id"])
-        key = (problem, int(record["seed"]), int(record["parallel_run"]))
-        if key in proposal_keys:
-            raise ValueError(f"Duplicate Parallel observation in {root}: {key}")
-        proposal_keys.add(key)
-        proposals[problem].append(_oracle_plan_acquired(record))
+        seed = int(record["seed"])
+        runs = record.get("runs")
+        if not isinstance(runs, list):
+            raise ValueError(f"Parallel audit lacks run records in {root}: {(problem, seed)}")
+        for run in runs:
+            if not isinstance(run, dict):
+                raise ValueError(f"Malformed Parallel run in {root}: {(problem, seed)}")
+            key = (problem, seed, int(run["run"]))
+            if key in proposal_keys:
+                raise ValueError(f"Duplicate Parallel observation in {root}: {key}")
+            proposal_keys.add(key)
+            proposals[problem].append(
+                _passing(run.get("audit_score"), threshold=threshold)
+            )
 
     executions: dict[str, list[dict[int, bool]]] = defaultdict(list)
     execution_keys: set[tuple[str, int]] = set()
-    hint_states = _records_by_problem_seed(
-        model_root / "hint-sequential/state_audit.jsonl"
-    )
     for record in _read_jsonl(model_root / "hint-sequential/audit.jsonl"):
         problem = str(record["problem_id"])
         key = (problem, int(record["seed"]))
         if key in execution_keys:
             raise ValueError(f"Duplicate oracle observation in {root}: {key}")
         execution_keys.add(key)
-        try:
-            state_record = hint_states[key]
-        except KeyError as error:
-            raise ValueError(f"Missing hint state audit in {root}: {key}") from error
         executions[problem].append(
-            _oracle_aligned_proof_curve(
-                record,
-                state_record,
-                final_block=8,
-                threshold=threshold,
-            )
+            _proof_curve(record, final_block=8, threshold=threshold)
         )
 
     observed: dict[str, dict[tuple[str, int], dict[int, bool]]] = {}
     for arm in observed_arms:
         final_block = 8 if arm == "baseline-sequential" else 4
-        state_records = _records_by_problem_seed(
-            model_root / arm / "state_audit.jsonl"
-        )
         arm_records: dict[tuple[str, int], dict[int, bool]] = {}
         for record in _read_jsonl(model_root / arm / "audit.jsonl"):
             key = (str(record["problem_id"]), int(record["seed"]))
             if key in arm_records:
                 raise ValueError(f"Duplicate observed trajectory in {root}/{arm}: {key}")
-            try:
-                state_record = state_records[key]
-            except KeyError as error:
-                raise ValueError(
-                    f"Missing observed state audit in {root}/{arm}: {key}"
-                ) from error
-            arm_records[key] = _oracle_aligned_proof_curve(
+            arm_records[key] = _proof_curve(
                 record,
-                state_record,
                 final_block=final_block,
                 threshold=threshold,
             )
