@@ -122,4 +122,18 @@ To upload only the active `results/` and `results-imobench/` trees directly:
 ./scripts/upload_results_to_hf.sh
 ```
 
+The default upload is additive. When a seed has a genuine local/remote
+generation conflict and the local generation is authoritative, replace that
+seed exactly with:
+
+```bash
+./scripts/upload_results_to_hf.sh --replace-seed \
+  results/<model>/<arm>/<problem>/seed_<n>
+```
+
+Multiple seed paths may follow `--replace-seed`. This mode overwrites changed
+files and deletes remote-only files **only inside the explicitly named seed
+directories**, preventing stale artifacts from a previous generation from
+surviving a local-wins reconciliation.
+
 The default private destination is `notadib/strategy-ceiling`. Root-level `results-archive/` is intentionally ignored by Git and excluded from this uploader.
