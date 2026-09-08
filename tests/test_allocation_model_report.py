@@ -1,15 +1,69 @@
 import math
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from scripts.report_allocation_model import (
     RootData,
     _matched_observations,
+    _parallel_acquired,
+    _proof_curve,
     brute_force_allocation_probability,
     exact_allocation_probability,
 )
 
 
 class AllocationModelEstimatorTests(unittest.TestCase):
+    def test_proof_curve_is_cumulative(self) -> None:
+        record = {
+            "arm": "baseline-sequential",
+            "problem_id": "example",
+            "seed": 1,
+            "audit_score": 0,
+            "budget_cuts": {
+                "1x": {"audit_score": 0},
+                "2x": {"audit_score": 5},
+                "3x": {"audit_score": 0},
+            },
+        }
+        self.assertEqual(
+            _proof_curve(record, final_block=4, threshold=5),
+            {1: False, 2: True, 3: True, 4: True},
+        )
+
+    def test_acquisition_is_union_not_intersection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            branch = Path(tmp)
+            (branch / "solution.md").write_text("partial proof")
+            state = {
+                "solution_sha256": hashlib.sha256(b"partial proof").hexdigest(),
+                "steps": [{"present": True} for _ in range(3)],
+            }
+            (branch / "state_audit.json").write_text(json.dumps(state))
+            self.assertTrue(_parallel_acquired({"audit_score": 0}, branch, threshold=5))
+            state["steps"][0]["present"] = False
+            (branch / "state_audit.json").write_text(json.dumps(state))
+            self.assertFalse(_parallel_acquired({"audit_score": 0}, branch, threshold=5))
+            self.assertTrue(_parallel_acquired({"audit_score": 5}, branch, threshold=5))
+
+    def test_missing_stale_and_empty_acquisition_audits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            branch = Path(tmp)
+            self.assertFalse(_parallel_acquired({"audit_score": 0}, branch, threshold=5))
+            (branch / "solution.md").write_text("partial proof")
+            with self.assertRaisesRegex(ValueError, "Missing Parallel state audit"):
+                _parallel_acquired({"audit_score": 0}, branch, threshold=5)
+            state = {"solution_sha256": "stale", "steps": []}
+            (branch / "state_audit.json").write_text(json.dumps(state))
+            with self.assertRaisesRegex(ValueError, "Stale Parallel state audit"):
+                _parallel_acquired({"audit_score": 0}, branch, threshold=5)
+            state["solution_sha256"] = hashlib.sha256(b"partial proof").hexdigest()
+            (branch / "state_audit.json").write_text(json.dumps(state))
+            with self.assertRaisesRegex(ValueError, "Incomplete Parallel state steps"):
+                _parallel_acquired({"audit_score": 0}, branch, threshold=5)
+
     def test_compressed_estimator_matches_literal_equation_7(self) -> None:
         proposals = [True, False, True, False]
         executions = [{1: False, 2: True}, {1: True, 2: True}]

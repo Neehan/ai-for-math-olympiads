@@ -254,3 +254,6 @@ main.fdb_latexmk
 main.fls
 main.log
 main.pdf
+
+# Separate Overleaf checkout.
+short_paper/

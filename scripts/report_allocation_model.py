@@ -11,6 +11,7 @@ much faster.  No Monte Carlo sampling is used.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import math
@@ -143,12 +144,48 @@ def _passing(value: object, *, threshold: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= threshold
 
 
+def _parallel_acquired(
+    run: Mapping[str, object], branch_dir: Path, *, threshold: int
+) -> bool:
+    """Acquired means a valid proof OR all three oracle steps in the artifact.
+
+    Unsolved nonempty outputs require a current state audit; missing annotations
+    must not silently become negative acquisition observations.
+    """
+    score = run.get("audit_score")
+    if not isinstance(score, int) or isinstance(score, bool):
+        raise ValueError(f"Missing Parallel proof score: {branch_dir}")
+    if _passing(score, threshold=threshold):
+        return True
+    solution_path = branch_dir / "solution.md"
+    solution = solution_path.read_text(encoding="utf-8") if solution_path.exists() else ""
+    if not solution.strip():
+        return False
+    state_path = branch_dir / "state_audit.json"
+    if not state_path.is_file():
+        raise ValueError(f"Missing Parallel state audit: {state_path}")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(state, dict):
+        raise ValueError(f"Malformed Parallel state audit: {state_path}")
+    digest = hashlib.sha256(solution.encode("utf-8")).hexdigest()
+    if state.get("solution_sha256") != digest:
+        raise ValueError(f"Stale Parallel state audit: {state_path}")
+    steps = state.get("steps")
+    if not isinstance(steps, list) or len(steps) != 3 or any(
+        not isinstance(step, dict) or not isinstance(step.get("present"), bool)
+        for step in steps
+    ):
+        raise ValueError(f"Incomplete Parallel state steps: {state_path}")
+    return all(step["present"] for step in steps)
+
+
 def _proof_curve(
     record: Mapping[str, object],
     *,
     final_block: int,
     threshold: int,
 ) -> dict[int, bool]:
+    """Return whether a valid proof has appeared by each compute block."""
     raw_cuts = record.get("budget_cuts", {})
     if not isinstance(raw_cuts, dict):
         raise ValueError("budget_cuts must be an object")
@@ -166,6 +203,10 @@ def _proof_curve(
             f"Missing proof cuts {missing} for {record.get('arm')}/"
             f"{record.get('problem_id')} seed {record.get('seed')}"
         )
+    solved = False
+    for block in range(1, final_block + 1):
+        solved = solved or curve[block]
+        curve[block] = solved
     return curve
 
 
@@ -193,7 +234,12 @@ def _load_root(
                 raise ValueError(f"Duplicate Parallel observation in {root}: {key}")
             proposal_keys.add(key)
             proposals[problem].append(
-                _passing(run.get("audit_score"), threshold=threshold)
+                _parallel_acquired(
+                    run,
+                    model_root / "baseline-parallel" / problem / f"seed_{seed}"
+                    / f"run_{int(run['run']):02d}",
+                    threshold=threshold,
+                )
             )
 
     executions: dict[str, list[dict[int, bool]]] = defaultdict(list)

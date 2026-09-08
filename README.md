@@ -91,9 +91,13 @@ machine-readable output.
 The observed two-arm curves pair `baseline-sequential` and
 `late-baseline-sequential` only when both have the same problem ID and seed.
 The prediction never reads their proof outcomes: it uses only
-`baseline-parallel/state_audit.jsonl` for plan acquisition and
-`hint-sequential/audit.jsonl` for conditional execution. Proof success is an
-audit score of at least 5 by default.
+Parallel proof scores and per-branch `state_audit.json` for plan acquisition,
+and `hint-sequential/audit.jsonl` for conditional execution. A Parallel branch
+counts as acquired if it solves the problem **or** all three oracle steps are
+present, counting each branch once. Unsolved nonempty outputs require a complete
+state audit matching the current proof; missing or stale annotations stop the
+report. Proof success is an audit score of at least 5 by default, irrespective
+of oracle alignment.
 
 ## Results backup
 
