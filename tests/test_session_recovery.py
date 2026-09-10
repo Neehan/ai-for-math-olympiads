@@ -1247,6 +1247,7 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "gpt-5.6-luna",
             "gpt-5.6-terra",
             "gpt-5.6-sol",
+            "gpt-6-astra",
         ):
             with self.subTest(provider_name=provider_name):
                 model = f"litellm/{provider_name}"
