@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from scripts.report_allocation_model import (
+    PAPER_PROFILES,
     RootData,
     _matched_observations,
     _parallel_acquired,
@@ -16,6 +17,13 @@ from scripts.report_allocation_model import (
 
 
 class AllocationModelEstimatorTests(unittest.TestCase):
+    def test_gpt55_uses_both_complete_parallel_seeds(self) -> None:
+        profiles = [p for p in PAPER_PROFILES if p.model == "litellm-gpt-5.5"]
+        self.assertEqual({p.key for p in profiles}, {"gpt55-n1", "gpt55-n2"})
+        for profile in profiles:
+            self.assertEqual(profile.proposal_seeds, (1, 2))
+            self.assertEqual(profile.results_roots, ("results", "results-imobench"))
+
     def test_proof_curve_is_cumulative(self) -> None:
         record = {
             "arm": "baseline-sequential",

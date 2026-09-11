@@ -74,7 +74,7 @@ PAPER_PROFILES = (
         1,
         8,
         ("baseline-sequential",),
-        proposal_seeds=(1,),
+        proposal_seeds=(1, 2),
     ),
     Profile(
         "muse-n2",
@@ -103,7 +103,7 @@ PAPER_PROFILES = (
         4,
         ("baseline-sequential", "late-baseline-sequential"),
         (1, 2, 3),
-        (1,),
+        (1, 2),
     ),
 )
 

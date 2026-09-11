@@ -88,6 +88,9 @@ counts, predicted counts, MAE, RMSE, and TeX coordinates for every populated
 allocation panel. Use `--profile gpt54-n2` to select one panel or `--json` for
 machine-readable output.
 
+GPT-5.5 uses complete Parallel-8 seeds 1 and 2 on both datasets (16 branches
+per problem); its isolated seed-3 banks are excluded from the paper profiles.
+
 The observed two-arm curves pair `baseline-sequential` and
 `late-baseline-sequential` only when both have the same problem ID and seed.
 The prediction never reads their proof outcomes: it uses only
