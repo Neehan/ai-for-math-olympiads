@@ -35,6 +35,7 @@ class Profile:
     max_blocks: int
     observed_arms: tuple[str, ...]
     required_seeds: tuple[int, ...] = ()
+    proposal_seeds: tuple[int, ...] = ()
 
 
 PAPER_PROFILES = (
@@ -73,6 +74,7 @@ PAPER_PROFILES = (
         1,
         8,
         ("baseline-sequential",),
+        proposal_seeds=(1,),
     ),
     Profile(
         "muse-n2",
@@ -101,6 +103,7 @@ PAPER_PROFILES = (
         4,
         ("baseline-sequential", "late-baseline-sequential"),
         (1, 2, 3),
+        (1,),
     ),
 )
 
@@ -216,6 +219,7 @@ def _load_root(
     observed_arms: Sequence[str],
     *,
     threshold: int,
+    proposal_seeds: Sequence[int] = (),
 ) -> RootData:
     model_root = root / model
     proposals: dict[str, list[bool]] = defaultdict(list)
@@ -223,6 +227,8 @@ def _load_root(
     for record in _read_jsonl(model_root / "baseline-parallel/audit.jsonl"):
         problem = str(record["problem_id"])
         seed = int(record["seed"])
+        if proposal_seeds and seed not in proposal_seeds:
+            continue
         runs = record.get("runs")
         if not isinstance(runs, list):
             raise ValueError(f"Parallel audit lacks run records in {root}: {(problem, seed)}")
@@ -419,6 +425,7 @@ def build_report(profile: Profile, *, threshold: int = PASSING_SCORE) -> Report:
             profile.model,
             profile.observed_arms,
             threshold=threshold,
+            proposal_seeds=profile.proposal_seeds,
         )
         weights, root_observed = _matched_observations(
             data,
