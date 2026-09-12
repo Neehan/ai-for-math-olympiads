@@ -72,35 +72,60 @@ Run the complete study on the 35 fresh 2026 non-geometry problems. The primary G
 
 ## Allocation-model report
 
-Recompute the observed and predicted curves in the paper directly from the
-compiled Parallel, oracle-plan, and unaided audit files:
+Recompute the paper's current DE/R-DE predictions and baseline comparisons
+directly from the compiled Parallel-8, oracle, and unaided correctness audits:
 
 ```bash
 uv run python scripts/report_allocation_model.py
 ```
 
-The report implements the unbiased finite-bank estimator in Equation 7. It
-uses exact enumeration over ordered observations without replacement; it does
-not use Monte Carlo sampling or the biased plug-in transformation
-`1 - (1 - s_hat)^N`. Each run first checks the compressed calculation against
-a literal permutation enumeration on small examples, then prints the observed
-counts, predicted counts, MAE, RMSE, and TeX coordinates for every populated
-allocation panel. Use `--profile gpt54-n2` to select one panel or `--json` for
-machine-readable output.
+The default report fits **DE** and **R-DE** using fresh solved counts and oracle
+first-completion times only; it does not use strategy-acquisition state audits.
+DE uses `alpha = min(1, q / epsilon(1))` when the empirical oracle first-block
+rate is positive. If the ratio exceeds one, the constrained joint fit also
+adjusts execution. If both first-block counts are zero, acquisition is
+unidentified: the report uses alpha=0 and records the alpha=1 sensitivity.
+R-DE fits shared Beta/Dirichlet prior parameters within each LLM using six
+L-BFGS-B starts, while retaining per-problem parameters. Neither estimator is
+claimed to be frequentist unbiased.
 
-GPT-5.5 uses complete Parallel-8 seeds 1 and 2 on both datasets (16 branches
-per problem); its isolated seed-3 banks are excluded from the paper profiles.
+N=2 reuses the same full-cohort intervention fit as N=1 and integrates
+`2 * E[s] - E[s^2]` over the joint posterior, **not**
+`1 - (1 - E[s])^2`. Plain-geometric retains its exact finite-bank estimator.
+Linear and OGT are also reported. RMSE/MAE are computed over the aggregate
+cumulative count curve (eight checkpoints for N=1, four for N=2); percentage-point
+errors divide by the number of evaluated trajectories/pairs. Pooled RMSE is
+the square root of mean squared percentage-point errors, weighting LLMs equally.
+
+Use `--profile gpt54-n2` to select a panel or `--json` for complete predictions,
+fit diagnostics, cohort metadata, and source-audit SHA-256 hashes. To regenerate
+the main prediction plots, N=1/N=2 comparison tables, and R-DE count-error table:
+
+```bash
+uv run python scripts/report_allocation_model.py --output-dir paper/img
+```
+
+Use a temporary output directory to preview assets without changing the paper.
+No ignored `analysis/` files or saved fitted predictions are required. Other
+figures and robustness/human-audit tables are not rewritten by this command.
+
+GPT-5.5 uses Parallel-8 seeds 1 and 2 on both datasets (16 branches per problem);
+the other LLMs use seeds 1--3 (24 branches). All models use oracle and unaided
+seeds 1--3; later seeds are deliberately excluded. The report requires all 35
+AOBench and 22 IMO-ProofBench intervention problems, and complete N=1 targets.
 
 The observed two-arm curves pair `baseline-sequential` and
 `late-baseline-sequential` only when both have the same problem ID and seed.
-The prediction never reads their proof outcomes: it uses only
-Parallel proof scores and per-branch `state_audit.json` for plan acquisition,
-and `hint-sequential/audit.jsonl` for conditional execution. A Parallel branch
-counts as acquired if it solves the problem **or** all three oracle steps are
-present, counting each branch once. Unsolved nonempty outputs require a complete
-state audit matching the current proof; missing or stale annotations stop the
-report. Proof success is an audit score of at least 5 by default, irrespective
-of oracle alignment.
+Missing required banks, seeds, scores, or checkpoints stop the report rather
+than becoming failures. Opus N=2 is explicitly a partial IMO-ProofBench panel;
+it is excluded from the N=2 comparison table and pooled error. Proof success is
+an audit score of at least 5 by default, irrespective of oracle alignment, and
+sequential outcomes are cumulative: a later failing proof cannot undo an earlier
+success. Target outcomes are used only for evaluation, after fitting.
+
+The historical solved-or-oracle-acquired U-statistic is available with
+`--legacy-acquisition` for reproducing earlier analyses. It is **not** the
+default and does not reproduce the current paper.
 
 ## Results backup
 

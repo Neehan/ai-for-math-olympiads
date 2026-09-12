@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Reproduce the paper's proposal--execution allocation curves exactly.
+"""Report the current DE/R-DE paper predictions from correctness audits.
 
-Predictions use the finite-bank estimator in Equation 7 of the paper.  The
-implementation sums over binary acquisition patterns with their exact
-without-replacement multiplicities; this is algebraically identical to
-enumerating every ordered permutation of raw Parallel observations, but is
-much faster.  No Monte Carlo sampling is used.
+The default CLI delegates to report_joint_allocation. Historical acquisition
+U-statistic helpers remain for compatibility; --legacy-acquisition explicitly
+selects that superseded estimator, which does not reproduce the current paper.
 """
 
 from __future__ import annotations
@@ -15,6 +13,7 @@ import hashlib
 import itertools
 import json
 import math
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -521,6 +520,14 @@ def run_self_check() -> None:
 
 
 def main() -> None:
+    if '--legacy-acquisition' not in sys.argv:
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from scripts.report_joint_allocation import main as joint_main
+        joint_main()
+        return
+    sys.argv.remove('--legacy-acquisition')
+    print('Legacy acquisition estimator: does not reproduce the current DE/R-DE paper.', file=sys.stderr)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--profile",
