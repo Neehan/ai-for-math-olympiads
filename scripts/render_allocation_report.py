@@ -27,8 +27,44 @@ def comparison_table(data, n):
         lines.append(label+' & '+' & '.join(cells)+r' \\')
     label = 'predictor-comparison' if n == 1 else 'n2-predictor-comparison'
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in percentage points across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Pooled errors weight models equally. Lower is better.}',
+              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in percentage points across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Pooled errors weight models equally. Lower is better.'+('' if n == 1 else r' Incomplete Opus coverage is excluded.')+'}',
               r'\label{tab:'+label+'}', r'\end{table}']
+    return '\n'.join(lines)+'\n'
+
+
+def execution_subgroup_table(data):
+    """Render the oracle-defined execution-nontrivial N=1 sensitivity table."""
+    from scripts.report_joint_allocation import METHODS
+    models = ['muse', 'gpt54', 'gpt55', 'opus']
+    names = ['Muse', 'GPT-5.4', 'GPT-5.5', 'Opus']
+    counts = []
+    values = []
+    for method in METHODS:
+        row = []
+        for model in models:
+            subset = [r for r in data['reports'][f'{model}-n1']['rows'] if r['epsilon'][0] < 1]
+            if method == next(iter(METHODS)):
+                counts.append(len(subset))
+            weights = np.array([r['weight'] for r in subset])
+            observed = weights @ np.array([r['observed'] for r in subset])
+            predicted = weights @ np.array([r['predictions'][method] for r in subset])
+            row.append(float(100 * np.sqrt(np.mean((predicted-observed)**2)) / weights.sum()))
+        row.append(float(np.sqrt(np.mean(np.square(row)))))
+        values.append(row)
+    lines = [r'\begin{table}[t]', r'\centering\small\setlength{\tabcolsep}{4pt}',
+             r'\begin{tabular}{lrrrrr}',
+             r'\toprule Framework & '+' & '.join(names)+r' & Pooled \\', r'\midrule']
+    for index, ((_, label), row) in enumerate(zip(METHODS.items(), values)):
+        if index == 3:
+            lines.append(r'\midrule')
+        if label in ('DE', 'R-DE'):
+            label += ' (ours)'
+        lines.append(label+' & '+' & '.join(f'{value:.2f}' for value in row)+r' \\')
+    lines += [r'\bottomrule', r'\end{tabular}',
+              r'\caption{Full-curve RMSE on problems with $\widehat\varepsilon_n(1)<1$: '
+              + ', '.join(f'{count} for {name}' for count, name in zip(counts, names))
+              + r'. Pooled errors weight models equally. Lower is better.}',
+              r'\label{tab:execution-subgroup}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 
 
@@ -53,6 +89,7 @@ def render(data, output_dir):
             lines.append(f"{name} & {s['mae']:.2f} & {s['rmse']:.2f} & ${s['observed'][-1]:.0f}/{s['predicted'][-1]:.1f}$ "+r'\\')
         lines += [r'\bottomrule', r'\end{tabular}', r'\caption{R-DE single-trajectory errors in passing-trajectory counts, with 171 trajectories per model.}', r'\label{tab:allocation-model-error}', r'\end{table}']
         (output_dir/'joint_error_table.tex').write_text('\n'.join(lines)+'\n')
+        (output_dir/'execution_subgroup_table.tex').write_text(execution_subgroup_table(data))
 
 
 def coords(x,y):

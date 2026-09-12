@@ -86,7 +86,7 @@ def proof_curve(record, final_block, threshold):
 
 def collect_interventions(root, model, threshold, fingerprints, datasets=DATASETS):
     rows = []
-    parallel_seeds = (1, 2) if model == 'gpt55' else SEEDS
+    parallel_seeds = SEEDS
     for dataset, expected in datasets.items():
         base = root/dataset/MODELS[model]
         fresh = indexed_audits(base/'baseline-parallel/audit.jsonl', parallel_seeds, fingerprints)
