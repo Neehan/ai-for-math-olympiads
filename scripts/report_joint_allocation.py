@@ -2,7 +2,7 @@
 """Recompute the paper's DE/R-DE curves and comparisons from correctness audits.
 
 Fresh and oracle seeds define the intervention fit, independently of target
-coverage. N=2 reuses the full N=1 intervention fit. Missing required audits
+coverage. N=2 and N=4 reuse the full N=1 intervention fit. Missing required audits
 are errors, never failures; Opus N=2 is an explicitly partial replication.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from scripts.allocation_estimators import Joint, fit_de, posterior_n2, check_posterior_n1, check_posterior_n2
+from scripts.allocation_estimators import Joint, fit_de, posterior_n2, posterior_n4, check_posterior_n1, check_posterior_n2
 from scripts.report_allocation_model import _read_jsonl, _proof_curve
 
 MODELS = {
@@ -37,7 +37,7 @@ METHODS = {
 }
 DATASETS = {'results': 35, 'results-imobench': 22}
 SEEDS = (1, 2, 3)
-PROFILES = [f'{m}-n{n}' for n in (1, 2) for m in MODELS]
+PROFILES = [f'{m}-n{n}' for n in (1, 2) for m in MODELS] + ['muse-n4', 'gpt55-n4']
 
 
 def passing(score, threshold):
@@ -127,6 +127,7 @@ def fit_interventions(rows):
     optimum, starts = joint.fit()
     rde1, alpha = joint.predict(optimum.x)
     rde2 = posterior_n2(joint, optimum.x)
+    rde4 = posterior_n4(joint, optimum.x)
     predictions = []
     de_fits = []
     for i, row in enumerate(rows):
@@ -139,10 +140,10 @@ def fit_interventions(rows):
                       oracle_gain_transfer=q+(1-q)*(epsilon-epsilon[0]),
                       neither_regularized=np.array(de['prediction_unidentified_alpha0']))
         allocations = {}
-        for n, horizon in [(1, 8), (2, 4)]:
+        for n, horizon in [(1, 8), (2, 4), (4, 2)]:
             p = {name: (1-(1-values[:horizon])**n).tolist() for name, values in single.items()}
             p['solved_geometric'] = [geometric(row['solved'], row['parallel_n'], n*k) for k in range(1, horizon+1)]
-            p['both_regularized'] = (rde1[i] if n == 1 else rde2[i]).tolist()
+            p['both_regularized'] = {1: rde1[i], 2: rde2[i], 4: rde4[i]}[n].tolist()
             allocations[n] = p
         predictions.append(allocations)
     _, _, _, _, _, _, d = joint.components(optimum.x)
@@ -162,6 +163,19 @@ def collect_targets(root, model, n, rows, predictions, threshold, fingerprints):
         if partial and dataset != 'results-imobench':
             continue
         base = root/dataset/MODELS[model]
+        if n == 4:
+            short = indexed_audits(base/'baseline-sequential-2x/audit.jsonl', range(1, 13), fingerprints)
+            for row, p in zip(rows, predictions):
+                if row['dataset'] != dataset:
+                    continue
+                curves = []
+                for trial in SEEDS:
+                    group = [(row['problem'], seed) for seed in range(4*trial-3, 4*trial+1)]
+                    if any(key not in short for key in group):
+                        raise ValueError(f'Missing N=4 target audit: {model}/{dataset}/{group}')
+                    curves.append(np.max([proof_curve(short[key], 2, threshold) for key in group], axis=0))
+                result.append(dict(row, weight=3, observed=np.mean(curves, axis=0).tolist(), predictions=p[n]))
+            continue
         first = indexed_audits(base/'baseline-sequential/audit.jsonl', SEEDS, fingerprints)
         second = indexed_audits(base/'late-baseline-sequential/audit.jsonl', SEEDS, fingerprints, optional=partial) if n == 2 else None
         for row, p in zip(rows, predictions):
@@ -204,25 +218,25 @@ def build_reports(root, profiles, threshold=5):
         raise ValueError('passing-score must be between 0 and 7')
     fingerprints, fits, reports = {}, {}, {}
     for model in MODELS:
-        selected = [n for n in (1, 2) if f'{model}-n{n}' in profiles]
+        selected = [n for n in (1, 2, 4) if f'{model}-n{n}' in profiles]
         if not selected:
             continue
         rows = collect_interventions(root, model, threshold, fingerprints)
         print(f'Fitting {model} from {len(rows)} intervention problems (six starts)...', file=sys.stderr, flush=True)
         predictions, fits[model] = fit_interventions(rows)
-        # Only now read the unaided outcomes. N=2 never changes the fitted model.
+        # Only now read unaided outcomes. Target allocation never changes the fit.
         for n in selected:
             targets = collect_targets(root, model, n, rows, predictions, threshold, fingerprints)
             reports[f'{model}-n{n}'] = summarize(targets)
     pooled = {}
-    for n in (1, 2):
-        keys = [f'{m}-n{n}' for m in MODELS if not (n == 2 and m == 'opus')]
+    for n in (1, 2, 4):
+        keys = [f'{m}-n{n}' for m in MODELS if (n == 1 or (n == 2 and m != 'opus') or (n == 4 and m in ('muse', 'gpt55')))]
         if all(k in reports for k in keys):
             pooled[f'n{n}'] = {method: float(np.sqrt(np.mean([reports[k]['metrics'][method]['rate_rmse_pp']**2 for k in keys]))) for method in METHODS}
     return dict(estimator='DE/R-DE', passing_score=threshold, reports=reports, fits=fits,
                 pooled_rmse_pp=pooled,
                 audit_sha256={str(Path(path).resolve().relative_to(root.resolve())): sha for path, sha in fingerprints.items()},
-                notes='Cumulative score-based solves; intervention-only fitting; N=2 posterior second moments; aggregate-curve RMSE. Opus N=2 is partial IMO-ProofBench only and excluded from pooled comparisons.')
+                notes='Cumulative score-based solves; intervention-only fitting; N=2 posterior second moments and N=4 fourth moments; aggregate-curve RMSE. Opus N=2 is partial IMO-ProofBench only and excluded from pooled comparisons. N=4 uses complete Muse and GPT-5.5 cohorts, with fixed groups of four seeds.')
 
 
 def main(argv=None):

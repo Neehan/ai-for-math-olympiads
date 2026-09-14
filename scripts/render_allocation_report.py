@@ -9,11 +9,37 @@ NAMES = ["Muse Spark~1.2", "GPT-5.4", "GPT-5.5", "Claude Opus~4.8"]
 
 def comparison_table(data, n):
     from scripts.report_joint_allocation import METHODS
+    if n == 2 and all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
+        lines = [r'\begin{table}[htbp]', r'\centering\small\setlength{\tabcolsep}{4pt}',
+                 r'\begin{tabular}{lrrrr}', r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Pooled \\']
+        for allocation, models in [(2, ['muse', 'gpt54', 'gpt55']), (4, ['muse', 'gpt55'])]:
+            lines += [r'\midrule', r'\multicolumn{5}{l}{\textit{$N='+str(allocation)+r'$}} \\', r'\midrule']
+            assert all(data['reports'][f'{m}-n{allocation}']['trials'] == 171 for m in models)
+            values = {m: [data['reports'][f'{m}-n{allocation}']['metrics'][method]['rmse'] for method in METHODS] for m in models}
+            values['pooled'] = np.sqrt(np.mean(np.square([values[m] for m in models]), axis=0)).tolist()
+            for index, label in enumerate(METHODS.values()):
+                if label == 'DE':
+                    lines.append(r'\midrule')
+                if label in ('DE', 'R-DE'):
+                    label += ' (ours)'
+                cells = []
+                for model in ['muse', 'gpt54', 'gpt55', 'pooled']:
+                    if model not in values:
+                        cells.append('---')
+                    else:
+                        value = values[model][index]
+                        cells.append(r'\textbf{'+f'{value:.2f}'+'}' if value == min(values[model]) else f'{value:.2f}')
+                lines.append(label+' & '+' & '.join(cells)+r' \\')
+        lines += [r'\bottomrule', r'\end{tabular}',
+                  r'\caption{Aggregate-curve RMSE in solved-trial counts for $N=2$ and $N=4$; each reported model has 57 problems and 171 allocation trials. A trial succeeds if any of its $N$ trajectories solves. Pooled errors weight available models equally within each panel (three for $N=2$, two for $N=4$). Lower is better; bold marks column minima within each panel. Dashes indicate unavailable complete coverage; Opus is excluded.}',
+                  r'\label{tab:n2-predictor-comparison}', r'\end{table}']
+        return '\n'.join(lines)+'\n'
     models = ['muse', 'gpt54', 'gpt55'] + (['opus'] if n == 1 else [])
     names = ['Muse', 'GPT-5.4', 'GPT-5.5'] + (['Opus'] if n == 1 else [])
     metrics = data['reports']
-    values = np.array([[metrics[f'{m}-n{n}']['metrics'][method]['rate_rmse_pp'] for m in models]
-                       + [data['pooled_rmse_pp'][f'n{n}'][method]] for method in METHODS])
+    assert all(metrics[f'{m}-n{n}']['trials'] == 171 for m in models)
+    individual = np.array([[metrics[f'{m}-n{n}']['metrics'][method]['rmse'] for m in models] for method in METHODS])
+    values = np.column_stack([individual, np.sqrt(np.mean(individual**2, axis=1))])
     minima = values.min(axis=0)
     lines = [r'\begin{table}[htbp]', r'\centering\small\setlength{\tabcolsep}{4pt}',
              r'\begin{tabular}{l'+'r'*(len(models)+1)+'}',
@@ -27,7 +53,7 @@ def comparison_table(data, n):
         lines.append(label+' & '+' & '.join(cells)+r' \\')
     label = 'predictor-comparison' if n == 1 else 'n2-predictor-comparison'
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in percentage points across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Pooled errors weight models equally. Lower is better.'+('' if n == 1 else r' Incomplete Opus coverage is excluded.')+'}',
+              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in solved-trial counts across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Pooled errors weight models equally. Lower is better.'+('' if n == 1 else r' Incomplete Opus coverage is excluded.')+'}',
               r'\label{tab:'+label+'}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 
@@ -61,7 +87,7 @@ def execution_subgroup_table(data):
             label += ' (ours)'
         lines.append(label+' & '+' & '.join(f'{value:.2f}' for value in row)+r' \\')
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{Full-curve RMSE on problems with $\widehat\varepsilon_n(1)<1$: '
+              r'\caption{Full-curve RMSE in percentage points on problems with $\widehat\varepsilon_n(1)<1$: '
               + ', '.join(f'{count} for {name}' for count, name in zip(counts, names))
               + r'. Pooled errors weight models equally. Lower is better.}',
               r'\label{tab:execution-subgroup}', r'\end{table}']

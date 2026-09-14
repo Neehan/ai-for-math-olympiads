@@ -155,6 +155,53 @@ def posterior_n2(model,theta):
     return curves
 
 
+def posterior_n4(model, theta):
+    """Integrate any-of-four success for K=1,2, not a power of mean success.
+
+    Conditional on each finite mixture component, alpha, epsilon(1), and
+    r=P(completion at block 2 | not at block 1) are independent Beta laws.
+    Expand 1-(1-s)^4 and evaluate Beta moments analytically. Maximum degrees
+    are eight in alpha and four in epsilon(1) and r.
+    """
+    from collections import defaultdict
+    from math import comb
+
+    def moment(a, b, power):
+        value = np.ones_like(a+b, dtype=float)
+        for j in range(power):
+            value *= (a+j)/(a+b+j)
+        return value
+
+    def multiply(left, right):
+        result = defaultdict(float)
+        for p, v in left.items():
+            for q, w in right.items():
+                result[tuple(i+j for i, j in zip(p, q))] += v*w
+        return dict(result)
+
+    _, weights, ap, bp, ep, rp, d = model.components(theta)
+    later = (d[1]+model.c[:, 1])[:, None]
+    rest = (d[2:].sum()+model.c[:, 2:].sum(axis=1))[:, None]
+    polynomials = [{(1, 1, 0): 1.}, {(1, 1, 0): 2., (2, 1, 0): -1., (1, 0, 1): 1., (1, 1, 1): -1.}]
+    curves = []
+    for polynomial in polynomials:
+        power = {(0, 0, 0): 1.}
+        probability = np.zeros_like(weights)
+        for j in range(1, 5):
+            power = multiply(power, polynomial)
+            expected = np.zeros_like(weights)
+            for (a, e, r), coefficient in power.items():
+                expected += coefficient*moment(ap, bp, a)*moment(ep, rp, e)*moment(later, rest, r)
+            probability += (-1)**(j+1)*comb(4, j)*expected
+        curves.append(np.sum(weights*probability, axis=1))
+    result = np.array(curves).T
+    assert np.all((result >= -1e-10) & (result <= 1 + 1e-10))
+    assert np.all(np.diff(result, axis=1) >= -1e-10)
+    mean, _ = model.predict(theta)
+    assert np.all(result <= 1 - (1 - mean[:, :2])**4 + 1e-10)
+    return result
+
+
 def check_posterior_n1():
     # Independent Gauss-Legendre integration for uniform priors and tiny banks.
     from numpy.polynomial.legendre import leggauss

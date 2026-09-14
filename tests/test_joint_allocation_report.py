@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from scripts.allocation_estimators import (
-    Joint, check_posterior_n1, check_posterior_n2, fit_de, posterior_n2,
+    Joint, check_posterior_n1, check_posterior_n2, fit_de, posterior_n2, posterior_n4,
 )
 from scripts.report_joint_allocation import (
     MODELS, collect_interventions, collect_targets, fit_interventions, geometric,
@@ -64,6 +64,28 @@ class JointEstimatorTests(unittest.TestCase):
         self.assertTrue(np.all(double >= single[:, :4]))
         self.assertTrue(np.all(double < 1-(1-single[:, :4])**2))
 
+    def test_n4_independent_integration(self):
+        from numpy.polynomial.legendre import leggauss
+        from scipy.special import betaln
+        z, w = leggauss(32)
+        z, w = (z+1)/2, w/2
+        a, e, r = z[:, None, None], z[None, :, None], z[None, None, :]
+        def pdf(x, aa, bb):
+            return np.exp((aa-1)*np.log(x)+(bb-1)*np.log1p(-x)-betaln(aa, bb))
+        # Dirichlet prior (2,3,4); oracle counts (1,1,1).
+        model = Joint([row(epsilon=[1/3]+[2/3]*7)])
+        theta = np.log([2, 3, 2, 3, 4])
+        mass = w[:, None, None]*w[None, :, None]*w[None, None, :]
+        mass = mass*pdf(a, 2, 3)*pdf(e, 3, 9)*pdf(r, 4, 5)*(a*e)**2*(1-a*e)**3
+        mass /= mass.sum()
+        expected = [np.sum(mass*(1-(1-s)**4)) for s in [a*e, a*(2-a)*e+a*(1-e)*r]]
+        np.testing.assert_allclose(posterior_n4(model, theta)[0], expected, atol=1e-11)
+        # No block-2 completions: r is a point mass at zero.
+        sparse = Joint([row()])
+        actual = posterior_n4(sparse, theta)
+        self.assertEqual(actual.shape, (1, 2))
+        self.assertTrue(np.all(actual >= posterior_n2(sparse, theta)[:, :2]))
+
     def test_finite_bank_against_enumeration(self):
         for m in range(1, 7):
             for x in range(m+1):
@@ -88,6 +110,20 @@ class JointEstimatorTests(unittest.TestCase):
 
 
 class AuditAndAggregationTests(unittest.TestCase):
+    def test_comparison_tables_use_count_rmse(self):
+        from scripts.render_allocation_report import comparison_table
+        from scripts.report_joint_allocation import METHODS
+        reports = {}
+        for n, models in [(1, ['muse', 'gpt54', 'gpt55', 'opus']), (2, ['muse', 'gpt54', 'gpt55']), (4, ['muse', 'gpt55'])]:
+            for model in models:
+                reports[f'{model}-n{n}'] = dict(trials=171, metrics={method: dict(rmse=10.+i, rate_rmse_pp=(10.+i)/1.71) for i, method in enumerate(METHODS)})
+        for n in (1, 2):
+            table = comparison_table(dict(reports=reports), n)
+            self.assertIn('RMSE in solved-trial counts', table)
+            self.assertIn(r'\textbf{10.00}', table)
+            self.assertNotIn('5.85', table)
+        self.assertIn('$N=4$', comparison_table(dict(reports=reports), 2))
+
     def test_cumulative_and_missing_scores(self):
         r = dict(problem_id='p', audit_score=0, budget_cuts={'1x': {'audit_score': 5}, '2x': {'audit_score': 0}})
         self.assertEqual(proof_curve(r, 3, 5), [1, 1, 1])
@@ -119,7 +155,7 @@ class AuditAndAggregationTests(unittest.TestCase):
             fresh_path.write_text(''.join(json.dumps(r)+'\n' for r in fresh))
             oracle_path.write_text(''.join(json.dumps(r)+'\n' for r in oracle))
             rows = collect_interventions(root, 'gpt55', 5, {}, {'results': 1})
-            self.assertEqual(rows[0]['parallel_n'], 16)
+            self.assertEqual(rows[0]['parallel_n'], 24)
             self.assertEqual(rows[0]['solved'], 8)
             self.assertEqual(rows[0]['oracle_n'], 3)
             self.assertEqual(rows[0]['epsilon'], [0]+[1]*7)
@@ -137,6 +173,19 @@ class AuditAndAggregationTests(unittest.TestCase):
         for metric in report['metrics'].values():
             self.assertEqual(metric['rmse'], 0)
             self.assertEqual(metric['predicted'], [3, 3])
+
+    def test_n4_fixed_groups_and_missing_audits(self):
+        short = {('p', s): dict(problem_id='p', seed=s, audit_score=5 if s == 8 else 0,
+                               budget_cuts={'1x': {'audit_score': 5 if s == 1 else 0}})
+                 for s in range(1, 13)}
+        r = dict(row(m=8), dataset='results', problem='p')
+        with patch('scripts.report_joint_allocation.indexed_audits', return_value=short):
+            result = collect_targets(Path('/unused'), 'gpt55', 4, [r], [{4: {}}], 5, {})
+            self.assertEqual(result[0]['weight'], 3)
+            self.assertEqual(result[0]['observed'], [1/3, 2/3])
+            del short['p', 12]
+            with self.assertRaisesRegex(ValueError, 'Missing N=4 target'):
+                collect_targets(Path('/unused'), 'gpt55', 4, [r], [{4: {}}], 5, {})
 
     def test_n2_pairs_same_seed_and_keeps_cumulative_success(self):
         first = {( 'p', s): dict(problem_id='p', seed=s, audit_score=0,
