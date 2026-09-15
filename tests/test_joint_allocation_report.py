@@ -102,11 +102,20 @@ class JointEstimatorTests(unittest.TestCase):
             Joint([row(epsilon=[0]*8)])
 
     def test_targets_cannot_change_fit(self):
-        rows = [row(x, 8) for x in (0, 2, 5)]
-        before, _ = fit_interventions(rows)
+        rows = [
+            dict(row(x, 8), problem=f'p{i}',
+                 dataset='results' if i < 2 else 'results-imobench')
+            for i, x in enumerate((0, 2, 5))
+        ]
         changed = [dict(r, observed=[1]*8, weight=100, acquired=999) for r in rows]
-        after, _ = fit_interventions(changed)
-        self.assertEqual(before, after)
+        for prior_dataset in (None, 'results'):
+            with self.subTest(prior_dataset=prior_dataset):
+                before, diagnostics = fit_interventions(rows, prior_dataset=prior_dataset)
+                after, changed_diagnostics = fit_interventions(changed, prior_dataset=prior_dataset)
+                self.assertEqual(before, after)
+                self.assertEqual(diagnostics, changed_diagnostics)
+                expected_training = ['p0', 'p1', 'p2'] if prior_dataset is None else ['p0', 'p1']
+                self.assertEqual(diagnostics['training_problems'], expected_training)
 
 
 class AuditAndAggregationTests(unittest.TestCase):
@@ -116,11 +125,23 @@ class AuditAndAggregationTests(unittest.TestCase):
         reports = {}
         for n, models in [(1, ['muse', 'gpt54', 'gpt55', 'opus']), (2, ['muse', 'gpt54', 'gpt55']), (4, ['muse', 'gpt55'])]:
             for model in models:
-                reports[f'{model}-n{n}'] = dict(trials=171, metrics={method: dict(rmse=10.+i, rate_rmse_pp=(10.+i)/1.71) for i, method in enumerate(METHODS)})
+                rows = []
+                for dataset, size, count_error in [('results', 35, 10.), ('results-imobench', 22, 20.)]:
+                    rows.extend(
+                        dict(dataset=dataset, problem=f'{dataset}-{j}', weight=3,
+                             observed=[0.]*(8//n),
+                             predictions={method: [(count_error+i)/(3*size)]*(8//n)
+                                          for i, method in enumerate(METHODS)})
+                        for j in range(size)
+                    )
+                reports[f'{model}-n{n}'] = summarize(rows)
         for n in (1, 2):
             table = comparison_table(dict(reports=reports), n)
             self.assertIn('RMSE in solved-trial counts', table)
             self.assertIn(r'\textbf{10.00}', table)
+            self.assertIn(r'\textbf{20.00}', table)
+            self.assertIn('AOBench', table)
+            self.assertIn('IMO-ProofBench', table)
             self.assertNotIn('5.85', table)
         self.assertIn('$N=4$', comparison_table(dict(reports=reports), 2))
 

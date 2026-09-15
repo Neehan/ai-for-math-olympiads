@@ -7,11 +7,11 @@ import numpy as np
 NAMES = ["Muse Spark~1.2", "GPT-5.4", "GPT-5.5", "Claude Opus~4.8"]
 
 
-def comparison_table(data, n):
+def combined_comparison_table(data, n):
     from scripts.report_joint_allocation import METHODS
     if n == 2 and all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
         lines = [r'\begin{table}[htbp]', r'\centering\small\setlength{\tabcolsep}{4pt}',
-                 r'\begin{tabular}{lrrrr}', r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Pooled \\']
+                 r'\begin{tabular}{lrrrr}', r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Average \\']
         for allocation, models in [(2, ['muse', 'gpt54', 'gpt55']), (4, ['muse', 'gpt55'])]:
             lines += [r'\midrule', r'\multicolumn{5}{l}{\textit{$N='+str(allocation)+r'$}} \\', r'\midrule']
             assert all(data['reports'][f'{m}-n{allocation}']['trials'] == 171 for m in models)
@@ -31,7 +31,7 @@ def comparison_table(data, n):
                         cells.append(r'\textbf{'+f'{value:.2f}'+'}' if value == min(values[model]) else f'{value:.2f}')
                 lines.append(label+' & '+' & '.join(cells)+r' \\')
         lines += [r'\bottomrule', r'\end{tabular}',
-                  r'\caption{Aggregate-curve RMSE in solved-trial counts for $N=2$ and $N=4$; each reported model has 57 problems and 171 allocation trials. A trial succeeds if any of its $N$ trajectories solves. Pooled errors weight available models equally within each panel (three for $N=2$, two for $N=4$). Lower is better; bold marks column minima within each panel. Dashes indicate unavailable complete coverage; Opus is excluded.}',
+                  r'\caption{Aggregate-curve RMSE in solved-trial counts for $N=2$ and $N=4$; each reported model has 57 problems and 171 allocation trials. A trial succeeds if any of its $N$ trajectories solves. Average errors weight available models equally within each panel (three for $N=2$, two for $N=4$). Lower is better; bold marks column minima within each panel. Dashes indicate unavailable complete coverage; Opus is excluded.}',
                   r'\label{tab:n2-predictor-comparison}', r'\end{table}']
         return '\n'.join(lines)+'\n'
     models = ['muse', 'gpt54', 'gpt55'] + (['opus'] if n == 1 else [])
@@ -43,7 +43,7 @@ def comparison_table(data, n):
     minima = values.min(axis=0)
     lines = [r'\begin{table}[htbp]', r'\centering\small\setlength{\tabcolsep}{4pt}',
              r'\begin{tabular}{l'+'r'*(len(models)+1)+'}',
-             r'\toprule Framework & '+' & '.join(names)+r' & Pooled \\', r'\midrule']
+             r'\toprule Framework & '+' & '.join(names)+r' & Average \\', r'\midrule']
     for (method, label), row in zip(METHODS.items(), values):
         if label == 'DE':
             lines.append(r'\midrule')
@@ -53,8 +53,53 @@ def comparison_table(data, n):
         lines.append(label+' & '+' & '.join(cells)+r' \\')
     label = 'predictor-comparison' if n == 1 else 'n2-predictor-comparison'
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in solved-trial counts across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Pooled errors weight models equally. Lower is better.'+('' if n == 1 else r' Incomplete Opus coverage is excluded.')+'}',
+              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in solved-trial counts across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Lower is better.'+('' if n == 1 else r' Incomplete Opus coverage is excluded.')+'}',
               r'\label{tab:'+label+'}', r'\end{table}']
+    return '\n'.join(lines)+'\n'
+
+
+def comparison_table(data, n):
+    """Separate prior-training and external-validation cohorts in main tables."""
+    from scripts.report_joint_allocation import METHODS, summarize
+    models = ['muse', 'gpt54', 'gpt55', 'opus']
+    lines = [r'\begin{table}[htbp]', r'\centering\small\setlength{\tabcolsep}{4pt}',
+             r'\begin{tabular}{lrrrrr}',
+             r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Opus & Average \\']
+    for allocation in ([1] if n == 1 else [2, 4]):
+        for dataset, name, expected in [('results', 'AOBench', 35), ('results-imobench', 'IMO-ProofBench', 22)]:
+            title = name + (r' ($N='+str(allocation)+'$)' if n != 1 else '')
+            lines += [r'\midrule', r'\multicolumn{6}{l}{\textit{'+title+r'}} \\', r'\midrule']
+            values = {}
+            for model in models:
+                report = data['reports'].get(f'{model}-n{allocation}')
+                if report is None:
+                    continue
+                subset = [r for r in report['rows'] if r['dataset'] == dataset]
+                if len(subset) != expected or sum(r['weight'] for r in subset) != 3*expected:
+                    continue
+                metrics = summarize(subset)['metrics']
+                values[model] = [metrics[method]['rmse'] for method in METHODS]
+            values['average'] = np.sqrt(np.mean(np.square(list(values.values())), axis=0)).tolist()
+            for i, label in enumerate(METHODS.values()):
+                if label == 'DE':
+                    lines.append(r'\midrule')
+                if label in ('DE', 'R-DE'):
+                    label += ' (ours)'
+                cells = []
+                for model in models+['average']:
+                    if model not in values:
+                        cells.append('---')
+                    else:
+                        value=values[model][i]
+                        cells.append(r'\textbf{'+f'{value:.2f}'+'}' if value==min(values[model]) else f'{value:.2f}')
+                lines.append(label+' & '+' & '.join(cells)+r' \\')
+    caption = (r'Full-curve RMSE in solved-trial counts for $N=1$ across eight checkpoints.' if n == 1 else
+               r'Aggregate-curve RMSE in solved-trial counts for $N=2$ and $N=4$. A trial succeeds if any constituent trajectory solves.')
+    caption += r' AOBench contains 35 problems and 105 trials; IMO-ProofBench contains 22 problems and 66 trials. R-DE priors are fitted only on AOBench and frozen for IMO-ProofBench; both datasets provide per-problem intervention measurements. Lower is better; compare frameworks within each panel.'
+    if n != 1:
+        caption += r' Dashes indicate unavailable complete cohorts; each Average uses the available models in that panel.'
+    label='predictor-comparison' if n==1 else 'n2-predictor-comparison'
+    lines += [r'\bottomrule', r'\end{tabular}', r'\caption{'+caption+'}', r'\label{tab:'+label+'}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 
 
@@ -79,7 +124,7 @@ def execution_subgroup_table(data):
         values.append(row)
     lines = [r'\begin{table}[t]', r'\centering\small\setlength{\tabcolsep}{4pt}',
              r'\begin{tabular}{lrrrrr}',
-             r'\toprule Framework & '+' & '.join(names)+r' & Pooled \\', r'\midrule']
+             r'\toprule Framework & '+' & '.join(names)+r' & Average \\', r'\midrule']
     for index, ((_, label), row) in enumerate(zip(METHODS.items(), values)):
         if index == 3:
             lines.append(r'\midrule')
@@ -89,7 +134,7 @@ def execution_subgroup_table(data):
     lines += [r'\bottomrule', r'\end{tabular}',
               r'\caption{Full-curve RMSE in percentage points on problems with $\widehat\varepsilon_n(1)<1$: '
               + ', '.join(f'{count} for {name}' for count, name in zip(counts, names))
-              + r'. Pooled errors weight models equally. Lower is better.}',
+              + r'. Lower is better.}',
               r'\label{tab:execution-subgroup}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 
@@ -107,6 +152,8 @@ def render(data, output_dir):
             name = 'predictor_comparison_table.tex' if n == 1 else 'n2_predictor_comparison_table.tex'
             (output_dir/name).write_text(comparison_table(data, n))
     if 'n1' in data['pooled_rmse_pp']:
+        combined = combined_comparison_table(data, 1).replace('tab:predictor-comparison', 'tab:combined-predictor-comparison')
+        (output_dir/'combined_predictor_comparison_table.tex').write_text(combined)
         lines = [r'\begin{table}[t]', r'\centering\small', r'\begin{tabular}{lrrr}',
                  r'\toprule Model & MAE & RMSE & Final observed/predicted \\', r'\midrule',
                  r'\multicolumn{4}{l}{\textit{$N=1,K=8$: 171 trajectories per model}} \\']

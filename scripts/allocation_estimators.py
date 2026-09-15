@@ -55,7 +55,7 @@ def fit_de(row):
 
 
 class Joint:
-    def __init__(self, rows):
+    def __init__(self, rows, *, full_support=False):
         if not rows:
             raise ValueError("At least one intervention row is required")
         for row in rows:
@@ -67,7 +67,8 @@ class Joint:
         cum = np.rint(np.array([r['epsilon'] for r in rows])*self.t[:,None]).astype(int)
         self.c = np.diff(np.c_[np.zeros(len(rows),dtype=int),cum,self.t],axis=1)
         assert np.all(self.c>=0)
-        self.active = np.flatnonzero(self.c.sum(axis=0)>0)
+        self.full_support = full_support
+        self.active = np.arange(9) if full_support else np.flatnonzero(self.c.sum(axis=0)>0)
         if 0 not in self.active or len(self.active) < 2:
             raise ValueError("R-DE requires some oracle completions at block 1 and some later/censored outcomes across the fitting cohort")
         self.h = np.arange(int((self.m-self.x).max())+1)[None,:]
@@ -111,7 +112,9 @@ class Joint:
         return curves, (w*ap/(ap+bp)).sum(axis=1)
 
     def fit(self):
-        g = self.c.sum(axis=0)[self.active]/self.t.sum()
+        counts = self.c.sum(axis=0)[self.active]
+        # Positive initialization, not pseudo-observations in the likelihood.
+        g = (counts+1/9)/(self.t.sum()+1) if self.full_support else counts/self.t.sum()
         starts=[]
         for ta,te in [(0.5,0.5),(2,2),(10,0.5),(0.5,10),(10,10),(50,50)]:
             initial=np.log(np.r_[ta*.6,ta*.4,te*g])

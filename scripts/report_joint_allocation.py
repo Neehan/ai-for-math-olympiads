@@ -121,10 +121,14 @@ def geometric(solved, total, attempts):
     return 1-math.comb(total-solved, attempts)/math.comb(total, attempts)
 
 
-def fit_interventions(rows):
+def fit_interventions(rows, *, prior_dataset='results'):
     # This interface receives no target outcomes, weights, or acquisition audits.
-    joint = Joint(rows)
-    optimum, starts = joint.fit()
+    training_rows = rows if prior_dataset is None else [r for r in rows if r['dataset'] == prior_dataset]
+    if not training_rows:
+        raise ValueError('No intervention problems for shared-prior training')
+    training = Joint(training_rows, full_support=prior_dataset is not None)
+    optimum, starts = training.fit()
+    joint = Joint(rows, full_support=prior_dataset is not None)
     rde1, alpha = joint.predict(optimum.x)
     rde2 = posterior_n2(joint, optimum.x)
     rde4 = posterior_n4(joint, optimum.x)
@@ -148,7 +152,10 @@ def fit_interventions(rows):
         predictions.append(allocations)
     _, _, _, _, _, _, d = joint.components(optimum.x)
     a, b = np.exp(optimum.x[:2])
-    diagnostics = dict(starts=starts, log_hyperparameters=optimum.x.tolist(),
+    diagnostics = dict(prior_dataset=prior_dataset, prior_problems=len(training_rows),
+                       full_support=prior_dataset is not None,
+                       training_problems=[r['problem'] for r in training_rows],
+                       starts=starts, log_hyperparameters=optimum.x.tolist(),
                        optimum_nll=float(optimum.fun),
                        hyper=dict(mu_alpha=float(a/(a+b)), tau_alpha=float(a+b),
                                   tau_execution=float(d.sum()), execution_mean=(d/d.sum()).tolist()),
@@ -222,7 +229,7 @@ def build_reports(root, profiles, threshold=5):
         if not selected:
             continue
         rows = collect_interventions(root, model, threshold, fingerprints)
-        print(f'Fitting {model} from {len(rows)} intervention problems (six starts)...', file=sys.stderr, flush=True)
+        print(f'Fitting {model} priors on 35 AOBench problems; conditioning on {len(rows)} intervention problems (six starts)...', file=sys.stderr, flush=True)
         predictions, fits[model] = fit_interventions(rows)
         # Only now read unaided outcomes. Target allocation never changes the fit.
         for n in selected:
