@@ -250,7 +250,11 @@ def _load_alt_problems() -> list[Problem]:
         hint = hints_by_id[pid].get("hint")
         domain = hints_by_id[pid].get("domain")
         steps = steps_by_id[pid].get("steps")
-        if not all(isinstance(x, str) and x.strip() for x in (statement, hint, domain)):
+        if (
+            not isinstance(statement, str) or not statement.strip()
+            or not isinstance(hint, str) or not hint.strip()
+            or not isinstance(domain, str) or not domain.strip()
+        ):
             raise ValueError(f"alt-hint: {pid} needs statement, hint, and domain")
         if len(hint.split()) > 25:
             raise ValueError(f"alt-hint: {pid} sketch exceeds 25 words")
