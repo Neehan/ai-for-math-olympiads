@@ -120,6 +120,27 @@ SOLUTIONS_FILE_ENV: str = "SOLUTIONS_FILE"
 SELECTION_FILE_ENV: str = "SELECTION_FILE"
 FETCH_TIMEOUT_SECONDS: int = 60
 
+ALT_HINT_ARM: str = "alt-hint"
+
+
+def data_source_urls(arm: str | None = None) -> dict[str, str]:
+    """Select arm-specific sources independently of the public dataset flag."""
+    if arm == ALT_HINT_ARM:
+        return {
+            # Alternate solutions also carry the frozen problem statements.
+            "problems": f"{_DATASET_BASE}/hard_alt_solutions.jsonl",
+            "hints": f"{_DATASET_BASE}/hard_alt_hints.jsonl",
+            "outlines": f"{_DATASET_BASE}/hard_alt_outlines.jsonl",
+            "solutions": f"{_DATASET_BASE}/hard_alt_solutions.jsonl",
+        }
+    return {
+        "problems": PROBLEMS_URL,
+        "hints": HINTS_URL,
+        "outlines": OUTLINES_URL,
+        "solutions": SOLUTIONS_URL,
+    }
+
+
 # --- Arm vocabulary -------------------------------------------------------
 # Hint ladder: h1 within-domain cyclic shift of h2 (the placebo arm), h2 frozen
 # one-sentence strategy hint (the hint arm), h3 numbered strategy outline.

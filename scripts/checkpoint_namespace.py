@@ -83,6 +83,13 @@ def namespace(arguments: list[str], settings_path: Path) -> str:
 
     config_bytes = Path("config.json").read_bytes()
     config_bytes = _canonicalize_seed_roster(config_bytes)
+    # The alternate-sketch arm must not strand existing paid checkpoints.
+    # Its own namespace still includes its complete configuration.
+    if arm != "alt-hint":
+        config_bytes = b"".join(
+            line for line in config_bytes.splitlines(keepends=True)
+            if b'"alt-hint"' not in line
+        )
     # Adding independent replication arms must not move paid checkpoints for
     # existing arms or one another. Each replication arm remains fully bound
     # to its own config entry while ignoring the other replication entries.

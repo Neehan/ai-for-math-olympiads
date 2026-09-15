@@ -22,6 +22,7 @@ from typing import Any
 import zstandard
 
 from src.constants import (
+    ALT_HINT_ARM,
     ARM_AUDIT_FILENAME,
     ARM_STATE_AUDIT_FILENAME,
     AUDIT_SCRATCH_SUBDIR,
@@ -59,6 +60,7 @@ from src.constants import (
     BANK_RUN_DIR_FORMAT,
     UNIFORM_STRATEGIES_FILENAME,
     ZSTD_LEVEL,
+    data_source_urls,
 )
 from src.models import ArmConfig, ExperimentConfig, PhaseResult, Problem
 from src.solver import provider_transport_policy, session_recovery_policy
@@ -173,7 +175,7 @@ def _domain_shifted_placebos(
     return placebos
 
 
-def load_problems() -> list[Problem]:
+def load_problems(arm: str | None = None) -> list[Problem]:
     """Fetch problems + hints + outlines and join them by problem_id.
 
     Only problem_id, statement, and domain are kept from the problems file —
@@ -182,6 +184,8 @@ def load_problems() -> list[Problem]:
     h2 = the frozen one-sentence strategy hint from the hints file's scalar
     'hint' field, h3 = strategy outline (numbered steps; used by outline arms).
     """
+    if arm == ALT_HINT_ARM:
+        return _load_alt_problems()
     hints_by_id = {r["problem_id"]: r for r in _fetch_jsonl(HINTS_FILE_ENV, HINTS_URL)}
     steps_by_id = {
         r["problem_id"]: r["steps"]
@@ -207,6 +211,67 @@ def load_problems() -> list[Problem]:
                 hint_h1=placebos_by_id[problem_id],
                 hint_h2=hint if hint else None,
                 hint_h3=_outline_text(steps) if steps else None,
+            )
+        )
+    return problems
+
+
+def _load_alt_problems() -> list[Problem]:
+    """Join the three alternate sources; never expose reference proofs to solvers."""
+    urls = data_source_urls(ALT_HINT_ARM)
+    records = _fetch_jsonl(PROBLEMS_FILE_ENV, urls["problems"])
+    hints = _fetch_jsonl(HINTS_FILE_ENV, urls["hints"])
+    outlines = _fetch_jsonl(OUTLINES_FILE_ENV, urls["outlines"])
+
+    def index(rows: list[dict[str, Any]], label: str) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            pid = row.get("problem_id")
+            if not isinstance(pid, str) or not pid.strip() or pid in result:
+                raise ValueError(f"alt-hint: invalid/duplicate problem_id in {label}")
+            result[pid] = row
+        return result
+
+    statements = index(records, "solutions")
+    hints_by_id = index(hints, "hints")
+    steps_by_id = index(outlines, "outlines")
+    if (
+        not statements
+        or statements.keys() != hints_by_id.keys()
+        or statements.keys() != steps_by_id.keys()
+    ):
+        raise ValueError(
+            "alt-hint: solutions, hints, and outlines must have identical "
+            "nonempty problem sets"
+        )
+    problems = []
+    for pid, record in statements.items():
+        statement = record.get("statement")
+        hint = hints_by_id[pid].get("hint")
+        domain = hints_by_id[pid].get("domain")
+        steps = steps_by_id[pid].get("steps")
+        if not all(isinstance(x, str) and x.strip() for x in (statement, hint, domain)):
+            raise ValueError(f"alt-hint: {pid} needs statement, hint, and domain")
+        if len(hint.split()) > 25:
+            raise ValueError(f"alt-hint: {pid} sketch exceeds 25 words")
+        if not isinstance(steps, list) or len(steps) != 3 or any(
+            not isinstance(s, dict)
+            or not isinstance(s.get("step"), str)
+            or not s["step"].strip()
+            or len(s["step"].split()) > 20
+            for s in steps
+        ):
+            raise ValueError(
+                f"alt-hint: {pid} requires three nonempty steps of at most 20 words"
+            )
+        problems.append(
+            Problem(
+                problem_id=pid,
+                statement=statement,
+                domain=domain,
+                hint_h1=None,
+                hint_h2=hint,
+                hint_h3=_outline_text(steps),
             )
         )
     return problems
@@ -339,10 +404,11 @@ def _outline_reference(record: dict[str, Any]) -> str:
     return solution.strip()
 
 
-def load_audit_references() -> dict[str, tuple[str, str]]:
+def load_audit_references(arm: str | None = None) -> dict[str, tuple[str, str]]:
     """Load problem statements and the fixed index-0 correctness reference."""
     references: dict[str, tuple[str, str]] = {}
-    for record in _fetch_jsonl(SOLUTIONS_FILE_ENV, SOLUTIONS_URL):
+    url = data_source_urls(arm)["solutions"] if arm == ALT_HINT_ARM else SOLUTIONS_URL
+    for record in _fetch_jsonl(SOLUTIONS_FILE_ENV, url):
         problem_id = record.get("problem_id")
         statement = record.get("statement")
         if not isinstance(problem_id, str) or not isinstance(statement, str):
@@ -353,14 +419,15 @@ def load_audit_references() -> dict[str, tuple[str, str]]:
     return references
 
 
-def load_state_audit_references() -> dict[str, tuple[str, str]]:
+def load_state_audit_references(arm: str | None = None) -> dict[str, tuple[str, str]]:
     """Load problem statements and explicitly outline-matching full solutions.
 
-    Generation never receives this source. Returning the stored statement lets
+    Solvers never receive these proofs. Returning the stored statement lets
     the caller verify the problem-id join before constructing any prompt.
     """
     references: dict[str, tuple[str, str]] = {}
-    for record in _fetch_jsonl(SOLUTIONS_FILE_ENV, SOLUTIONS_URL):
+    url = data_source_urls(arm)["solutions"] if arm == ALT_HINT_ARM else SOLUTIONS_URL
+    for record in _fetch_jsonl(SOLUTIONS_FILE_ENV, url):
         problem_id = record.get("problem_id")
         statement = record.get("statement")
         if not isinstance(problem_id, str) or not isinstance(statement, str):

@@ -33,8 +33,26 @@ One compute unit is at most 200k eligible output tokens.
 | `hint-sequential` | Five trajectories, each given one frozen ≤25-word oracle strategy and Self-Refine through 8× | Conditional execution after proposal and comparative selection are bypassed |
 | `late-baseline-sequential` / `late-hint-sequential` | On an explicitly supplied problem set, fork the same fresh native 3× trajectory and continue for 1× without or with the oracle strategy | Matched estimate of whether accumulated reasoning history attenuates oracle guidance |
 | `hint` / `placebo-hint` | Correct or within-domain shifted sketch at 1× | Immediate semantic-information effect and prompt-form control |
+| `alt-hint` | Three independent 1× proofs using the alternate ≤25-word sketch | Sketch robustness on the fixed alternate-solution cohort |
 
 Uniform-C extracts `m≤8` strategies. Its eight executors are assigned round-robin, so each strategy receives either `floor(8/m)` or `ceil(8/m)` runs; allocation counts differ by at most one. Report planner coverage and executor outcomes separately. Uniform-C branches are dependent and are never reported as pass@`k`.
+
+### Alternate-sketch arm
+
+`alt-hint` uses the same prompt, budget, and seeds as `hint`, but loads these three files from `notadib/math-contests-2026` on Hugging Face:
+
+- `hard_alt_solutions.jsonl`: problem statements and alternate correctness references.
+- `hard_alt_hints.jsonl`: alternate sketches and domains.
+- `hard_alt_outlines.jsonl`: alternate three-step state-audit outlines.
+
+The three files must contain the same problem IDs. This is one mixed-dataset cohort: `--dataset` is accepted but ignored for this arm, including audits and output routing. All results go to `results/<model>/alt-hint/`. `--problems`, `--domain`, and `--seeds` still filter normally. Generation receives only the statement and sketch; full reference proofs are stripped from prefetched generation files.
+
+```bash
+./run.sh run --arm alt-hint --model claude-opus-4-8 --seeds 1,2,3 --max-concurrency 8
+./run.sh audit --arm alt-hint --model claude-opus-4-8 --audit-model litellm/gpt-6-astra --max-concurrency 8
+```
+
+`audit` grades correctness against the alternate solution, then automatically runs state audits against that solution and its alternate outline. To run only the latter, use `./run.sh state-audit --arm alt-hint` with the same model/seed options. Upload all three HF files before starting this arm; there is no fallback to the original sketches or references.
 
 ## Strategy-access and execution protocol
 

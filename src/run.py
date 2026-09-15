@@ -1895,7 +1895,7 @@ async def main() -> None:
         )
     arm = config.arms[args.arm]
     seeds = select_seeds(arm, args.seeds)
-    all_problems = load_problems()
+    all_problems = load_problems(arm.name)
     problems = select_problems(all_problems, args.problems, args.domain)
     # Fail fast BEFORE spending tokens if any selected problem lacks the hint.
     for problem in problems:

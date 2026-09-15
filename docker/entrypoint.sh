@@ -27,50 +27,16 @@ esac
 # file would be contaminated). The harness loader reads these files once and
 # deletes them before any agent spawns, so no trace remains.
 mkdir -p /run/contest
-python - <<'PY'
-import urllib.request
-from src.constants import HINTS_URL, OUTLINES_URL, PROBLEMS_URL
-
-for url, name in [
-    (PROBLEMS_URL, "problems.jsonl"),
-    (HINTS_URL, "hints.jsonl"),
-    (OUTLINES_URL, "outlines.jsonl"),
-]:
-    with urllib.request.urlopen(url, timeout=60) as response:
-        data = response.read()
-    with open(f"/run/contest/{name}", "wb") as handle:
-        handle.write(data)
-print("datasets prefetched")
-PY
+python -m src.prefetch "$STAGE"
 export PROBLEMS_FILE=/run/contest/problems.jsonl
 export HINTS_FILE=/run/contest/hints.jsonl
 export OUTLINES_FILE=/run/contest/outlines.jsonl
 case "${HARNESS_ARM:-}" in
     selection|selection-no-problem)
-        python - <<'PY'
-import urllib.request
-from src.constants import SELECTION_URL
-
-with urllib.request.urlopen(SELECTION_URL, timeout=60) as response:
-    data = response.read()
-with open("/run/contest/selection.jsonl", "wb") as handle:
-    handle.write(data)
-print("selection candidates prefetched")
-PY
         export SELECTION_FILE=/run/contest/selection.jsonl
         ;;
 esac
 if [ "$STAGE" = "audit" ] || [ "$STAGE" = "state-audit" ]; then
-    python - <<'PY'
-import urllib.request
-from src.constants import SOLUTIONS_URL
-
-with urllib.request.urlopen(SOLUTIONS_URL, timeout=60) as response:
-    data = response.read()
-with open("/run/contest/solutions.jsonl", "wb") as handle:
-    handle.write(data)
-print("reference solutions prefetched")
-PY
     export SOLUTIONS_FILE=/run/contest/solutions.jsonl
 fi
 

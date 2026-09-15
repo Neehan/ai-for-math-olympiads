@@ -149,6 +149,14 @@ if [ -z "$ARM_NAME" ]; then
     exit 2
 fi
 
+# This arm is one fixed mixed-dataset cohort with its own HF references.
+# Normalize storage/checkpoints too, so --dataset cannot split duplicate runs.
+if [ "$ARM_NAME" = "alt-hint" ]; then
+    DATASET_NAME=math-contests-2026
+    RESULTS_DIR_NAME=results
+    RESULTS_HOST_ROOT="$PWD/$RESULTS_DIR_NAME"
+fi
+
 if [ "$1" = "run" ]; then
     case "$ARM_NAME" in
         baseline-uniform-compress)
@@ -399,10 +407,11 @@ fi
 
 # State/strategy annotation is needed only for the temporal trajectories,
 # search controls, and the raw planner proposals later displayed in compressed form.
-# Standalone fixed-compute arms stop after correctness grading.
+# Other standalone fixed-compute arms stop after correctness grading;
+# alt-hint also measures adherence to its alternate route.
 RUN_STATE_AUDIT=0
 case "$ARM_NAME" in
-    baseline-sequential|baseline-sequential-2x|baseline-sequential-4x|hint-sequential|late-baseline-sequential|late-hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only)
+    alt-hint|baseline-sequential|baseline-sequential-2x|baseline-sequential-4x|hint-sequential|late-baseline-sequential|late-hint-sequential|baseline-parallel|baseline-uniform-strategy|baseline-uniform-strategy-only)
         RUN_STATE_AUDIT=1
         ;;
 esac

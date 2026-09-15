@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 
 from src.constants import (
+    ALT_HINT_ARM,
+    HINT_H2,
     HINT_KINDS,
     HINT_NONE,
     MODE_PARALLEL,
@@ -223,6 +225,16 @@ def load_config(path: Path) -> ExperimentConfig:
     if hint.mode != MODE_SINGLE or hint.budget_units != 1 or hint.seeds != [1, 2, 3]:
         raise ValueError(
             f"{path}: hint must be a single 1x arm with seeds [1, 2, 3]"
+        )
+    alternate = config.arms.get(ALT_HINT_ARM)
+    if alternate is not None and (
+        alternate.hint != HINT_H2
+        or alternate.mode != MODE_SINGLE
+        or alternate.budget_units != 1
+        or alternate.seeds != [1, 2, 3]
+    ):
+        raise ValueError(
+            f"{path}: alt-hint must use h2, single 1x, and seeds [1, 2, 3]"
         )
     late_baseline = config.arms.get("late-baseline-sequential")
     if late_baseline is None:

@@ -607,9 +607,9 @@ async def main() -> None:
         )
     if args.all_checkpoints and arm.mode != MODE_SEQUENTIAL:
         raise SystemExit("--all-checkpoints is valid only for sequential arms")
-    all_problems = load_problems()
+    all_problems = load_problems(arm.name)
     problems = select_problems(all_problems, args.problems, args.domain)
-    state_references = load_state_audit_references()
+    state_references = load_state_audit_references(arm.name)
     for problem in all_problems:
         reference = state_references.get(problem.problem_id)
         if reference is None:
