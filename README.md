@@ -145,6 +145,53 @@ The historical solved-or-oracle-acquired U-statistic is available with
 `--legacy-acquisition` for reproducing earlier analyses. It is **not** the
 default and does not reproduce the current paper.
 
+### Late-sketch appendix table
+
+Regenerate the AOBench-only three-way **no sketch / start sketch / late sketch** table with:
+
+```bash
+python scripts/report_late_sketch.py \
+  --output local_data/late_sketch_report.json \
+  --tex paper/img/late_sketch_table.tex
+```
+
+The cohort is seeds 1--3 with **recorded `late-baseline-sequential` 3x audit
+score <5/7**. This is not a token-consumption filter and not cumulative failure:
+an earlier passing checkpoint does not exclude a trial. On the same problem--seed
+pairs, no sketch and late sketch use their final continuation scores; start sketch
+uses the `hint-sequential` 1x score. All passing counts use score >=5/7.
+The recorded 3x checkpoint need not coincide exactly with the native fork.
+
+The script checks matched sessions, complete cohorts, individual versus compiled
+audits, and proof hashes. Its JSON output saves the selected problem--seed pairs,
+outcomes, and source-audit hashes. The GPT-5.4 AOBench calculation reproduced the
+original paper's 8/45, 30/45, and 29/45 counts when this script was added.
+Selection and rendering tests are in `tests/test_late_sketch_report.py`.
+
+### Robustness tables
+
+The main R-DE fit learns shared priors from all 57 intervention problems. The
+robustness appendix uses AOBench for alternate sketches, injection timing,
+and shuffled-sketch controls. Discovery decay uses all 57 problems. Prior Parameter Sensitivity learns
+priors on AOBench alone and evaluates them on IMO-ProofBench.
+
+```bash
+python scripts/report_joint_allocation.py --output-dir paper/img
+python scripts/report_sketch_controls.py --output local_data/sketch_controls_report.json --tex-dir paper/img
+python scripts/report_late_sketch.py --output local_data/late_sketch_report.json --tex paper/img/late_sketch_table.tex
+python scripts/report_external_decay.py --report paper/img/allocation_report.json --output local_data/discovery_decay_report.json --tex paper/img/discovery_decay_table.tex
+python scripts/report_prior_transfer.py --output local_data/prior_transfer_aobench_imobench.json --tex paper/img/prior_sensitivity_table.tex
+```
+
+Sketch tables count solved trajectories at score >=5/7, not a two-of-three
+problem-level majority. Alternate sketches use the same 24 AOBench problems and
+seeds 1–3 in both conditions; all other content controls use all 35 problems.
+The standalone control reporter requires individual audits and verifies proof
+hashes, identities, and budgets. It can read completed individual audits before
+the batch's compiled JSONL is created. Timing selection is documented above.
+The prior comparison uses positive support for all nine oracle outcomes in both
+fits, avoiding zero-prior categories that appear only in the target dataset.
+
 ## Results backup
 
 Set `HF_TOKEN` in `.env`. Pull and safely merge the remote active result trees

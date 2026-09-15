@@ -121,7 +121,7 @@ def geometric(solved, total, attempts):
     return 1-math.comb(total-solved, attempts)/math.comb(total, attempts)
 
 
-def fit_interventions(rows, *, prior_dataset='results'):
+def fit_interventions(rows, *, prior_dataset=None):
     # This interface receives no target outcomes, weights, or acquisition audits.
     training_rows = rows if prior_dataset is None else [r for r in rows if r['dataset'] == prior_dataset]
     if not training_rows:
@@ -229,7 +229,7 @@ def build_reports(root, profiles, threshold=5):
         if not selected:
             continue
         rows = collect_interventions(root, model, threshold, fingerprints)
-        print(f'Fitting {model} priors on 35 AOBench problems; conditioning on {len(rows)} intervention problems (six starts)...', file=sys.stderr, flush=True)
+        print(f'Fitting {model} priors on all {len(rows)} intervention problems (six starts)...', file=sys.stderr, flush=True)
         predictions, fits[model] = fit_interventions(rows)
         # Only now read unaided outcomes. Target allocation never changes the fit.
         for n in selected:

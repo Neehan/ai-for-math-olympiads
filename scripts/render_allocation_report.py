@@ -59,7 +59,9 @@ def combined_comparison_table(data, n):
 
 
 def comparison_table(data, n):
-    """Separate prior-training and external-validation cohorts in main tables."""
+    """Render the combined main fit, or explicitly marked transfer experiments."""
+    if all(fit.get('prior_dataset') is None for fit in data.get('fits', {}).values()):
+        return combined_comparison_table(data, n)
     from scripts.report_joint_allocation import METHODS, summarize
     models = ['muse', 'gpt54', 'gpt55', 'opus']
     lines = [r'\begin{table}[htbp]', r'\centering\small\setlength{\tabcolsep}{4pt}',
@@ -152,8 +154,6 @@ def render(data, output_dir):
             name = 'predictor_comparison_table.tex' if n == 1 else 'n2_predictor_comparison_table.tex'
             (output_dir/name).write_text(comparison_table(data, n))
     if 'n1' in data['pooled_rmse_pp']:
-        combined = combined_comparison_table(data, 1).replace('tab:predictor-comparison', 'tab:combined-predictor-comparison')
-        (output_dir/'combined_predictor_comparison_table.tex').write_text(combined)
         lines = [r'\begin{table}[t]', r'\centering\small', r'\begin{tabular}{lrrr}',
                  r'\toprule Model & MAE & RMSE & Final observed/predicted \\', r'\midrule',
                  r'\multicolumn{4}{l}{\textit{$N=1,K=8$: 171 trajectories per model}} \\']

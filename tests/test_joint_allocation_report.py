@@ -138,10 +138,9 @@ class AuditAndAggregationTests(unittest.TestCase):
         for n in (1, 2):
             table = comparison_table(dict(reports=reports), n)
             self.assertIn('RMSE in solved-trial counts', table)
-            self.assertIn(r'\textbf{10.00}', table)
-            self.assertIn(r'\textbf{20.00}', table)
-            self.assertIn('AOBench', table)
-            self.assertIn('IMO-ProofBench', table)
+            self.assertIn(r'\textbf{30.00}', table)
+            self.assertIn('171', table)
+            self.assertNotIn('frozen for IMO-ProofBench', table)
             self.assertNotIn('5.85', table)
         self.assertIn('$N=4$', comparison_table(dict(reports=reports), 2))
 

@@ -23,6 +23,22 @@ from scripts.allocation_estimators import Joint, posterior_n2, posterior_n4
 from scripts.report_joint_allocation import (
     MODELS, collect_interventions, collect_targets, fit_interventions, summarize,
 )
+from scripts.report_sketch_controls import table
+
+
+def render(report):
+    names={'muse':'Muse Spark~1.2','gpt54':'GPT-5.4','gpt55':'GPT-5.5','opus':'Claude Opus~4.8'}
+    rows=[]
+    for model,name in names.items():
+        r=report['reports'][model]['allocations']['1']
+        if r['problems']!=22 or r['trials']!=66:
+            raise ValueError('Prior-transfer evaluation requires 22 IMO-ProofBench problems and 66 trajectories')
+        metrics=r['methods']
+        rows.append([name,r['trials'],f"{metrics['positive_support_joint']['rmse']:.2f}",
+                     f"{metrics['positive_support_transfer']['rmse']:.2f}"])
+    return table(['Model','Trajectories','57-problem priors','AOBench-only priors'],rows,
+                 r'Prior parameter sensitivity: $N=1$ RMSE in solved-trajectory counts on the same 22 IMO-ProofBench problems. Both fits retain positive prior support for all nine oracle outcomes; only the problems used to learn shared priors change. Each target problem supplies its own intervention measurements, not unaided outcomes, for estimation.',
+                 'tab:prior-sensitivity')
 
 
 def fit_full_support(rows):
@@ -136,8 +152,12 @@ def build_report():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--tex', type=Path)
     args = parser.parse_args()
-    data = json.dumps(build_report(), indent=2, allow_nan=False)
+    report = build_report()
+    data = json.dumps(report, indent=2, allow_nan=False)
+    if args.tex:
+        args.tex.write_text(render(report))
     if args.output:
         args.output.write_text(data + '\n')
         print(f'Saved {args.output}')
