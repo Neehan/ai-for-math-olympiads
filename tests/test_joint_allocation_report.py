@@ -123,7 +123,7 @@ class AuditAndAggregationTests(unittest.TestCase):
         from scripts.render_allocation_report import comparison_table
         from scripts.report_joint_allocation import METHODS
         reports = {}
-        for n, models in [(1, ['muse', 'gpt54', 'gpt55', 'opus']), (2, ['muse', 'gpt54', 'gpt55']), (4, ['muse', 'gpt55'])]:
+        for n, models in [(1, ['muse', 'gpt54', 'gpt55', 'opus']), (2, ['muse', 'gpt54', 'gpt55', 'opus']), (4, ['muse', 'gpt55'])]:
             for model in models:
                 rows = []
                 for dataset, size, count_error in [('results', 35, 10.), ('results-imobench', 22, 20.)]:
@@ -222,6 +222,44 @@ class AuditAndAggregationTests(unittest.TestCase):
             del second['p', 3]
             with self.assertRaisesRegex(ValueError, 'Missing N=2 target'):
                 collect_targets(Path('/unused'), 'gpt54', 2, [r], [{2: {}}], 5, {})
+
+    def test_opus_n2_requires_complete_pairs_in_both_datasets(self):
+        first = {('p', s): dict(problem_id='p', seed=s, audit_score=0,
+                 budget_cuts={f'{k}x': {'audit_score': 5 if s == 1 and k == 1 else 0}
+                              for k in range(1, 8)}) for s in (1, 2, 3)}
+        second = {('p', s): dict(problem_id='p', seed=s, audit_score=0,
+                  budget_cuts={f'{k}x': {'audit_score': 5 if s == 2 and k == 2 else 0}
+                               for k in range(1, 4)}) for s in (1, 2, 3)}
+        def read(path, *args, **kwargs):
+            if path.parent.name != 'late-baseline-sequential':
+                return first
+            return second
+        rows = [dict(row(), dataset=ds, problem='p') for ds in ('results', 'results-imobench')]
+        from scripts.report_joint_allocation import METHODS
+        predictions = [{2: {method: [.25]*4 for method in METHODS}}]*2
+        with patch('scripts.report_joint_allocation.indexed_audits', side_effect=read):
+            result = collect_targets(Path('/unused'), 'opus', 2, rows, predictions, 5, {})
+            del second['p', 3]
+            with self.assertRaisesRegex(ValueError, 'Missing N=2 target'):
+                collect_targets(Path('/unused'), 'opus', 2, rows, predictions, 5, {})
+        self.assertEqual([r['weight'] for r in result], [3, 3])
+        self.assertEqual(result[0]['observed'], [1/3, 2/3, 2/3, 2/3])
+        self.assertEqual(result[1]['observed'], [1/3, 2/3, 2/3, 2/3])
+        report = summarize(result)
+        self.assertEqual(report['trials'], 6)
+        self.assertEqual(report['metrics']['both_regularized']['predicted'], [1.5]*4)
+        self.assertEqual(report['metrics']['both_regularized']['observed'], [2., 4., 4., 4.])
+
+    def test_n2_plot_keeps_opus_dataset_and_combined_curves(self):
+        from scripts.render_allocation_report import plot
+        rows = [dict(dataset=ds, weight=w, observed=[.5]*4,
+                     predictions={'both_regularized': [.4]*4})
+                for ds, w in [('results', 2), ('results-imobench', 3)]]
+        figure = plot([rows]*4, n2=True)
+        self.assertEqual(figure.count(r'\addplot['), 24)
+        self.assertEqual(figure.count('draw=fitblue'), 8)
+        self.assertEqual(figure.count('draw=fitpurple'), 8)
+        self.assertNotIn('ymax=5,', figure)
 
 
 if __name__ == '__main__':

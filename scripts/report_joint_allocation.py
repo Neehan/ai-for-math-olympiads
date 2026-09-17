@@ -3,7 +3,7 @@
 
 Fresh and oracle seeds define the intervention fit, independently of target
 coverage. N=2 and N=4 reuse the full N=1 intervention fit. Missing required audits
-are errors, never failures; Opus N=2 is an explicitly partial replication.
+are errors, never failures; N=2 has complete coverage for all four models.
 """
 from __future__ import annotations
 
@@ -165,10 +165,7 @@ def fit_interventions(rows, *, prior_dataset=None):
 
 def collect_targets(root, model, n, rows, predictions, threshold, fingerprints):
     result = []
-    partial = model == 'opus' and n == 2
     for dataset in DATASETS:
-        if partial and dataset != 'results-imobench':
-            continue
         base = root/dataset/MODELS[model]
         if n == 4:
             short = indexed_audits(base/'baseline-sequential-2x/audit.jsonl', range(1, 13), fingerprints)
@@ -184,7 +181,7 @@ def collect_targets(root, model, n, rows, predictions, threshold, fingerprints):
                 result.append(dict(row, weight=3, observed=np.mean(curves, axis=0).tolist(), predictions=p[n]))
             continue
         first = indexed_audits(base/'baseline-sequential/audit.jsonl', SEEDS, fingerprints)
-        second = indexed_audits(base/'late-baseline-sequential/audit.jsonl', SEEDS, fingerprints, optional=partial) if n == 2 else None
+        second = indexed_audits(base/'late-baseline-sequential/audit.jsonl', SEEDS, fingerprints) if n == 2 else None
         for row, p in zip(rows, predictions):
             if row['dataset'] != dataset:
                 continue
@@ -192,8 +189,6 @@ def collect_targets(root, model, n, rows, predictions, threshold, fingerprints):
             for seed in SEEDS:
                 ident = row['problem'], seed
                 if ident not in first or (n == 2 and ident not in second):
-                    if partial:
-                        continue
                     raise ValueError(f'Missing N={n} target audit: {model}/{dataset}/{ident}')
                 c = np.array(proof_curve(first[ident], 8, threshold))
                 if n == 2:
@@ -237,13 +232,13 @@ def build_reports(root, profiles, threshold=5):
             reports[f'{model}-n{n}'] = summarize(targets)
     pooled = {}
     for n in (1, 2, 4):
-        keys = [f'{m}-n{n}' for m in MODELS if (n == 1 or (n == 2 and m != 'opus') or (n == 4 and m in ('muse', 'gpt55')))]
+        keys = [f'{m}-n{n}' for m in MODELS if (n in (1, 2) or (n == 4 and m in ('muse', 'gpt55')))]
         if all(k in reports for k in keys):
             pooled[f'n{n}'] = {method: float(np.sqrt(np.mean([reports[k]['metrics'][method]['rate_rmse_pp']**2 for k in keys]))) for method in METHODS}
     return dict(estimator='DE/R-DE', passing_score=threshold, reports=reports, fits=fits,
                 pooled_rmse_pp=pooled,
                 audit_sha256={str(Path(path).resolve().relative_to(root.resolve())): sha for path, sha in fingerprints.items()},
-                notes='Cumulative score-based solves; intervention-only fitting; N=2 posterior second moments and N=4 fourth moments; aggregate-curve RMSE. Opus N=2 is partial IMO-ProofBench only and excluded from pooled comparisons. N=4 uses complete Muse and GPT-5.5 cohorts, with fixed groups of four seeds.')
+                notes='Cumulative score-based solves; intervention-only fitting; N=2 posterior second moments and N=4 fourth moments; aggregate-curve RMSE. N=1 and N=2 use all 57 problems and 171 trials for each of four models. N=4 uses complete Muse and GPT-5.5 cohorts, with fixed groups of four seeds.')
 
 
 def main(argv=None):

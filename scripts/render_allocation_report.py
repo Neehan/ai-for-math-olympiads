@@ -11,9 +11,9 @@ def combined_comparison_table(data, n):
     from scripts.report_joint_allocation import METHODS
     if n == 2 and all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
         lines = [r'\begin{table}[htbp]', r'\centering\small\setlength{\tabcolsep}{4pt}',
-                 r'\begin{tabular}{lrrrr}', r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Average \\']
-        for allocation, models in [(2, ['muse', 'gpt54', 'gpt55']), (4, ['muse', 'gpt55'])]:
-            lines += [r'\midrule', r'\multicolumn{5}{l}{\textit{$N='+str(allocation)+r'$}} \\', r'\midrule']
+                 r'\begin{tabular}{lrrrrr}', r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Opus & Average \\']
+        for allocation, models in [(2, ['muse', 'gpt54', 'gpt55', 'opus']), (4, ['muse', 'gpt55'])]:
+            lines += [r'\midrule', r'\multicolumn{6}{l}{\textit{$N='+str(allocation)+r'$}} \\', r'\midrule']
             assert all(data['reports'][f'{m}-n{allocation}']['trials'] == 171 for m in models)
             values = {m: [data['reports'][f'{m}-n{allocation}']['metrics'][method]['rmse'] for method in METHODS] for m in models}
             values['pooled'] = np.sqrt(np.mean(np.square([values[m] for m in models]), axis=0)).tolist()
@@ -23,7 +23,7 @@ def combined_comparison_table(data, n):
                 if label in ('DE', 'R-DE'):
                     label += ' (ours)'
                 cells = []
-                for model in ['muse', 'gpt54', 'gpt55', 'pooled']:
+                for model in ['muse', 'gpt54', 'gpt55', 'opus', 'pooled']:
                     if model not in values:
                         cells.append('---')
                     else:
@@ -31,11 +31,11 @@ def combined_comparison_table(data, n):
                         cells.append(r'\textbf{'+f'{value:.2f}'+'}' if value == min(values[model]) else f'{value:.2f}')
                 lines.append(label+' & '+' & '.join(cells)+r' \\')
         lines += [r'\bottomrule', r'\end{tabular}',
-                  r'\caption{Aggregate-curve RMSE in solved-trial counts for $N=2$ and $N=4$; each reported model has 57 problems and 171 allocation trials. A trial succeeds if any of its $N$ trajectories solves. Average errors weight available models equally within each panel (three for $N=2$, two for $N=4$). Lower is better; bold marks column minima within each panel. Dashes indicate unavailable complete coverage; Opus is excluded.}',
+                  r'\caption{Aggregate-curve RMSE in solved-trial counts for $N=2$ and $N=4$; each reported model has 57 problems and 171 allocation trials. A trial succeeds if any of its $N$ trajectories solves. The Average is the square root of the mean model-specific MSE (four models for $N=2$, two for $N=4$). Lower is better; bold marks column minima within each panel. Dashes indicate unavailable $N=4$ coverage.}',
                   r'\label{tab:n2-predictor-comparison}', r'\end{table}']
         return '\n'.join(lines)+'\n'
-    models = ['muse', 'gpt54', 'gpt55'] + (['opus'] if n == 1 else [])
-    names = ['Muse', 'GPT-5.4', 'GPT-5.5'] + (['Opus'] if n == 1 else [])
+    models = ['muse', 'gpt54', 'gpt55', 'opus']
+    names = ['Muse', 'GPT-5.4', 'GPT-5.5', 'Opus']
     metrics = data['reports']
     assert all(metrics[f'{m}-n{n}']['trials'] == 171 for m in models)
     individual = np.array([[metrics[f'{m}-n{n}']['metrics'][method]['rmse'] for m in models] for method in METHODS])
@@ -53,7 +53,7 @@ def combined_comparison_table(data, n):
         lines.append(label+' & '+' & '.join(cells)+r' \\')
     label = 'predictor-comparison' if n == 1 else 'n2-predictor-comparison'
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in solved-trial counts across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Lower is better.'+('' if n == 1 else r' Incomplete Opus coverage is excluded.')+'}',
+              r'\caption{Full-curve $N='+str(n)+r'$ RMSE in solved-trial counts across $K=1,\ldots,'+str(8//n)+r'$; 57 problems and 171 '+('trajectories' if n == 1 else 'paired trials')+r' per model. Lower is better.}',
               r'\label{tab:'+label+'}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 
@@ -146,6 +146,11 @@ def render(data, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir/'allocation_report.json').write_text(json.dumps(data, indent=2, allow_nan=False)+'\n')
+    from scripts.report_execution_regimes import PANELS, build, render as render_regimes, render_early_gains
+    if all(f'{model}-n{n}' in data['reports'] for n, models in PANELS.items() for model in models):
+        regimes = build(data)
+        (output_dir/'execution_regimes_table.tex').write_text(render_regimes(regimes))
+        (output_dir/'early_execution_gains_table.tex').write_text(render_early_gains(regimes))
     for n, filename in [(1, 'allocation_model_fit.tex'), (2, 'allocation_model_replication.tex')]:
         keys = [f'{m}-n{n}' for m in ['muse', 'gpt54', 'gpt55', 'opus']]
         if all(k in data['reports'] for k in keys):
@@ -174,11 +179,6 @@ def plot(rows_by_model,n2=False,baseline=False):
     for i,rows in enumerate(rows_by_model):
         opts=[]
         if i:opts.append(r'yticklabels=\empty')
-        if n2 and i==3:
-            total = sum(r['weight'] for r in rows)
-            step = max(1, 10*round(total/20)) if total >= 20 else max(1, total//2)
-            ticks = ','.join(str(v) for v in range(0, total+1, step))
-            opts += [f'ymax={total}', 'ytick={'+ticks+'}', 'yticklabels={'+ticks+'}', r'yticklabel style={anchor=west,xshift=5pt}']
         lines.append(r'\nextgroupplot['+','.join(opts)+']')
         K=len(rows[0]['observed']); x=np.arange(1,K+1)*(2 if n2 else 1)
         if baseline:
@@ -187,7 +187,6 @@ def plot(rows_by_model,n2=False,baseline=False):
                 lines.append(r'\addplot['+f'draw={color},{style},line width=1.3pt,opacity=0.85'+'] '+coords(x,y))
         else:
             groups=[('results','fitblue'),('results-imobench','fitorange'),(None,'fitpurple')]
-            if n2 and i==3:groups=[('results-imobench','fitorange')]
             for dataset,color in groups:
                 subset=[r for r in rows if dataset is None or r['dataset']==dataset]
                 if not subset:continue
