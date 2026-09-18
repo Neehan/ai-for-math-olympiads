@@ -53,6 +53,8 @@ class ExplanatoryFigureTests(unittest.TestCase):
 
     def test_error_colors_and_styles(self):
         tex = explanatory_plot(fixture())
+        self.assertIn(r'\definecolor{errorrde}{HTML}{D94B40}', tex)
+        self.assertIn(r'\definecolor{errorogt}{HTML}{249447}', tex)
         for color in ('D94B40', '2077B4', '8246C5', '249447'):
             self.assertIn('{HTML}{'+color+'}', tex)
         self.assertEqual(tex.count(r'\nextgroupplot['), 4)

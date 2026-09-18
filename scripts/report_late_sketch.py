@@ -14,6 +14,7 @@ COHORTS = (
     ('results', 'AOBench', 'muse-spark-1.2-contributor', 'Muse Spark~1.2', 35),
     ('results', 'AOBench', 'litellm-gpt-5.4', 'GPT-5.4', 35),
     ('results', 'AOBench', 'litellm-gpt-5.5', 'GPT-5.5', 35),
+    ('results', 'AOBench', 'claude-opus-4-8', 'Claude Opus~4.8', 35),
 )
 
 

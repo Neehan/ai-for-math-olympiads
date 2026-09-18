@@ -1,9 +1,15 @@
 import unittest
 
-from scripts.report_late_sketch import passed, selected_at_3x, render
+from scripts.report_late_sketch import COHORTS, passed, selected_at_3x, render
 
 
 class LateSketchReportTests(unittest.TestCase):
+    def test_opus_included_in_aobench_timing_comparison(self):
+        self.assertIn(('results', 'AOBench', 'claude-opus-4-8', 'Claude Opus~4.8', 35), COHORTS)
+        tex = render({'cohorts': [dict(dataset='AOBench', model='Claude Opus~4.8', count=48,
+                                      early=20, control=3, late=20)]})
+        self.assertIn(r'Claude Opus~4.8 & 48 & 3 & 20 & 20 & $0$', tex)
+
     def test_selection_uses_3x_not_cumulative_or_final_score(self):
         record = dict(audit_score=7, budget_cuts={
             '1x': {'audit_score': 7}, '2x': {'audit_score': 7},

@@ -75,9 +75,9 @@ def explanatory_plot(data, n=1):
     tick_step = 10 if ymax-ymin > 35 else 5
     ticks = ','.join(str(t) for t in range(tick_step*int(np.ceil(ymin/tick_step)), ymax+1, tick_step))
     # Saturated red/blue/violet/green plus distinct markers for thin-line contrast.
-    lines = [r'\begingroup', r'\definecolor{errorogt}{HTML}{D94B40}',
+    lines = [r'\begingroup', r'\definecolor{errorogt}{HTML}{249447}',
              r'\definecolor{errorgeo}{HTML}{2077B4}', r'\definecolor{errorde}{HTML}{8246C5}',
-             r'\definecolor{errorrde}{HTML}{249447}',
+             r'\definecolor{errorrde}{HTML}{D94B40}',
              r'\definecolor{errortick}{HTML}{44505A}', r'\definecolor{errorgroup}{HTML}{17212B}',
              r'\definecolor{erroraxis}{HTML}{8C959D}', r'\definecolor{errorgrid}{HTML}{D7DCDF}',
              r'\begin{tikzpicture}[font=\normalfont\normalsize,text=black]',
