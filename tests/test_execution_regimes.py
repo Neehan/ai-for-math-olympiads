@@ -54,19 +54,34 @@ class ExecutionRegimeTests(unittest.TestCase):
 
     def test_table_contains_both_groups_and_allocations(self):
         tex = render(build(fixture()))
-        self.assertEqual(tex.count(' & Complete & '), 6)
-        self.assertEqual(tex.count(' & Incomplete & '), 6)
+        self.assertEqual(tex.count(' & Saturated & '), 6)
+        self.assertEqual(tex.count(' & Unsaturated & '), 6)
         self.assertIn('$N=1$', tex)
         self.assertIn('$N=2$', tex)
         self.assertNotIn('percentage', tex)
         rows = [line.split(' & ')[:2] for line in tex.splitlines()
-                if ' & Complete & ' in line or ' & Incomplete & ' in line]
+                if ' & Saturated & ' in line or ' & Unsaturated & ' in line]
         self.assertEqual(rows, [
-            ['GPT-5.4', 'Complete'], ['GPT-5.5', 'Complete'], ['Opus', 'Complete'],
-            ['GPT-5.4', 'Incomplete'], ['GPT-5.5', 'Incomplete'], ['Opus', 'Incomplete'],
-            ['GPT-5.4', 'Complete'], ['GPT-5.5', 'Complete'], ['Opus', 'Complete'],
-            ['GPT-5.4', 'Incomplete'], ['GPT-5.5', 'Incomplete'], ['Opus', 'Incomplete'],
+            ['GPT-5.4', 'Saturated'], ['GPT-5.5', 'Saturated'], ['Opus', 'Saturated'],
+            ['GPT-5.4', 'Unsaturated'], ['GPT-5.5', 'Unsaturated'], ['Opus', 'Unsaturated'],
+            ['GPT-5.4', 'Saturated'], ['GPT-5.5', 'Saturated'], ['Opus', 'Saturated'],
+            ['GPT-5.4', 'Unsaturated'], ['GPT-5.5', 'Unsaturated'], ['Opus', 'Unsaturated'],
         ])
+        self.assertIn(r'\label{tab:execution-regimes-full}', tex)
+
+    def test_main_table_is_opus_only_with_unchanged_metrics(self):
+        report = build(fixture())
+        tex = render(report, opus_only=True)
+        self.assertNotIn('GPT-', tex)
+        self.assertEqual(tex.count(' & Saturated & '), 2)
+        self.assertEqual(tex.count(' & Unsaturated & '), 2)
+        self.assertIn(r'\label{tab:execution-regimes}', tex)
+        for n in (1, 2):
+            for group, label in [('complete', 'Saturated'), ('incomplete', 'Unsaturated')]:
+                item = report['panels'][f'opus-n{n}'][group]
+                self.assertIn(f'{n} & {label} & {item["trials"]}', tex)
+                for metric in item['metrics'].values():
+                    self.assertIn(f'{metric["rmse"]:.2f}', tex)
 
 
 if __name__ == '__main__':

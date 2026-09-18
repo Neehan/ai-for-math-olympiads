@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 METHODS = ('solved_geometric', 'neither_regularized', 'both_regularized')
 PANELS = {1: ('gpt54', 'gpt55', 'opus'), 2: ('gpt54', 'gpt55', 'opus')}
 NAMES = {'gpt54': 'GPT-5.4', 'gpt55': 'GPT-5.5', 'opus': 'Opus'}
+GROUP_LABELS = {'complete': 'Saturated', 'incomplete': 'Unsaturated'}
 
 
 def summarize_subset(rows):
@@ -79,27 +80,35 @@ def build(data):
         rmse=float(np.sqrt(np.mean((plugin-np.array(gains['observed']))**2))))
     return dict(panels=result, gpt54_n2_early_gains=gains,
                 audit_sha256=data.get('audit_sha256', {}),
-                selection='Complete: all three oracle trajectories solve by block 1; incomplete: otherwise.',
+                selection='Saturated: all three oracle trajectories solve by block 1; unsaturated: otherwise.',
                 fitting='Reuse full-57 intervention fits; no subset refitting.',
                 metric='RMSE of aggregate cumulative solved-trial counts, not individual errors.')
 
 
-def render(report):
+def render(report, opus_only=False):
     lines = [r'\begin{table}[t]', r'\centering\small\setlength{\tabcolsep}{4pt}',
-             r'\begin{tabular}{llrrrr}', r'\toprule Model & Execution & Trials & Plain-geometric & DE & R-DE \\']
+             r'\begin{tabular}{llrrrr}',
+             (r'\toprule $N$' if opus_only else r'\toprule Model') + r' & Execution & Trials & Plain-geometric & DE & R-DE \\']
     for n, models in PANELS.items():
-        lines += [r'\midrule', r'\multicolumn{6}{l}{\textit{$N='+str(n)+r'$}} \\', r'\midrule']
+        if opus_only:
+            models = ('opus',)
+            lines.append(r'\midrule')
+        else:
+            lines += [r'\midrule', r'\multicolumn{6}{l}{\textit{$N='+str(n)+r'$}} \\', r'\midrule']
         for group in ('complete', 'incomplete'):
-            if group == 'incomplete':
+            if group == 'incomplete' and not opus_only:
                 lines.append(r'\addlinespace')
             for model in models:
                 item = report['panels'][f'{model}-n{n}'][group]
                 values = [item['metrics'][m]['rmse'] for m in METHODS]
                 cells = [r'\textbf{'+f'{v:.2f}'+'}' if v == min(values) else f'{v:.2f}' for v in values]
-                lines.append(' & '.join([NAMES[model], group.capitalize(), str(item['trials']), *cells])+r' \\')
+                first = str(n) if opus_only else NAMES[model]
+                lines.append(' & '.join([first, GROUP_LABELS[group], str(item['trials']), *cells])+r' \\')
+    title = 'Opus prediction error by first-block execution saturation.' if opus_only else 'Prediction error by first-block execution saturation for the GPT models and Opus.'
+    label = 'tab:execution-regimes' if opus_only else 'tab:execution-regimes-full'
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{Prediction error by first-block oracle completion. Complete means all three oracle trajectories solve by block 1 ($\widehat\varepsilon_n^{\rm oracle}(1)=1$); incomplete means at least one does not. Entries are aggregate solved-trial-count RMSE over eight checkpoints for $N=1$ and four for $N=2$, using the unchanged full-set fits. Each problem contributes three trials. Compare frameworks within rows; subset sizes differ. Bold marks the lowest error in each row.}',
-              r'\label{tab:execution-regimes}', r'\end{table}']
+              r'\caption{'+title+r' Saturated means all three oracle trajectories solve by block 1 ($\widehat\varepsilon_n^{\rm oracle}(1)=1$); unsaturated means at least one does not. Entries are aggregate solved-trial-count RMSE over eight checkpoints for $N=1$ and four for $N=2$, using unchanged full-set fits. Each problem contributes three trials. Bold marks row minima.}',
+              r'\label{'+label+'}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 
 
@@ -134,7 +143,8 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     args.tex_dir.mkdir(parents=True, exist_ok=True)
-    (args.tex_dir/'execution_regimes_table.tex').write_text(render(report))
+    (args.tex_dir/'execution_regimes_table.tex').write_text(render(report, opus_only=True))
+    (args.tex_dir/'execution_regimes_full_table.tex').write_text(render(report))
     (args.tex_dir/'early_execution_gains_table.tex').write_text(render_early_gains(report))
     print(f'Wrote {args.output} and execution subset tables to {args.tex_dir}')
 
