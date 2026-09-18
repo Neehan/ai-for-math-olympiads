@@ -1,0 +1,79 @@
+import unittest
+
+import numpy as np
+
+from scripts.render_allocation_report import display_series, explanatory_plot, all_allocation_table
+from scripts.report_joint_allocation import METHODS, summarize
+
+
+def fixture():
+    reports = {}
+    for n, models in [(1, ('muse', 'gpt54', 'gpt55', 'opus')),
+                      (2, ('muse', 'gpt54', 'gpt55', 'opus')),
+                      (4, ('muse', 'gpt55'))]:
+        rows = [dict(weight=3, oracle_n=3, epsilon=[.5]*8,
+                     observed=(np.arange(1, 8//n+1)/8).tolist(),
+                     predictions={m: (np.arange(1, 8//n+1)/9).tolist() for m in METHODS})
+                for _ in range(57)]
+        for model in models:
+            reports[f'{model}-n{n}'] = summarize(rows)
+    return dict(reports=reports)
+
+
+class ExplanatoryFigureTests(unittest.TestCase):
+    def test_display_checkpoints_are_total_budget(self):
+        data = fixture()
+        for n in (1, 2, 4):
+            x, series = display_series(data['reports'][f'muse-n{n}']['rows'], n)
+            np.testing.assert_array_equal(x, np.arange(n, 9, n))
+            np.testing.assert_allclose(series['observed'], 171*x/(8*n))
+
+    def test_errors_are_observed_minus_prediction_at_all_checkpoints(self):
+        data = fixture()
+        for n in (1, 2, 4):
+            tex = explanatory_plot(data, n=n)
+            panels = 2 if n == 4 else 4
+            self.assertEqual(tex.count(r'\nextgroupplot['), panels)
+            self.assertNotIn('errorzero', tex)
+            self.assertEqual(tex.count('black!65,solid,line width=1.2pt,no marks'), panels)
+            self.assertNotIn('ybar', tex)
+            for k in range(1, 8//n+1):
+                expected = 171*(k/8-k/9)
+                self.assertEqual(tex.count(f'({n*k},{expected:.6f})'), 4*panels)
+
+    def test_overprediction_is_negative_and_scale_is_shared(self):
+        data = fixture()
+        for row in data['reports']['opus-n1']['rows']:
+            row['predictions']['solved_geometric'] = [1.0]*8
+        tex = explanatory_plot(data)
+        self.assertIn('(1,-149.625000)', tex)
+        self.assertEqual(tex.count('ymin='), 1)
+        self.assertEqual(tex.count('ymax='), 1)
+        self.assertIn('ymin=-155', tex)
+
+    def test_error_colors_and_styles(self):
+        tex = explanatory_plot(fixture())
+        for color in ('D94B40', '2077B4', '8246C5', '249447'):
+            self.assertIn('{HTML}{'+color+'}', tex)
+        self.assertEqual(tex.count(r'\nextgroupplot['), 4)
+        for marker, size in [('square*', '1.3'), ('*', '1.5'), ('triangle*', '2.1'), ('diamond*', '1.9')]:
+            self.assertEqual(tex.count(f'solid,line width=1pt,mark={marker},mark size={size}pt'), 4)
+            self.assertEqual(tex.count(f'mark={marker},mark size={size}pt'), 5)
+        self.assertIn('{Solved $-$ Predicted}', tex)
+        self.assertNotIn(r'\small', tex)
+        self.assertNotIn(r'\sffamily', tex)
+        self.assertIn(r'font=\normalfont\normalsize,text=black', tex)
+        self.assertIn('{OGT}', tex)
+
+    def test_combined_table_uses_full_curve_metrics(self):
+        data = fixture()
+        data['reports']['opus-n1']['metrics']['both_regularized']['rmse'] = 1.2345
+        tex = all_allocation_table(data)
+        self.assertIn(r'\textbf{1.23}', tex)
+        for n in (1, 2, 4):
+            self.assertIn(f'$N={n}$', tex)
+        self.assertIn('all eight, four, or two checkpoints', tex)
+
+
+if __name__ == '__main__':
+    unittest.main()

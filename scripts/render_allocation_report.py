@@ -7,6 +7,106 @@ import numpy as np
 NAMES = ["Muse Spark~1.2", "GPT-5.4", "GPT-5.5", "Claude Opus~4.8"]
 
 
+def all_allocation_table(data):
+    """One full-curve comparison table; display subsampling never changes RMSE."""
+    from scripts.report_joint_allocation import METHODS
+    order = ['muse', 'gpt54', 'gpt55', 'opus']
+    lines = [r'\begin{table}[t]', r'\centering\small\setlength{\tabcolsep}{4pt}',
+             r'\begin{tabular}{lrrrrr}',
+             r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Opus & Average \\']
+    for n, models in [(1, order), (2, order), (4, ['muse', 'gpt55'])]:
+        lines += [r'\midrule', r'\multicolumn{6}{l}{\textit{$N='+str(n)+r'$}} \\', r'\midrule']
+        values = {}
+        for m in models:
+            report = data['reports'][f'{m}-n{n}']
+            if report['trials'] != 171:
+                raise ValueError('Main comparison requires 171 trials per model')
+            values[m] = [report['metrics'][method]['rmse'] for method in METHODS]
+        values['average'] = np.sqrt(np.mean(np.square(list(values.values())), axis=0)).tolist()
+        for i, label in enumerate(METHODS.values()):
+            if label == 'DE':
+                lines.append(r'\midrule')
+            if label in ('DE', 'R-DE'):
+                label += ' (ours)'
+            cells = []
+            for m in order+['average']:
+                if m not in values:
+                    cells.append('---')
+                    continue
+                value = values[m][i]
+                cells.append(r'\textbf{'+f'{value:.2f}'+'}' if value == min(values[m]) else f'{value:.2f}')
+            lines.append(label+' & '+' & '.join(cells)+r' \\')
+    lines += [r'\bottomrule', r'\end{tabular}',
+              r'\caption{Prediction RMSE in solved-trial counts across all eight, four, or two checkpoints for $N=1,2,4$, respectively. Each reported model has 57 problems and 171 trials. The same intervention fit is used at every allocation. Average is the square root of the mean model-specific MSE within each panel. Bold marks column minima; dashes indicate unavailable $N=4$ coverage.}',
+              r'\label{tab:predictor-comparison}', r'\label{tab:n2-predictor-comparison}', r'\end{table}']
+    return '\n'.join(lines)+'\n'
+
+
+def display_series(rows, n):
+    """Aggregate matched trials at every available total-budget checkpoint."""
+    weights = np.array([r['weight'] for r in rows])
+    if weights.sum() != 171:
+        raise ValueError('Main figures require 171 matched trials')
+    indices = np.arange(8//n)
+    series = {'observed': weights @ np.array([r['observed'] for r in rows])}
+    for method in ('solved_geometric', 'oracle_gain_transfer', 'neither_regularized', 'both_regularized'):
+        series[method] = weights @ np.array([r['predictions'][method] for r in rows])
+    return n*(indices+1), {key: values[indices] for key, values in series.items()}
+
+
+def explanatory_plot(data, n=1):
+    """Signed aggregate-count errors with a shared scale across model panels."""
+    models = ['muse', 'gpt54', 'gpt55', 'opus'] if n != 4 else ['muse', 'gpt55']
+    names = dict(zip(['muse', 'gpt54', 'gpt55', 'opus'], NAMES))
+    rows_by_model = [data['reports'][f'{m}-n{n}']['rows'] for m in models]
+    cols = len(models)
+    styles = [('oracle_gain_transfer', 'errorogt'), ('solved_geometric', 'errorgeo'),
+              ('neither_regularized', 'errorde'), ('both_regularized', 'errorrde')]
+    markers = {'errorogt': 'square*', 'errorgeo': '*', 'errorde': 'triangle*', 'errorrde': 'diamond*'}
+    # Equal nominal radii make squares visually heavier than triangles/diamonds.
+    # Use the same shape-adjusted sizes in the curves and their legend samples.
+    marker_sizes = {'errorogt': '1.3', 'errorgeo': '1.5', 'errorde': '2.1', 'errorrde': '1.9'}
+    panels = [display_series(rows, n) for rows in rows_by_model]
+    errors = np.concatenate([series['observed']-series[key]
+                             for _, series in panels for key, _ in styles])
+    # One common scale across model panels, including zero with breathing room.
+    ymin = 5*int(np.floor((min(0, errors.min())-1)/5))
+    ymax = 5*int(np.ceil((max(0, errors.max())+1)/5))
+    tick_step = 10 if ymax-ymin > 35 else 5
+    ticks = ','.join(str(t) for t in range(tick_step*int(np.ceil(ymin/tick_step)), ymax+1, tick_step))
+    # Saturated red/blue/violet/green plus distinct markers for thin-line contrast.
+    lines = [r'\begingroup', r'\definecolor{errorogt}{HTML}{D94B40}',
+             r'\definecolor{errorgeo}{HTML}{2077B4}', r'\definecolor{errorde}{HTML}{8246C5}',
+             r'\definecolor{errorrde}{HTML}{249447}',
+             r'\definecolor{errortick}{HTML}{44505A}', r'\definecolor{errorgroup}{HTML}{17212B}',
+             r'\definecolor{erroraxis}{HTML}{8C959D}', r'\definecolor{errorgrid}{HTML}{D7DCDF}',
+             r'\begin{tikzpicture}[font=\normalfont\normalsize,text=black]',
+             r'\begin{groupplot}[group style={group size='+f'{cols} by 1'+r',horizontal sep=0.38cm},scale only axis,width='+('0.204' if cols == 4 else '0.42')+r'\linewidth,height=2.35cm,xmin=0.7,xmax=8.3,ymin='+str(ymin)+',ymax='+str(ymax)+r',xtick={2,4,6,8},xticklabels={$2\times$,$4\times$,$6\times$,$8\times$},ytick={'+ticks+r'},tick label style={font=\normalfont\normalsize,text=black},xticklabel style={font=\normalfont\normalsize,text=black},label style={font=\normalfont\normalsize,text=black},axis line style={draw=erroraxis,line width=0.7pt},axis x line*=bottom,axis y line*=left,tick style={draw=none},ymajorgrids=true,grid style={draw=errorgrid,opacity=0.8,line width=0.5pt},clip=true]']
+    for i, (x, series) in enumerate(panels):
+        options = []
+        if i:
+            options.append(r'yticklabels=\empty')
+        if n == 4:
+            options += [r'xtick={4,8}', r'xticklabels={$4\times$,$8\times$}']
+        lines.append(r'\nextgroupplot['+','.join(options)+']')
+        lines.append(r'\addplot[black!65,solid,line width=1.2pt,no marks] coordinates {(0.7,0) (8.3,0)};')
+        for key, color in styles:
+            lines.append(r'\addplot[draw='+color+r',solid,line width=1pt,mark='+markers[color]+',mark size='+marker_sizes[color]+r'pt,mark options={solid,fill='+color+r',draw='+color+r'!65!black,line width=0.25pt}] '+coords(x, series['observed']-series[key]))
+    lines.append(r'\end{groupplot}')
+    for i, model in enumerate(models, 1):
+        lines.append(r'\node[font=\normalfont\normalsize,anchor=north] at ([yshift=-3mm]group c'+str(i)+r'r1.south) {'+names[model]+'};')
+    lines.append(r'\node[rotate=90,anchor=south,font=\normalfont\normalsize] at ([xshift=-7mm]group c1r1.west) {Solved $-$ Predicted};')
+    center = r'{$(group c1r1.south)!0.5!(group c'+str(cols)+r'r1.south)$}'
+    lines.append(r'\node[anchor=north,font=\normalfont\normalsize] at ([yshift=-7.5mm]'+center+r') {'+('Inference budget' if n == 1 else 'Total inference budget')+'};')
+    legend_center = r'{$(group c1r1.north)!0.5!(group c'+str(cols)+r'r1.north)$}'
+    for offset, (label, color) in zip((-44, -20, 17, 37), [('OGT', 'errorogt'), ('Geometric', 'errorgeo'), ('DE', 'errorde'), ('R-DE', 'errorrde')]):
+        lines.append(r'\draw['+color+r',line width=1pt] ([xshift='+str(offset)+r'mm,yshift=5mm]'+legend_center+r') -- ++(5mm,0);')
+        lines.append(r'\draw['+color+r',mark='+markers[color]+',mark size='+marker_sizes[color]+r'pt,mark options={fill='+color+r',draw='+color+r'!65!black,line width=0.25pt}] plot coordinates {([xshift='+str(offset+2.5)+r'mm,yshift=5mm]'+legend_center+r')};')
+        lines.append(r'\node[anchor=west,font=\normalfont\normalsize] at ([xshift='+str(offset+6)+r'mm,yshift=5mm]'+legend_center+r') {'+label+'};')
+    lines += [r'\end{tikzpicture}', r'\endgroup']
+    return '\n'.join(lines)+'\n'
+
+
 def combined_comparison_table(data, n):
     from scripts.report_joint_allocation import METHODS
     if n == 2 and all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
@@ -146,6 +246,12 @@ def render(data, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir/'allocation_report.json').write_text(json.dumps(data, indent=2, allow_nan=False)+'\n')
+    if all(f'{m}-n{n}' in data['reports'] for n in (1, 2) for m in ('muse', 'gpt54', 'gpt55', 'opus')):
+        (output_dir/'execution_scaling_bars.tex').write_text(explanatory_plot(data, n=1))
+        (output_dir/'allocation_n2_bars.tex').write_text(explanatory_plot(data, n=2))
+        if all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
+            (output_dir/'allocation_n4_bars.tex').write_text(explanatory_plot(data, n=4))
+            (output_dir/'allocation_comparison_table.tex').write_text(all_allocation_table(data))
     from scripts.report_execution_regimes import PANELS, build, render as render_regimes, render_early_gains
     if all(f'{model}-n{n}' in data['reports'] for n, models in PANELS.items() for model in models):
         regimes = build(data)

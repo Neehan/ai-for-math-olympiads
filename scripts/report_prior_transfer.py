@@ -35,9 +35,10 @@ def render(report):
             raise ValueError('Prior-transfer evaluation requires 22 IMO-ProofBench problems and 66 trajectories')
         metrics=r['methods']
         rows.append([name,r['trials'],f"{metrics['positive_support_joint']['rmse']:.2f}",
-                     f"{metrics['positive_support_transfer']['rmse']:.2f}"])
-    return table(['Model','Trajectories','57-problem priors','AOBench-only priors'],rows,
-                 r'Prior parameter sensitivity: $N=1$ RMSE in solved-trajectory counts on the same 22 IMO-ProofBench problems. Both fits retain positive prior support for all nine oracle outcomes; only the problems used to learn shared priors change. Each target problem supplies its own intervention measurements, not unaided outcomes, for estimation.',
+                     f"{metrics['positive_support_transfer']['rmse']:.2f}",
+                     f"{metrics['neither_regularized']['rmse']:.2f}"])
+    return table(['Model','Trajectories','57-problem priors','AOBench-only priors','DE'],rows,
+                 r'Prior parameter sensitivity: $N=1$ RMSE in solved-trajectory counts on the same 22 IMO-ProofBench problems. The two R-DE fits retain positive prior support for all nine oracle outcomes; only the problems used to learn shared priors change. DE uses no shared priors. Each target problem supplies its own intervention measurements, not unaided outcomes, for estimation.',
                  'tab:prior-sensitivity')
 
 

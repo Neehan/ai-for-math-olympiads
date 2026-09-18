@@ -40,6 +40,18 @@ class SketchControlTests(unittest.TestCase):
         self.assertNotIn('%', tex)
         self.assertNotIn('38/72', tex)
 
+    def test_prior_table_uses_same_target_de_rmse_last(self):
+        from scripts.report_prior_transfer import render
+        metrics = {'positive_support_joint': {'rmse': 1.25},
+                   'positive_support_transfer': {'rmse': 2.50},
+                   'neither_regularized': {'rmse': 3.75}}
+        report = {'reports': {m: {'allocations': {'1': dict(problems=22, trials=66, methods=metrics)}}
+                              for m in ('muse', 'gpt54', 'gpt55', 'opus')}}
+        tex = render(report)
+        self.assertIn(r'AOBench-only priors & DE \\', tex)
+        self.assertIn(r'GPT-5.5 & 66 & 1.25 & 2.50 & 3.75', tex)
+        self.assertIn('DE uses no shared priors', tex)
+
     def test_aobench_decay_ignores_external_unaided_outcomes(self):
         rows = [dict(dataset=dataset, solved=1, parallel_n=3, oracle_n=3,
                      epsilon=[1/3]*8, weight=3, observed=[0, 1/3, 1/3, 1/3, 2/3, 2/3, 2/3, 2/3])
