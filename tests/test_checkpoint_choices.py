@@ -13,11 +13,13 @@ class CheckpointChoicesTests(unittest.TestCase):
             model: dict(equal_horizon_average=row, summaries={str(h): row for h in (1, 2, 3, 4)})
             for model in ('muse', 'gpt54', 'gpt55', 'opus')})
         tables = render_tables(report)
-        self.assertEqual(set(tables), {'checkpoint_regret_table.tex', 'checkpoint_regret_budgets_table.tex'})
+        self.assertEqual(set(tables), {'checkpoint_regret_table.tex'})
         self.assertIn(r'Average & 3.00 & \textbf{0.00} & \textbf{0.00}', tables['checkpoint_regret_table.tex'])
-        self.assertEqual(tables['checkpoint_regret_budgets_table.tex'].count(r'$4\times$'), 4)
+        extra = render_tables(report, include_supplementary=True)
+        self.assertEqual(extra['checkpoint_regret_budgets_table.tex'].count(r'$4\times$'), 4)
         report['restart_estimator'] = 'leave-one-out-five'
-        self.assertEqual(set(render_tables(report)), {'checkpoint_regret_loo_table.tex'})
+        self.assertEqual(render_tables(report), {})
+        self.assertEqual(set(render_tables(report, include_supplementary=True)), {'checkpoint_regret_loo_table.tex'})
 
     def test_paper_tables_require_all_models(self):
         with self.assertRaises(ValueError):

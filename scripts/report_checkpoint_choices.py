@@ -203,8 +203,8 @@ def collect(root, report, restart_estimator='separate-three', selected_model=Non
     return output
 
 
-def render_tables(report):
-    """Render measured-regret tables without changing fits or averaging rules."""
+def render_tables(report, *, include_supplementary=False):
+    """Render the main paper table; optional historical tables stay opt-in."""
     names = {'muse': 'Muse Spark~1.2', 'gpt54': 'GPT-5.4',
              'gpt55': 'GPT-5.5', 'opus': 'Claude Opus~4.8'}
     policies = ('always_continue', 'always_restart', 'RDE')
@@ -220,6 +220,8 @@ def render_tables(report):
     sensitivity = report['restart_estimator'] == 'leave-one-out-five'
     if report['restart_estimator'] not in ('separate-three', 'leave-one-out-five'):
         raise ValueError('Unknown restart estimator')
+    if sensitivity and not include_supplementary:
+        return {}
     label = 'checkpoint-regret-loo' if sensitivity else 'checkpoint-regret'
     caption = ('Mean measured regret using five leave-one-out restart trajectories. Predictions and selected actions are unchanged from Table~\\ref{tab:checkpoint-regret}; only restart success estimates change.'
                if sensitivity else
@@ -235,7 +237,7 @@ def render_tables(report):
               r'\bottomrule', r'\end{tabular}', r'\caption{' + caption + '}',
               r'\label{tab:' + label + '}', r'\end{table}']
     output = {label.replace('-', '_') + '_table.tex': '\n'.join(lines) + '\n'}
-    if not sensitivity:
+    if not sensitivity and include_supplementary:
         lines = [r'\begin{table}[htbp]', r'\centering\small', r'\begin{tabular}{llrrr}',
                  r'\toprule Model & Additional budget & Always continue & Always restart & R-DE \\', r'\midrule']
         for model, name in names.items():
