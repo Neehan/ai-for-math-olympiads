@@ -203,16 +203,70 @@ def collect(root, report, restart_estimator='separate-three', selected_model=Non
     return output
 
 
+def render_tables(report):
+    """Render measured-regret tables without changing fits or averaging rules."""
+    names = {'muse': 'Muse Spark~1.2', 'gpt54': 'GPT-5.4',
+             'gpt55': 'GPT-5.5', 'opus': 'Claude Opus~4.8'}
+    policies = ('always_continue', 'always_restart', 'RDE')
+    if set(report['models']) != set(names):
+        raise ValueError('Paper tables require all four models')
+
+    def cells(values):
+        best = min(values)
+        return ' & '.join(r'\textbf{' + f'{v:.2f}' + '}'
+                          if np.isclose(v, best, atol=1e-10, rtol=0) else f'{v:.2f}'
+                          for v in values)
+
+    sensitivity = report['restart_estimator'] == 'leave-one-out-five'
+    if report['restart_estimator'] not in ('separate-three', 'leave-one-out-five'):
+        raise ValueError('Unknown restart estimator')
+    label = 'checkpoint-regret-loo' if sensitivity else 'checkpoint-regret'
+    caption = ('Mean measured regret using five leave-one-out restart trajectories. Predictions and selected actions are unchanged from Table~\\ref{tab:checkpoint-regret}; only restart success estimates change.'
+               if sensitivity else
+               'Mean measured regret in additional solved trials lost; lower is better. Values average checkpoints within each additional budget, then the four budgets. The final row averages the four models. Bold marks row minima.')
+    lines = [r'\begin{table}[t]', r'\centering\small', r'\begin{tabular}{lrrr}',
+             r'\toprule Model & Always continue & Always restart & R-DE \\', r'\midrule']
+    values = []
+    for model, name in names.items():
+        row = [report['models'][model]['equal_horizon_average'][p] for p in policies]
+        values.append(row)
+        lines.append(name + ' & ' + cells(row) + r' \\')
+    lines += [r'\midrule', 'Average & ' + cells(np.mean(values, axis=0)) + r' \\',
+              r'\bottomrule', r'\end{tabular}', r'\caption{' + caption + '}',
+              r'\label{tab:' + label + '}', r'\end{table}']
+    output = {label.replace('-', '_') + '_table.tex': '\n'.join(lines) + '\n'}
+    if not sensitivity:
+        lines = [r'\begin{table}[htbp]', r'\centering\small', r'\begin{tabular}{llrrr}',
+                 r'\toprule Model & Additional budget & Always continue & Always restart & R-DE \\', r'\midrule']
+        for model, name in names.items():
+            for h in (1, 2, 3, 4):
+                summaries = report['models'][model]['summaries']
+                row = summaries[h] if h in summaries else summaries[str(h)]
+                lines.append((name if h == 1 else '') + ' & $' + str(h) + r'\times$ & '
+                             + cells([row[p] for p in policies]) + r' \\')
+            if model != 'opus':
+                lines.append(r'\midrule')
+        lines += [r'\bottomrule', r'\end{tabular}',
+                  r'\caption{Measured regret by additional budget, averaged over the $8-h$ eligible checkpoints for budget $h$. Restart success uses three separate trajectories per problem.}',
+                  r'\label{tab:checkpoint-regret-budgets}', r'\end{table}']
+        output['checkpoint_regret_budgets_table.tex'] = '\n'.join(lines) + '\n'
+    return output
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--output', type=Path, default=Path('local_data/checkpoint_choices.json'))
     parser.add_argument('--restart-estimator', choices=('separate-three', 'leave-one-out-five'), default='separate-three')
     parser.add_argument('--model', choices=tuple(MODELS))
+    parser.add_argument('--tex-dir', type=Path, help='Write paper tables after verifying the analysis')
     args = parser.parse_args()
     data = json.loads((args.root / 'paper/img/allocation_report.json').read_text())
     out = collect(args.root, data, args.restart_estimator, args.model)
     args.output.write_text(json.dumps(out, indent=2, allow_nan=False) + '\n')
+    if args.tex_dir is not None:
+        for name, content in render_tables(out).items():
+            (args.tex_dir / name).write_text(content)
     for model, values in out['models'].items():
         print(model)
         for r in values['checkpoints']:

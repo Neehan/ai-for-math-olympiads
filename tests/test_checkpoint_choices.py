@@ -3,10 +3,26 @@ import unittest
 import numpy as np
 
 from scripts.allocation_estimators import Joint
-from scripts.report_checkpoint_choices import action, de_choices, evaluate, rde_choices
+from scripts.report_checkpoint_choices import action, de_choices, evaluate, rde_choices, render_tables
 
 
 class CheckpointChoicesTests(unittest.TestCase):
+    def test_paper_tables_preserve_policy_order_and_ties(self):
+        row = dict(always_continue=3., always_restart=0., RDE=0.)
+        report = dict(restart_estimator='separate-three', models={
+            model: dict(equal_horizon_average=row, summaries={str(h): row for h in (1, 2, 3, 4)})
+            for model in ('muse', 'gpt54', 'gpt55', 'opus')})
+        tables = render_tables(report)
+        self.assertEqual(set(tables), {'checkpoint_regret_table.tex', 'checkpoint_regret_budgets_table.tex'})
+        self.assertIn(r'Average & 3.00 & \textbf{0.00} & \textbf{0.00}', tables['checkpoint_regret_table.tex'])
+        self.assertEqual(tables['checkpoint_regret_budgets_table.tex'].count(r'$4\times$'), 4)
+        report['restart_estimator'] = 'leave-one-out-five'
+        self.assertEqual(set(render_tables(report)), {'checkpoint_regret_loo_table.tex'})
+
+    def test_paper_tables_require_all_models(self):
+        with self.assertRaises(ValueError):
+            render_tables(dict(restart_estimator='separate-three', models={}))
+
     def test_geometric_is_indifferent(self):
         q = np.array([.1, .4, .8])
         curves = 1 - (1 - q[:, None]) ** np.arange(1, 9)
