@@ -54,17 +54,21 @@ class ExecutionRegimeTests(unittest.TestCase):
 
     def test_table_contains_both_groups_and_allocations(self):
         tex = render(build(fixture()))
-        self.assertEqual(tex.count(' & Saturated & '), 6)
-        self.assertEqual(tex.count(' & Unsaturated & '), 6)
+        self.assertEqual(tex.count(' & Saturated & '), 8)
+        self.assertEqual(tex.count(' & Unsaturated & '), 8)
         self.assertIn('$N=1$', tex)
         self.assertIn('$N=2$', tex)
         self.assertNotIn('percentage', tex)
         rows = [line.split(' & ')[:2] for line in tex.splitlines()
                 if ' & Saturated & ' in line or ' & Unsaturated & ' in line]
         self.assertEqual(rows, [
+            ['Muse Spark~1.2', 'Saturated'],
             ['GPT-5.4', 'Saturated'], ['GPT-5.5', 'Saturated'], ['Opus', 'Saturated'],
+            ['Muse Spark~1.2', 'Unsaturated'],
             ['GPT-5.4', 'Unsaturated'], ['GPT-5.5', 'Unsaturated'], ['Opus', 'Unsaturated'],
+            ['Muse Spark~1.2', 'Saturated'],
             ['GPT-5.4', 'Saturated'], ['GPT-5.5', 'Saturated'], ['Opus', 'Saturated'],
+            ['Muse Spark~1.2', 'Unsaturated'],
             ['GPT-5.4', 'Unsaturated'], ['GPT-5.5', 'Unsaturated'], ['Opus', 'Unsaturated'],
         ])
         self.assertIn(r'\label{tab:execution-regimes-full}', tex)
@@ -73,13 +77,16 @@ class ExecutionRegimeTests(unittest.TestCase):
         report = build(fixture())
         tex = render(report, opus_only=True)
         self.assertNotIn('GPT-', tex)
+        self.assertNotIn('Muse', tex)
         self.assertEqual(tex.count(' & Saturated & '), 2)
         self.assertEqual(tex.count(' & Unsaturated & '), 2)
         self.assertIn(r'\label{tab:execution-regimes}', tex)
         for n in (1, 2):
+            self.assertEqual(tex.count(r'\multirow{2}{*}{'+str(n)+'}'), 1)
             for group, label in [('complete', 'Saturated'), ('incomplete', 'Unsaturated')]:
                 item = report['panels'][f'opus-n{n}'][group]
-                self.assertIn(f'{n} & {label} & {item["trials"]}', tex)
+                first = r'\multirow{2}{*}{'+str(n)+'}' if group == 'complete' else ''
+                self.assertIn(f'{first} & {label} & {item["trials"]}', tex)
                 for metric in item['metrics'].values():
                     self.assertIn(f'{metric["rmse"]:.2f}', tex)
 

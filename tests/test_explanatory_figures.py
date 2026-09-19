@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from scripts.render_allocation_report import display_series, explanatory_plot, all_allocation_table, render
+from scripts.render_allocation_report import display_series, explanatory_plot, all_allocation_table, n4_allocation_table, render
 from scripts.report_joint_allocation import METHODS, summarize
 
 
@@ -37,8 +37,8 @@ class ExplanatoryFigureTests(unittest.TestCase):
             self.assertEqual({p.name for p in Path(directory).iterdir()}, {
                 'allocation_report.json', 'execution_scaling_bars.tex',
                 'allocation_n2_bars.tex', 'allocation_comparison_table.tex',
-                'execution_regimes_table.tex', 'early_execution_gains_table.tex',
-                'allocation_model_fit.tex',
+                'execution_regimes_table.tex', 'execution_regimes_full_table.tex', 'early_execution_gains_table.tex',
+                'allocation_model_fit.tex', 'allocation_n4_table.tex',
             })
 
     def test_display_checkpoints_are_total_budget(self):
@@ -92,9 +92,26 @@ class ExplanatoryFigureTests(unittest.TestCase):
         data['reports']['opus-n1']['metrics']['both_regularized']['rmse'] = 1.2345
         tex = all_allocation_table(data)
         self.assertIn(r'\textbf{1.23}', tex)
-        for n in (1, 2, 4):
+        for n in (1, 2):
             self.assertIn(f'$N={n}$', tex)
-        self.assertIn('all eight, four, or two checkpoints', tex)
+        self.assertNotIn('$N=4$', tex)
+        self.assertNotIn('---', tex)
+        self.assertIn('Prediction RMSE (solved-trial counts)', tex)
+
+    def test_n4_table_has_only_two_model_rows_and_preserves_rmse(self):
+        data = fixture()
+        data['reports']['gpt55-n4']['metrics']['both_regularized']['rmse'] = 0.123
+        tex = n4_allocation_table(data)
+        self.assertIn(r'\textbf{0.12}', tex)
+        self.assertIn('Muse Spark~1.2 & ', tex)
+        self.assertIn('GPT-5.5 & ', tex)
+        self.assertNotIn('GPT-5.4', tex)
+        self.assertNotIn('Opus', tex)
+        self.assertNotIn('---', tex)
+        for model in ('muse', 'gpt55'):
+            for method in METHODS:
+                self.assertIn(f"{data['reports'][f'{model}-n4']['metrics'][method]['rmse']:.2f}", tex)
+        self.assertIn(r'\label{tab:n4-predictor-comparison}', tex)
 
 
 if __name__ == '__main__':

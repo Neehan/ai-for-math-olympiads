@@ -19,8 +19,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 METHODS = ('solved_geometric', 'neither_regularized', 'both_regularized')
-PANELS = {1: ('gpt54', 'gpt55', 'opus'), 2: ('gpt54', 'gpt55', 'opus')}
-NAMES = {'gpt54': 'GPT-5.4', 'gpt55': 'GPT-5.5', 'opus': 'Opus'}
+PANELS = {1: ('muse', 'gpt54', 'gpt55', 'opus'), 2: ('muse', 'gpt54', 'gpt55', 'opus')}
+NAMES = {'muse': 'Muse Spark~1.2', 'gpt54': 'GPT-5.4', 'gpt55': 'GPT-5.5', 'opus': 'Opus'}
 GROUP_LABELS = {'complete': 'Saturated', 'incomplete': 'Unsaturated'}
 
 
@@ -102,12 +102,15 @@ def render(report, opus_only=False):
                 item = report['panels'][f'{model}-n{n}'][group]
                 values = [item['metrics'][m]['rmse'] for m in METHODS]
                 cells = [r'\textbf{'+f'{v:.2f}'+'}' if v == min(values) else f'{v:.2f}' for v in values]
-                first = str(n) if opus_only else NAMES[model]
+                first = NAMES[model]
+                if opus_only:
+                    first = r'\multirow{2}{*}{'+str(n)+'}' if group == 'complete' else ''
                 lines.append(' & '.join([first, GROUP_LABELS[group], str(item['trials']), *cells])+r' \\')
-    title = 'Opus prediction error by first-block execution saturation.' if opus_only else 'Prediction error by first-block execution saturation for the GPT models and Opus.'
+    title = 'Opus prediction error by first-block execution saturation.' if opus_only else 'Prediction error by first-block execution saturation for all four models.'
+    caption = (r'Opus prediction RMSE (solved-trial counts), split by first-block execution saturation. Bold marks row minima.' if opus_only else title+r' Saturated means all three oracle trajectories solve by block 1 ($\widehat\varepsilon_n^{\rm oracle}(1)=1$); unsaturated means at least one does not. Entries are aggregate solved-trial-count RMSE over eight checkpoints for $N=1$ and four for $N=2$, using unchanged full-set fits. Each problem contributes three trials. Bold marks row minima.')
     label = 'tab:execution-regimes' if opus_only else 'tab:execution-regimes-full'
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{'+title+r' Saturated means all three oracle trajectories solve by block 1 ($\widehat\varepsilon_n^{\rm oracle}(1)=1$); unsaturated means at least one does not. Entries are aggregate solved-trial-count RMSE over eight checkpoints for $N=1$ and four for $N=2$, using unchanged full-set fits. Each problem contributes three trials. Bold marks row minima.}',
+              r'\caption{'+caption+'}',
               r'\label{'+label+'}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 

@@ -8,13 +8,13 @@ NAMES = ["Muse Spark~1.2", "GPT-5.4", "GPT-5.5", "Claude Opus~4.8"]
 
 
 def all_allocation_table(data):
-    """One full-curve comparison table; display subsampling never changes RMSE."""
+    """Main N=1 and N=2 comparison; display subsampling never changes RMSE."""
     from scripts.report_joint_allocation import METHODS
     order = ['muse', 'gpt54', 'gpt55', 'opus']
     lines = [r'\begin{table}[t]', r'\centering\small\setlength{\tabcolsep}{4pt}',
              r'\begin{tabular}{lrrrrr}',
              r'\toprule Framework & Muse & GPT-5.4 & GPT-5.5 & Opus & Average \\']
-    for n, models in [(1, order), (2, order), (4, ['muse', 'gpt55'])]:
+    for n, models in [(1, order), (2, order)]:
         lines += [r'\midrule', r'\multicolumn{6}{l}{\textit{$N='+str(n)+r'$}} \\', r'\midrule']
         values = {}
         for m in models:
@@ -37,8 +37,28 @@ def all_allocation_table(data):
                 cells.append(r'\textbf{'+f'{value:.2f}'+'}' if value == min(values[m]) else f'{value:.2f}')
             lines.append(label+' & '+' & '.join(cells)+r' \\')
     lines += [r'\bottomrule', r'\end{tabular}',
-              r'\caption{Prediction RMSE in solved-trial counts across all eight, four, or two checkpoints for $N=1,2,4$, respectively. Each reported model has 57 problems and 171 trials. The same intervention fit is used at every allocation. Average is the square root of the mean model-specific MSE within each panel. Bold marks column minima; dashes indicate unavailable $N=4$ coverage.}',
+              r'\caption{Prediction RMSE (solved-trial counts) for $N=1,2$ across 57 problems and 171 trials per model. Bold marks column minima.}',
               r'\label{tab:predictor-comparison}', r'\label{tab:n2-predictor-comparison}', r'\end{table}']
+    return '\n'.join(lines)+'\n'
+
+
+def n4_allocation_table(data):
+    """Appendix N=4 results with only the two evaluated models as rows."""
+    from scripts.report_joint_allocation import METHODS
+    lines = [r'\begin{table}[htbp]', r'\centering\small',
+             r'\begin{tabular}{lrrrrr}',
+             r'\toprule Model & SG & Linear & OGT & DE & R-DE \\', r'\midrule']
+    for model, name in [('muse', 'Muse Spark~1.2'), ('gpt55', 'GPT-5.5')]:
+        report = data['reports'][f'{model}-n4']
+        if report['trials'] != 171:
+            raise ValueError('N=4 comparison requires 171 trials per model')
+        values = [report['metrics'][method]['rmse'] for method in METHODS]
+        cells = [r'\textbf{'+f'{value:.2f}'+'}' if value == min(values) else f'{value:.2f}'
+                 for value in values]
+        lines.append(name+' & '+' & '.join(cells)+r' \\')
+    lines += [r'\bottomrule', r'\end{tabular}',
+              r'\caption{Prediction RMSE in solved-trial counts for $N=4$, evaluated across both checkpoints of four two-block trajectories. Each model has 57 problems and 171 allocation trials. Predictions use the unchanged intervention fit. Bold marks row minima.}',
+              r'\label{tab:n4-predictor-comparison}', r'\end{table}']
     return '\n'.join(lines)+'\n'
 
 
@@ -249,12 +269,14 @@ def render(data, output_dir):
     if all(f'{m}-n{n}' in data['reports'] for n in (1, 2) for m in ('muse', 'gpt54', 'gpt55', 'opus')):
         (output_dir/'execution_scaling_bars.tex').write_text(explanatory_plot(data, n=1))
         (output_dir/'allocation_n2_bars.tex').write_text(explanatory_plot(data, n=2))
-        if all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
-            (output_dir/'allocation_comparison_table.tex').write_text(all_allocation_table(data))
+        (output_dir/'allocation_comparison_table.tex').write_text(all_allocation_table(data))
+    if all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
+        (output_dir/'allocation_n4_table.tex').write_text(n4_allocation_table(data))
     from scripts.report_execution_regimes import PANELS, build, render as render_regimes, render_early_gains
     if all(f'{model}-n{n}' in data['reports'] for n, models in PANELS.items() for model in models):
         regimes = build(data)
-        (output_dir/'execution_regimes_table.tex').write_text(render_regimes(regimes))
+        (output_dir/'execution_regimes_table.tex').write_text(render_regimes(regimes, opus_only=True))
+        (output_dir/'execution_regimes_full_table.tex').write_text(render_regimes(regimes))
         (output_dir/'early_execution_gains_table.tex').write_text(render_early_gains(regimes))
     keys = [f'{m}-n1' for m in ['muse', 'gpt54', 'gpt55', 'opus']]
     if all(k in data['reports'] for k in keys):
