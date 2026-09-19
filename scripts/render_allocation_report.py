@@ -242,7 +242,7 @@ def execution_subgroup_table(data):
 
 
 def render(data, output_dir):
-    """No fitting or saved analysis dependencies; no unrelated paper assets."""
+    """Render only assets used by the current paper, without refitting."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir/'allocation_report.json').write_text(json.dumps(data, indent=2, allow_nan=False)+'\n')
@@ -250,30 +250,15 @@ def render(data, output_dir):
         (output_dir/'execution_scaling_bars.tex').write_text(explanatory_plot(data, n=1))
         (output_dir/'allocation_n2_bars.tex').write_text(explanatory_plot(data, n=2))
         if all(f'{m}-n4' in data['reports'] for m in ('muse', 'gpt55')):
-            (output_dir/'allocation_n4_bars.tex').write_text(explanatory_plot(data, n=4))
             (output_dir/'allocation_comparison_table.tex').write_text(all_allocation_table(data))
     from scripts.report_execution_regimes import PANELS, build, render as render_regimes, render_early_gains
     if all(f'{model}-n{n}' in data['reports'] for n, models in PANELS.items() for model in models):
         regimes = build(data)
         (output_dir/'execution_regimes_table.tex').write_text(render_regimes(regimes))
         (output_dir/'early_execution_gains_table.tex').write_text(render_early_gains(regimes))
-    for n, filename in [(1, 'allocation_model_fit.tex'), (2, 'allocation_model_replication.tex')]:
-        keys = [f'{m}-n{n}' for m in ['muse', 'gpt54', 'gpt55', 'opus']]
-        if all(k in data['reports'] for k in keys):
-            (output_dir/filename).write_text(plot([data['reports'][k]['rows'] for k in keys], n2=n == 2)+'\n')
-        if f'n{n}' in data['pooled_rmse_pp']:
-            name = 'predictor_comparison_table.tex' if n == 1 else 'n2_predictor_comparison_table.tex'
-            (output_dir/name).write_text(comparison_table(data, n))
-    if 'n1' in data['pooled_rmse_pp']:
-        lines = [r'\begin{table}[t]', r'\centering\small', r'\begin{tabular}{lrrr}',
-                 r'\toprule Model & MAE & RMSE & Final observed/predicted \\', r'\midrule',
-                 r'\multicolumn{4}{l}{\textit{$N=1,K=8$: 171 trajectories per model}} \\']
-        for key, name in zip(['muse', 'gpt54', 'gpt55', 'opus'], NAMES):
-            s = data['reports'][f'{key}-n1']['metrics']['both_regularized']
-            lines.append(f"{name} & {s['mae']:.2f} & {s['rmse']:.2f} & ${s['observed'][-1]:.0f}/{s['predicted'][-1]:.1f}$ "+r'\\')
-        lines += [r'\bottomrule', r'\end{tabular}', r'\caption{R-DE single-trajectory errors in passing-trajectory counts, with 171 trajectories per model.}', r'\label{tab:allocation-model-error}', r'\end{table}']
-        (output_dir/'joint_error_table.tex').write_text('\n'.join(lines)+'\n')
-        (output_dir/'execution_subgroup_table.tex').write_text(execution_subgroup_table(data))
+    keys = [f'{m}-n1' for m in ['muse', 'gpt54', 'gpt55', 'opus']]
+    if all(k in data['reports'] for k in keys):
+        (output_dir/'allocation_model_fit.tex').write_text(plot([data['reports'][k]['rows'] for k in keys])+'\n')
 
 
 def coords(x,y):

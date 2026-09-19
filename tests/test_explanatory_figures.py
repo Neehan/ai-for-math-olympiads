@@ -1,8 +1,11 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
-from scripts.render_allocation_report import display_series, explanatory_plot, all_allocation_table
+from scripts.render_allocation_report import display_series, explanatory_plot, all_allocation_table, render
 from scripts.report_joint_allocation import METHODS, summarize
 
 
@@ -21,6 +24,23 @@ def fixture():
 
 
 class ExplanatoryFigureTests(unittest.TestCase):
+    def test_render_writes_only_current_paper_assets(self):
+        data = fixture()
+        for report in data['reports'].values():
+            for row in report['rows']:
+                row['dataset'] = 'results'
+        with TemporaryDirectory() as directory, \
+                patch('scripts.report_execution_regimes.build', return_value={}), \
+                patch('scripts.report_execution_regimes.render', return_value='regimes'), \
+                patch('scripts.report_execution_regimes.render_early_gains', return_value='gains'):
+            render(data, directory)
+            self.assertEqual({p.name for p in Path(directory).iterdir()}, {
+                'allocation_report.json', 'execution_scaling_bars.tex',
+                'allocation_n2_bars.tex', 'allocation_comparison_table.tex',
+                'execution_regimes_table.tex', 'early_execution_gains_table.tex',
+                'allocation_model_fit.tex',
+            })
+
     def test_display_checkpoints_are_total_budget(self):
         data = fixture()
         for n in (1, 2, 4):
