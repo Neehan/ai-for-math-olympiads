@@ -88,7 +88,7 @@ def build(data):
 def render(report, opus_only=False):
     lines = [r'\begin{table}[t]', r'\centering\small\setlength{\tabcolsep}{4pt}',
              r'\begin{tabular}{llrrrr}',
-             (r'\toprule $N$' if opus_only else r'\toprule Model') + r' & Execution & Trials & Plain-geometric & DE & R-DE \\']
+             (r'\toprule $N$' if opus_only else r'\toprule Model') + r' & Execution & Trials & SG & DE & R-DE \\']
     for n, models in PANELS.items():
         if opus_only:
             models = ('opus',)
@@ -115,7 +115,7 @@ def render(report, opus_only=False):
 def render_early_gains(report):
     item = report['gpt54_n2_early_gains']
     lines = [r'\begin{table}[htbp]', r'\centering\small', r'\begin{tabular}{lrrrr}',
-             r'\toprule Checkpoint & Observed & Plain-geometric & DE & R-DE \\', r'\midrule']
+             r'\toprule Checkpoint & Observed & SG & DE & R-DE \\', r'\midrule']
     for i, observed in enumerate(item['observed']):
         values = [item['metrics'][m]['predicted'][i] for m in METHODS]
         lines.append(' & '.join([f'${i+1}\\times$', f'{observed:.0f}', *[f'{v:.2f}' for v in values]])+r' \\')

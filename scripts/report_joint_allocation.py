@@ -29,7 +29,7 @@ MODELS = {
     'opus': 'claude-opus-4-8',
 }
 METHODS = {
-    'solved_geometric': 'Plain-geometric',
+    'solved_geometric': 'SG',
     'oracle_slope_linear': 'Linear',
     'oracle_gain_transfer': 'OGT',
     'neither_regularized': 'DE',

@@ -99,7 +99,7 @@ def explanatory_plot(data, n=1):
     center = r'{$(group c1r1.south)!0.5!(group c'+str(cols)+r'r1.south)$}'
     lines.append(r'\node[anchor=north,font=\normalfont\normalsize] at ([yshift=-7.5mm]'+center+r') {'+('Inference budget' if n == 1 else 'Total inference budget')+'};')
     legend_center = r'{$(group c1r1.north)!0.5!(group c'+str(cols)+r'r1.north)$}'
-    for offset, (label, color) in zip((-44, -20, 17, 37), [('OGT', 'errorogt'), ('Geometric', 'errorgeo'), ('DE', 'errorde'), ('R-DE', 'errorrde')]):
+    for offset, (label, color) in zip((-44, -20, 17, 37), [('OGT', 'errorogt'), ('SG', 'errorgeo'), ('DE', 'errorde'), ('R-DE', 'errorrde')]):
         lines.append(r'\draw['+color+r',line width=1pt] ([xshift='+str(offset)+r'mm,yshift=5mm]'+legend_center+r') -- ++(5mm,0);')
         lines.append(r'\draw['+color+r',mark='+markers[color]+',mark size='+marker_sizes[color]+r'pt,mark options={fill='+color+r',draw='+color+r'!65!black,line width=0.25pt}] plot coordinates {([xshift='+str(offset+2.5)+r'mm,yshift=5mm]'+legend_center+r')};')
         lines.append(r'\node[anchor=west,font=\normalfont\normalsize] at ([xshift='+str(offset+6)+r'mm,yshift=5mm]'+legend_center+r') {'+label+'};')
@@ -306,7 +306,7 @@ def plot(rows_by_model,n2=False,baseline=False):
     lines.append(r'\node[rotate=90,anchor=south] at ([xshift=-7mm]group c1r1.west) {Cumulative solved};')
     lines.append(r'\node[anchor=north] at ([yshift=-9mm]{$(group c1r1.south)!0.5!(group c4r1.south)$}) {Total inference budget};')
     if baseline:
-        legend=[(-50,11,'black','only marks','Observed'),(-17,11,'orange','dashed','Plain-geometric'),(30,11,'cyan!80!blue','dashed','Linear'),(-50,5,'red','dashed','OGT'),(-17,5,'green!65!black','dashed','DE'),(30,5,'magenta','dashed','R-DE')]
+        legend=[(-50,11,'black','only marks','Observed'),(-17,11,'orange','dashed','SG'),(30,11,'cyan!80!blue','dashed','Linear'),(-50,5,'red','dashed','OGT'),(-17,5,'green!65!black','dashed','DE'),(30,5,'magenta','dashed','R-DE')]
     else:legend=[(-48,5,'fitblue','solid','AOBench'),(-18,5,'fitorange','solid','IMO-ProofBench'),(27,5,'fitpurple','solid','Combined')]
     for offset,yshift,color,style,name in legend:
         anchor=r'{$(group c1r1.north)!0.5!(group c4r1.north)$}'
